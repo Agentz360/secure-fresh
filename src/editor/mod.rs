@@ -3371,6 +3371,16 @@ impl Editor {
                     state.compose_column_guides = hints.column_guides;
                 }
             }
+            PluginCommand::SubmitViewTransform {
+                buffer_id,
+                payload: _payload,
+            } => {
+                // Placeholder: renderer-side consumption to be added
+                // For now, we only honor layout hints via SetLayoutHints
+                if !self.buffers.contains_key(&buffer_id) {
+                    tracing::warn!("SubmitViewTransform: buffer_id {} not found", buffer_id.0);
+                }
+            }
             PluginCommand::OpenFileAtLocation { path, line, column } => {
                 // Open the file
                 if let Err(e) = self.open_file(&path) {

@@ -558,6 +558,8 @@ fn op_fresh_submit_view_transform(
     buffer_id: u32,
     start: u32,
     end: u32,
+    #[serde] tokens: Vec<serde_json::Value>,
+    #[serde] source_map: Vec<Option<u32>>,
     #[serde] layout_hints: Option<LayoutHints>,
 ) -> bool {
     if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
@@ -571,8 +573,21 @@ fn op_fresh_submit_view_transform(
             .send(PluginCommand::SetLayoutHints {
                 buffer_id: BufferId(buffer_id as usize),
                 range: start as usize..end as usize,
-                hints,
+                hints: hints.clone(),
             });
+        // Also send full view transform payload for renderer consumption
+        let _ = runtime_state.command_sender.send(PluginCommand::SubmitViewTransform {
+            buffer_id: BufferId(buffer_id as usize),
+            payload: crate::plugin_api::ViewTransformPayload {
+                range: start as usize..end as usize,
+                tokens,
+                source_map: source_map
+                    .into_iter()
+                    .map(|o| o.map(|v| v as usize))
+                    .collect(),
+                layout_hints: Some(hints),
+            },
+        });
         return result.is_ok();
     }
     false

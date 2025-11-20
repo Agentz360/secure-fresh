@@ -73,6 +73,19 @@ pub struct LayoutHints {
     pub column_guides: Option<Vec<u16>>,
 }
 
+/// Transformed view stream payload (plugin-provided)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ViewTransformPayload {
+    /// Byte range this transform applies to (viewport)
+    pub range: Range<usize>,
+    /// Tokens encoded as JSON values (to avoid tight coupling)
+    pub tokens: Vec<serde_json::Value>,
+    /// Mapping from token index to source offset (None for injected)
+    pub source_map: Vec<Option<usize>>,
+    /// Layout hints
+    pub layout_hints: Option<LayoutHints>,
+}
+
 /// Snapshot of editor state for plugin queries
 /// This is updated by the editor on each loop iteration
 #[derive(Debug, Clone)]
@@ -182,6 +195,12 @@ pub enum PluginCommand {
         buffer_id: BufferId,
         range: Range<usize>,
         hints: LayoutHints,
+    },
+
+    /// Submit a transformed view stream for a viewport
+    SubmitViewTransform {
+        buffer_id: BufferId,
+        payload: ViewTransformPayload,
     },
 
     /// Remove all overlays from a buffer
