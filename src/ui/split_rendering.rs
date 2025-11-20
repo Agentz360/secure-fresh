@@ -612,7 +612,15 @@ impl SplitRenderer {
 
         // Get primary cursor position - we won't apply REVERSED to it to preserve terminal cursor visibility
         // Even if show_cursors is false, we need to know where the primary cursor would be for viewport positioning
-        let primary_cursor_position = state.cursors.primary().position;
+        let primary_cursor_position = if let Some(map) = source_to_view.as_ref() {
+            if let Some(vp) = map.get(&state.cursors.primary().position) {
+                *vp
+            } else {
+                state.cursors.primary().position
+            }
+        } else {
+            state.cursors.primary().position
+        };
 
         tracing::trace!(
             "Rendering buffer with {} cursors at positions: {:?}, primary at {}, is_active: {}, buffer_len: {}",
