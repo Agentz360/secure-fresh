@@ -203,65 +203,60 @@ fn run_event_loop(
 ) -> io::Result<()> {
     use std::time::Instant;
 
-    // Frame rate limiting: target 60fps (16.67ms per frame)
-    const FRAME_DURATION: Duration = Duration::from_millis(16);
+    const FRAME_DURATION: Duration = Duration::from_millis(16); // 60fps
     let mut last_render = Instant::now();
     let mut needs_render = true;
+    let mut pending_event: Option<CrosstermEvent> = None; // For events read during coalescing
 
     loop {
-        // Process async messages from tokio tasks (LSP, file watching, etc.)
-        let async_needs_render = editor.process_async_messages();
-        if async_needs_render {
+        if editor.process_async_messages() {
             needs_render = true;
         }
 
-        // Check if we should quit
         if editor.should_quit() {
             break;
         }
 
-        // Render only if enough time has passed since last render (60fps cap)
-        let now = Instant::now();
-        let time_since_render = now.duration_since(last_render);
-        if needs_render && time_since_render >= FRAME_DURATION {
+        // Render at most 60fps
+        if needs_render && last_render.elapsed() >= FRAME_DURATION {
             terminal.draw(|frame| editor.render(frame))?;
-            last_render = now;
+            last_render = Instant::now();
             needs_render = false;
         }
 
-        // Calculate poll timeout based on whether we need to render
-        let poll_timeout = if needs_render {
-            // If we need to render, use remaining time in frame budget
-            let time_since_last_render = Instant::now().duration_since(last_render);
-            FRAME_DURATION.saturating_sub(time_since_last_render)
+        // Get next event
+        let event = if let Some(e) = pending_event.take() {
+            Some(e)
         } else {
-            // When idle, poll frequently to handle async messages from plugins and LSP
-            // This ensures plugin commands are processed with low latency
-            Duration::from_millis(50)
+            let timeout = if pending_event.is_some() || needs_render {
+                FRAME_DURATION.saturating_sub(last_render.elapsed())
+            } else {
+                Duration::from_millis(50)
+            };
+            if event_poll(timeout)? { Some(event_read()?) } else { None }
         };
 
-        // Poll for events
-        if event_poll(poll_timeout)? {
-            match event_read()? {
-                CrosstermEvent::Key(key_event) => {
-                    handle_key_event(editor, key_event)?;
-                    needs_render = true; // Schedule render for next frame
-                }
-                CrosstermEvent::Mouse(mouse_event) => {
-                    let mouse_needs_render = handle_mouse_event(editor, mouse_event)?;
-                    if mouse_needs_render {
-                        needs_render = true; // Schedule render for next frame
-                    }
-                }
-                CrosstermEvent::Resize(width, height) => {
-                    tracing::info!("Terminal resize event: {}x{}", width, height);
-                    editor.resize(width, height);
-                    needs_render = true; // Schedule render for next frame
-                }
-                _ => {
-                    // Ignore other events
+        let Some(event) = event else { continue };
+
+        // Coalesce mouse moves - skip stale ones, keep clicks/keys
+        let (event, next) = coalesce_mouse_moves(event)?;
+        pending_event = next;
+
+        match event {
+            CrosstermEvent::Key(key_event) => {
+                handle_key_event(editor, key_event)?;
+                needs_render = true;
+            }
+            CrosstermEvent::Mouse(mouse_event) => {
+                if handle_mouse_event(editor, mouse_event)? {
+                    needs_render = true;
                 }
             }
+            CrosstermEvent::Resize(w, h) => {
+                editor.resize(w, h);
+                needs_render = true;
+            }
+            _ => {}
         }
     }
 
@@ -303,4 +298,26 @@ fn handle_mouse_event(editor: &mut Editor, mouse_event: MouseEvent) -> io::Resul
 
     // Delegate to the editor's handle_mouse method
     editor.handle_mouse(mouse_event)
+}
+
+/// Skip stale mouse move events, return the latest one.
+/// If we read a non-move event while draining, return it as pending.
+fn coalesce_mouse_moves(event: CrosstermEvent) -> io::Result<(CrosstermEvent, Option<CrosstermEvent>)> {
+    use crossterm::event::MouseEventKind;
+
+    // Only coalesce mouse moves
+    if !matches!(&event, CrosstermEvent::Mouse(m) if m.kind == MouseEventKind::Moved) {
+        return Ok((event, None));
+    }
+
+    let mut latest = event;
+    while event_poll(Duration::ZERO)? {
+        let next = event_read()?;
+        if matches!(&next, CrosstermEvent::Mouse(m) if m.kind == MouseEventKind::Moved) {
+            latest = next; // Newer move, skip the old one
+        } else {
+            return Ok((latest, Some(next))); // Hit a click/key, save it
+        }
+    }
+    Ok((latest, None))
 }
