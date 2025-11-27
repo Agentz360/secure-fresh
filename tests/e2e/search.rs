@@ -1232,12 +1232,13 @@ fn test_search_options_bar_appears() {
         screen.contains("Whole Word"),
         "Should show 'Whole Word' option"
     );
+    // On macOS, Alt is rendered as ⌥, on other platforms as "Alt"
     assert!(
-        screen.contains("Alt+C") || screen.contains("(Alt+C)"),
+        screen.contains("Alt+C") || screen.contains("⌥+C"),
         "Should show keyboard shortcut for case sensitive toggle"
     );
     assert!(
-        screen.contains("Alt+W") || screen.contains("(Alt+W)"),
+        screen.contains("Alt+W") || screen.contains("⌥+W"),
         "Should show keyboard shortcut for whole word toggle"
     );
 

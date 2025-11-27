@@ -690,16 +690,24 @@ fn test_command_palette_shows_shortcuts() {
     harness.assert_screen_contains("Command:");
 
     // Check that commands with shortcuts are visible (commands sorted alphabetically)
-    // Add Cursor Above should show Ctrl+Alt+↑
+    // Add Cursor Above should show Ctrl+Alt+↑ (or ⌘+⌥+↑ on macOS)
     harness.assert_screen_contains("Add Cursor Above");
-    harness.assert_screen_contains("Ctrl+Alt+");
+    // On macOS, Ctrl is ⌘ and Alt is ⌥
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Ctrl+Alt+") || screen.contains("⌘+⌥+"),
+        "Should show shortcut for Add Cursor Above"
+    );
 
     // Add Cursor Below should show Ctrl+Alt+↓
     harness.assert_screen_contains("Add Cursor Below");
 
-    // Copy should show Ctrl+C
+    // Copy should show Ctrl+C (or ⌘+C on macOS)
     harness.assert_screen_contains("Copy");
-    harness.assert_screen_contains("Ctrl+C");
+    assert!(
+        screen.contains("Ctrl+C") || screen.contains("⌘+C"),
+        "Should show shortcut for Copy"
+    );
 }
 
 /// Test that shortcuts are displayed for filtered commands
@@ -717,9 +725,13 @@ fn test_command_palette_shortcuts_with_filtering() {
     harness.type_text("save").unwrap();
     harness.render().unwrap();
 
-    // Should show filtered results with shortcuts
+    // Should show filtered results with shortcuts (Ctrl+S or ⌘+S on macOS)
     harness.assert_screen_contains("Save File");
-    harness.assert_screen_contains("Ctrl+S");
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Ctrl+S") || screen.contains("⌘+S"),
+        "Should show shortcut for Save File"
+    );
 
     // Save As should also appear with its shortcut
     harness.assert_screen_contains("Save File As");

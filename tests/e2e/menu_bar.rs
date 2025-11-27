@@ -256,7 +256,12 @@ fn test_mouse_click_menu_item_executes_action() {
     // The menu should close after executing
     harness.assert_screen_not_contains("Show Fresh Manual");
     // Help panel shows keybinding information (look for actual keybinding entries)
-    harness.assert_screen_contains("Ctrl+");
+    // On macOS, Ctrl is rendered as ⌘, on other platforms as "Ctrl"
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Ctrl+") || screen.contains("⌘+"),
+        "Help panel should show keybinding entries"
+    );
 }
 
 /// Test clicking on Edit menu's Undo item
