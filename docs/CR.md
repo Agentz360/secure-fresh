@@ -8,6 +8,7 @@
 - ~~src/input/actions.rs:1400+ — repeated collect-and-apply patterns~~ → Extracted `apply_deletions` helper (eliminated 8 duplicate 7-line blocks)
 - ~~src/primitives/highlighter.rs:530 — `highlight_color` ~150 lines~~ → Converted to data-driven lookup with `DEFAULT_HIGHLIGHT_COLORS` and `TYPESCRIPT_HIGHLIGHT_COLORS` arrays
 - ~~src/primitives/ansi.rs:135 — `parse_sgr_params` ~150 lines~~ → Refactored with `STANDARD_COLORS`/`BRIGHT_COLORS` arrays and extracted `parse_extended_color` helper
+- ~~src/app/mod.rs:826 — `open_file` ~300 lines~~ → Extracted `notify_lsp_file_opened` helper (307→157 lines)
 
 ## Large Functions
 - src/view/ui/split_rendering.rs:1135 — `render_view_lines` is ~750 lines; consider breaking into smaller helpers for different rendering concerns.
@@ -17,7 +18,6 @@
 - src/input/keybindings.rs:376 — `Action::from_str` is a ~260-line string-to-enum match. A data-driven table would reduce boilerplate and avoid missing new actions when added to the enum.
 - src/input/commands.rs:89 — `get_all_commands` is a ~540-line literal list in one function. This is brittle to maintain (hard to diff/review additions) and couples command metadata to code; consider a data table or config-driven source with tests for completeness.
 - src/primitives/highlighter.rs:78 — `highlight_config` is ~450 lines of repetitive per-language setup; moving to a data table (language -> queries/config) would reduce duplication and make it harder to forget highlight names when adding languages.
-- src/app/mod.rs:826 — `open_file` is ~300 lines combining path canonicalization, buffer reuse, binary detection, buffer creation, metadata setup, and LSP bootstrapping. The breadth and nesting make it easy to regress (e.g., mixing buffer lifecycle with LSP requests); splitting into focused helpers would improve safety.
 - src/config.rs:566 — `default_menus` is a 420-line literal definition. Consider moving menu data to structured config or a table to make changes easier to diff/test and to avoid bloating code with data.
 - src/view/viewport.rs:521 — `ensure_visible` runs ~230 lines of layout math and clamping in one method; breaking into smaller helpers (e.g., horizontal/vertical logic, scroll computations) would make correctness checks and future changes safer.
 - src/input/keybindings.rs:1196 — `format_action` spans ~200 lines mirroring `from_str`; another sign a data-driven action registry would reduce duplication and risk of drift.

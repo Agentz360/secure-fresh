@@ -218,6 +218,101 @@ impl EditorState {
         })
     }
 
+    /// Handle an Insert event - adjusts markers, buffer, highlighter, cursors, and line numbers
+    fn apply_insert(
+        &mut self,
+        position: usize,
+        text: &str,
+        cursor_id: crate::model::event::CursorId,
+    ) {
+        let newlines_inserted = text.matches('\n').count();
+
+        // CRITICAL: Adjust markers BEFORE modifying buffer
+        self.marker_list.adjust_for_insert(position, text.len());
+
+        // Insert text into buffer
+        self.buffer.insert(position, text);
+
+        // Invalidate highlight cache for edited range
+        if let Some(highlighter) = &mut self.highlighter {
+            highlighter.invalidate_range(position..position + text.len());
+        }
+
+        // Adjust all cursors after the edit
+        self.cursors.adjust_for_edit(position, 0, text.len());
+
+        // Move the cursor that made the edit to the end of the insertion
+        if let Some(cursor) = self.cursors.get_mut(cursor_id) {
+            cursor.position = position + text.len();
+            cursor.clear_selection();
+        }
+
+        // Update primary cursor line number if this was the primary cursor
+        if cursor_id == self.cursors.primary_id() {
+            self.primary_cursor_line_number = match self.primary_cursor_line_number {
+                LineNumber::Absolute(line) => LineNumber::Absolute(line + newlines_inserted),
+                LineNumber::Relative {
+                    line,
+                    from_cached_line,
+                } => LineNumber::Relative {
+                    line: line + newlines_inserted,
+                    from_cached_line,
+                },
+            };
+        }
+
+        self.viewport.mark_needs_sync();
+    }
+
+    /// Handle a Delete event - adjusts markers, buffer, highlighter, cursors, and line numbers
+    fn apply_delete(
+        &mut self,
+        range: &std::ops::Range<usize>,
+        cursor_id: crate::model::event::CursorId,
+        deleted_text: &str,
+    ) {
+        let len = range.len();
+        let newlines_deleted = deleted_text.matches('\n').count();
+
+        // CRITICAL: Adjust markers BEFORE modifying buffer
+        self.marker_list.adjust_for_delete(range.start, len);
+
+        // Delete from buffer
+        self.buffer.delete(range.clone());
+
+        // Invalidate highlight cache for edited range
+        if let Some(highlighter) = &mut self.highlighter {
+            highlighter.invalidate_range(range.clone());
+        }
+
+        // Adjust all cursors after the edit
+        self.cursors.adjust_for_edit(range.start, len, 0);
+
+        // Move the cursor that made the edit to the start of deletion
+        if let Some(cursor) = self.cursors.get_mut(cursor_id) {
+            cursor.position = range.start;
+            cursor.clear_selection();
+        }
+
+        // Update primary cursor line number if this was the primary cursor
+        if cursor_id == self.cursors.primary_id() {
+            self.primary_cursor_line_number = match self.primary_cursor_line_number {
+                LineNumber::Absolute(line) => {
+                    LineNumber::Absolute(line.saturating_sub(newlines_deleted))
+                }
+                LineNumber::Relative {
+                    line,
+                    from_cached_line,
+                } => LineNumber::Relative {
+                    line: line.saturating_sub(newlines_deleted),
+                    from_cached_line,
+                },
+            };
+        }
+
+        self.viewport.mark_needs_sync();
+    }
+
     /// Apply an event to the state - THE ONLY WAY TO MODIFY STATE
     /// This is the heart of the event-driven architecture
     pub fn apply(&mut self, event: &Event) {
@@ -226,98 +321,13 @@ impl EditorState {
                 position,
                 text,
                 cursor_id,
-            } => {
-                // Count newlines in inserted text to update cursor line number
-                let newlines_inserted = text.matches('\n').count();
-
-                // CRITICAL: Adjust markers BEFORE modifying buffer
-                self.marker_list.adjust_for_insert(*position, text.len());
-
-                // Insert text into buffer
-                self.buffer.insert(*position, text);
-
-                // Invalidate highlight cache for edited range
-                if let Some(highlighter) = &mut self.highlighter {
-                    highlighter.invalidate_range(*position..*position + text.len());
-                }
-
-                // Adjust all cursors after the edit
-                self.cursors.adjust_for_edit(*position, 0, text.len());
-
-                // Move the cursor that made the edit to the end of the insertion
-                if let Some(cursor) = self.cursors.get_mut(*cursor_id) {
-                    cursor.position = position + text.len();
-                    cursor.clear_selection();
-                }
-
-                // Update primary cursor line number if this was the primary cursor
-                if *cursor_id == self.cursors.primary_id() {
-                    self.primary_cursor_line_number = match self.primary_cursor_line_number {
-                        LineNumber::Absolute(line) => {
-                            LineNumber::Absolute(line + newlines_inserted)
-                        }
-                        LineNumber::Relative {
-                            line,
-                            from_cached_line,
-                        } => LineNumber::Relative {
-                            line: line + newlines_inserted,
-                            from_cached_line,
-                        },
-                    };
-                }
-
-                // Defer viewport sync to rendering time for better performance
-                self.viewport.mark_needs_sync();
-            }
+            } => self.apply_insert(*position, text, *cursor_id),
 
             Event::Delete {
                 range,
                 cursor_id,
                 deleted_text,
-            } => {
-                let len = range.len();
-                // Count newlines in deleted text to update cursor line number
-                let newlines_deleted = deleted_text.matches('\n').count();
-
-                // CRITICAL: Adjust markers BEFORE modifying buffer
-                self.marker_list.adjust_for_delete(range.start, len);
-
-                // Delete from buffer
-                self.buffer.delete(range.clone());
-
-                // Invalidate highlight cache for edited range
-                if let Some(highlighter) = &mut self.highlighter {
-                    highlighter.invalidate_range(range.clone());
-                }
-
-                // Adjust all cursors after the edit
-                self.cursors.adjust_for_edit(range.start, len, 0);
-
-                // Move the cursor that made the edit to the start of deletion
-                if let Some(cursor) = self.cursors.get_mut(*cursor_id) {
-                    cursor.position = range.start;
-                    cursor.clear_selection();
-                }
-
-                // Update primary cursor line number if this was the primary cursor
-                if *cursor_id == self.cursors.primary_id() {
-                    self.primary_cursor_line_number = match self.primary_cursor_line_number {
-                        LineNumber::Absolute(line) => {
-                            LineNumber::Absolute(line.saturating_sub(newlines_deleted))
-                        }
-                        LineNumber::Relative {
-                            line,
-                            from_cached_line,
-                        } => LineNumber::Relative {
-                            line: line.saturating_sub(newlines_deleted),
-                            from_cached_line,
-                        },
-                    };
-                }
-
-                // Defer viewport sync to rendering time for better performance
-                self.viewport.mark_needs_sync();
-            }
+            } => self.apply_delete(range, *cursor_id, deleted_text),
 
             Event::MoveCursor {
                 cursor_id,
