@@ -78,6 +78,271 @@ interface LayoutHints {
   column_guides?: number[] | null;
 }
 
+// =============================================================================
+// Block-based parser for hanging indent support
+// =============================================================================
+
+interface ParsedBlock {
+  type: 'paragraph' | 'list-item' | 'ordered-list' | 'checkbox' | 'blockquote' |
+        'heading' | 'code-fence' | 'code-content' | 'hr' | 'empty' | 'image';
+  startByte: number;           // First byte of the line
+  endByte: number;             // Byte after last char (before newline)
+  leadingIndent: number;       // Spaces before marker/content
+  marker: string;              // "- ", "1. ", "> ", "## ", etc.
+  markerStartByte: number;     // Where marker begins
+  contentStartByte: number;    // Where content begins (after marker)
+  content: string;             // The actual text content (after marker)
+  hangingIndent: number;       // Continuation indent for wrapped lines
+  forceHardBreak: boolean;     // Should this block end with hard newline?
+  headingLevel?: number;       // For headings (1-6)
+  checked?: boolean;           // For checkboxes
+}
+
+/**
+ * Parse a markdown document into blocks with structure info for wrapping
+ */
+function parseMarkdownBlocks(text: string): ParsedBlock[] {
+  const blocks: ParsedBlock[] = [];
+  const lines = text.split('\n');
+  let byteOffset = 0;
+  let inCodeBlock = false;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineStart = byteOffset;
+    const lineEnd = byteOffset + line.length;
+
+    // Code block detection
+    const trimmed = line.trim();
+    if (trimmed.startsWith('```')) {
+      inCodeBlock = !inCodeBlock;
+      blocks.push({
+        type: 'code-fence',
+        startByte: lineStart,
+        endByte: lineEnd,
+        leadingIndent: line.length - line.trimStart().length,
+        marker: '',
+        markerStartByte: lineStart,
+        contentStartByte: lineStart,
+        content: line,
+        hangingIndent: 0,
+        forceHardBreak: true,
+      });
+      byteOffset = lineEnd + 1;
+      continue;
+    }
+
+    if (inCodeBlock) {
+      blocks.push({
+        type: 'code-content',
+        startByte: lineStart,
+        endByte: lineEnd,
+        leadingIndent: 0,
+        marker: '',
+        markerStartByte: lineStart,
+        contentStartByte: lineStart,
+        content: line,
+        hangingIndent: 0,
+        forceHardBreak: true,
+      });
+      byteOffset = lineEnd + 1;
+      continue;
+    }
+
+    // Empty line
+    if (trimmed.length === 0) {
+      blocks.push({
+        type: 'empty',
+        startByte: lineStart,
+        endByte: lineEnd,
+        leadingIndent: 0,
+        marker: '',
+        markerStartByte: lineStart,
+        contentStartByte: lineStart,
+        content: '',
+        hangingIndent: 0,
+        forceHardBreak: true,
+      });
+      byteOffset = lineEnd + 1;
+      continue;
+    }
+
+    // Headers: # Heading
+    const headerMatch = line.match(/^(\s*)(#{1,6})\s+(.*)$/);
+    if (headerMatch) {
+      const leadingIndent = headerMatch[1].length;
+      const marker = headerMatch[2] + ' ';
+      const content = headerMatch[3];
+      blocks.push({
+        type: 'heading',
+        startByte: lineStart,
+        endByte: lineEnd,
+        leadingIndent,
+        marker,
+        markerStartByte: lineStart + leadingIndent,
+        contentStartByte: lineStart + leadingIndent + marker.length,
+        content,
+        hangingIndent: 0,
+        forceHardBreak: true,
+        headingLevel: headerMatch[2].length,
+      });
+      byteOffset = lineEnd + 1;
+      continue;
+    }
+
+    // Horizontal rule
+    if (trimmed.match(/^(-{3,}|\*{3,}|_{3,})$/)) {
+      blocks.push({
+        type: 'hr',
+        startByte: lineStart,
+        endByte: lineEnd,
+        leadingIndent: line.length - line.trimStart().length,
+        marker: '',
+        markerStartByte: lineStart,
+        contentStartByte: lineStart,
+        content: line,
+        hangingIndent: 0,
+        forceHardBreak: true,
+      });
+      byteOffset = lineEnd + 1;
+      continue;
+    }
+
+    // Checkbox: - [ ] or - [x]
+    const checkboxMatch = line.match(/^(\s*)([-*+])\s+(\[[ x]\])\s+(.*)$/);
+    if (checkboxMatch) {
+      const leadingIndent = checkboxMatch[1].length;
+      const bullet = checkboxMatch[2];
+      const checkbox = checkboxMatch[3];
+      const marker = bullet + ' ' + checkbox + ' ';
+      const content = checkboxMatch[4];
+      const checked = checkbox === '[x]';
+      blocks.push({
+        type: 'checkbox',
+        startByte: lineStart,
+        endByte: lineEnd,
+        leadingIndent,
+        marker,
+        markerStartByte: lineStart + leadingIndent,
+        contentStartByte: lineStart + leadingIndent + marker.length,
+        content,
+        hangingIndent: leadingIndent + marker.length,
+        forceHardBreak: true,
+        checked,
+      });
+      byteOffset = lineEnd + 1;
+      continue;
+    }
+
+    // Unordered list: - item or * item or + item
+    const bulletMatch = line.match(/^(\s*)([-*+])\s+(.*)$/);
+    if (bulletMatch) {
+      const leadingIndent = bulletMatch[1].length;
+      const bullet = bulletMatch[2];
+      const marker = bullet + ' ';
+      const content = bulletMatch[3];
+      blocks.push({
+        type: 'list-item',
+        startByte: lineStart,
+        endByte: lineEnd,
+        leadingIndent,
+        marker,
+        markerStartByte: lineStart + leadingIndent,
+        contentStartByte: lineStart + leadingIndent + marker.length,
+        content,
+        hangingIndent: leadingIndent + marker.length,
+        forceHardBreak: true,
+      });
+      byteOffset = lineEnd + 1;
+      continue;
+    }
+
+    // Ordered list: 1. item
+    const orderedMatch = line.match(/^(\s*)(\d+\.)\s+(.*)$/);
+    if (orderedMatch) {
+      const leadingIndent = orderedMatch[1].length;
+      const number = orderedMatch[2];
+      const marker = number + ' ';
+      const content = orderedMatch[3];
+      blocks.push({
+        type: 'ordered-list',
+        startByte: lineStart,
+        endByte: lineEnd,
+        leadingIndent,
+        marker,
+        markerStartByte: lineStart + leadingIndent,
+        contentStartByte: lineStart + leadingIndent + marker.length,
+        content,
+        hangingIndent: leadingIndent + marker.length,
+        forceHardBreak: true,
+      });
+      byteOffset = lineEnd + 1;
+      continue;
+    }
+
+    // Block quote: > text
+    const quoteMatch = line.match(/^(\s*)(>)\s*(.*)$/);
+    if (quoteMatch) {
+      const leadingIndent = quoteMatch[1].length;
+      const marker = '> ';
+      const content = quoteMatch[3];
+      blocks.push({
+        type: 'blockquote',
+        startByte: lineStart,
+        endByte: lineEnd,
+        leadingIndent,
+        marker,
+        markerStartByte: lineStart + leadingIndent,
+        contentStartByte: lineStart + leadingIndent + 2, // "> " is 2 chars
+        content,
+        hangingIndent: leadingIndent + 2,
+        forceHardBreak: true,
+      });
+      byteOffset = lineEnd + 1;
+      continue;
+    }
+
+    // Image: ![alt](url)
+    if (trimmed.match(/^!\[.*\]\(.*\)$/)) {
+      blocks.push({
+        type: 'image',
+        startByte: lineStart,
+        endByte: lineEnd,
+        leadingIndent: line.length - line.trimStart().length,
+        marker: '',
+        markerStartByte: lineStart,
+        contentStartByte: lineStart,
+        content: line,
+        hangingIndent: 0,
+        forceHardBreak: true,
+      });
+      byteOffset = lineEnd + 1;
+      continue;
+    }
+
+    // Hard break (trailing spaces or backslash)
+    const hasHardBreak = line.endsWith('  ') || line.endsWith('\\');
+
+    // Default: paragraph
+    const leadingIndent = line.length - line.trimStart().length;
+    blocks.push({
+      type: 'paragraph',
+      startByte: lineStart,
+      endByte: lineEnd,
+      leadingIndent,
+      marker: '',
+      markerStartByte: lineStart + leadingIndent,
+      contentStartByte: lineStart + leadingIndent,
+      content: trimmed,
+      hangingIndent: leadingIndent,  // Paragraph continuation aligns with first line
+      forceHardBreak: hasHardBreak,
+    });
+    byteOffset = lineEnd + 1;
+  }
+
+  return blocks;
+}
+
 // Colors for styling (RGB tuples)
 const COLORS = {
   header: [100, 149, 237] as [number, number, number], // Cornflower blue
@@ -741,157 +1006,23 @@ function highlightLine(
   }
 }
 
-// Clear highlights for a buffer
-function clearHighlights(bufferId: number): void {
-  editor.clearNamespace(bufferId, "md");
-}
-
-// Build view transform with soft breaks
-function buildViewTransform(
-  bufferId: number,
-  splitId: number | null,
-  text: string,
-  viewportStart: number,
-  viewportEnd: number,
-  tokens: Token[]
-): void {
-  const viewTokens: ViewTokenWire[] = [];
-
-  // Get the relevant portion of text
-  const viewportText = text.substring(viewportStart, viewportEnd);
-
-  // Track which lines should have hard breaks
-  let lineStart = viewportStart;
-  let i = 0;
-
-  while (i < viewportText.length) {
-    const absOffset = viewportStart + i;
-    const ch = viewportText[i];
-
-    if (ch === '\n') {
-      // Check if this line should have a hard break
-      const hasHardBreak = tokens.some(t =>
-        (t.type === TokenType.HardBreak ||
-         t.type === TokenType.Header1 ||
-         t.type === TokenType.Header2 ||
-         t.type === TokenType.Header3 ||
-         t.type === TokenType.Header4 ||
-         t.type === TokenType.Header5 ||
-         t.type === TokenType.Header6 ||
-         t.type === TokenType.ListItem ||
-         t.type === TokenType.OrderedListItem ||
-         t.type === TokenType.Checkbox ||
-         t.type === TokenType.BlockQuote ||
-         t.type === TokenType.CodeBlockFence ||
-         t.type === TokenType.CodeBlockContent ||
-         t.type === TokenType.HorizontalRule ||
-         t.type === TokenType.Image) &&
-        t.start <= lineStart && t.end >= lineStart
-      );
-
-      // Empty lines are also hard breaks
-      const lineContent = viewportText.substring(lineStart - viewportStart, i).trim();
-      const isEmptyLine = lineContent.length === 0;
-
-      if (hasHardBreak || isEmptyLine) {
-        // Hard break - keep newline
-        viewTokens.push({
-          source_offset: absOffset,
-          kind: "Newline",
-        });
-      } else {
-        // Soft break - replace with space
-        viewTokens.push({
-          source_offset: absOffset,
-          kind: "Space",
-        });
-      }
-
-      lineStart = absOffset + 1;
-      i++;
-    } else if (ch === ' ') {
-      viewTokens.push({
-        source_offset: absOffset,
-        kind: "Space",
-      });
-      i++;
-    } else {
-      // Accumulate consecutive text characters
-      let textStart = i;
-      let textContent = '';
-      while (i < viewportText.length) {
-        const c = viewportText[i];
-        if (c === '\n' || c === ' ') {
-          break;
-        }
-        textContent += c;
-        i++;
-      }
-
-      viewTokens.push({
-        source_offset: viewportStart + textStart,
-        kind: { Text: textContent },
-      });
-    }
-  }
-
-  // Submit the view transform with layout hints
-  const layoutHints: LayoutHints = {
-    compose_width: config.composeWidth,
-    column_guides: null,
-  };
-
-  editor.debug(`buildViewTransform: submitting ${viewTokens.length} tokens, compose_width=${config.composeWidth}`);
-  if (viewTokens.length > 0 && viewTokens.length < 10) {
-    editor.debug(`buildViewTransform: first tokens: ${JSON.stringify(viewTokens.slice(0, 5))}`);
-  }
-
-  const success = editor.submitViewTransform(
-    bufferId,
-    splitId,
-    viewportStart,
-    viewportEnd,
-    viewTokens,
-    layoutHints
-  );
-
-  editor.debug(`buildViewTransform: submit result = ${success}`);
-}
-
 // Check if a file is a markdown file
 function isMarkdownFile(path: string): boolean {
   return path.endsWith('.md') || path.endsWith('.markdown');
 }
 
-// Process a buffer in compose mode (highlighting + view transform)
-function processBuffer(bufferId: number, splitId?: number): void {
+// Process a buffer in compose mode - just enables compose mode
+// The actual transform happens via view_transform_request hook
+function processBuffer(bufferId: number, _splitId?: number): void {
   if (!composeBuffers.has(bufferId)) return;
 
   const info = editor.getBufferInfo(bufferId);
   if (!info || !isMarkdownFile(info.path)) return;
 
-  editor.debug(`processBuffer: processing ${info.path}, buffer_id=${bufferId}`);
+  editor.debug(`processBuffer: enabling compose mode for ${info.path}, buffer_id=${bufferId}`);
 
-  const bufferLength = editor.getBufferLength(bufferId);
-  const text = editor.getBufferText(bufferId, 0, bufferLength);
-  const parser = new MarkdownParser(text);
-  const tokens = parser.parse();
-
-  // Apply styling with overlays
-  applyMarkdownStyling(bufferId, tokens);
-
-  // Get viewport info and build view transform
-  const viewport = editor.getViewport();
-  if (!viewport) {
-    const viewportStart = 0;
-    const viewportEnd = text.length;
-    buildViewTransform(bufferId, splitId || null, text, viewportStart, viewportEnd, tokens);
-    return;
-  }
-
-  const viewportStart = Math.max(0, viewport.top_byte - 500);
-  const viewportEnd = Math.min(text.length, viewport.top_byte + (viewport.height * 200));
-  buildViewTransform(bufferId, splitId || null, text, viewportStart, viewportEnd, tokens);
+  // Trigger a refresh to get the view_transform_request hook called
+  editor.refreshLines(bufferId);
 }
 
 // Enable highlighting for a markdown buffer (auto on file open)
@@ -965,6 +1096,152 @@ globalThis.markdownToggleCompose = function(): void {
   }
 };
 
+/**
+ * Extract text content from incoming tokens
+ * Reconstructs the source text from ViewTokenWire tokens
+ */
+function extractTextFromTokens(tokens: ViewTokenWire[]): string {
+  let text = '';
+  for (const token of tokens) {
+    const kind = token.kind;
+    if (kind === "Newline") {
+      text += '\n';
+    } else if (kind === "Space") {
+      text += ' ';
+    } else if (kind === "Break") {
+      // Soft break, ignore for text extraction
+    } else if (typeof kind === 'object' && 'Text' in kind) {
+      text += kind.Text;
+    }
+  }
+  return text;
+}
+
+/**
+ * Transform tokens for markdown compose mode with hanging indents
+ *
+ * Strategy: Parse the source text to identify block structure, then walk through
+ * incoming tokens and emit transformed tokens with soft wraps and hanging indents.
+ */
+function transformMarkdownTokens(
+  inputTokens: ViewTokenWire[],
+  width: number,
+  viewportStart: number
+): ViewTokenWire[] {
+  // First, extract text to understand block structure
+  const text = extractTextFromTokens(inputTokens);
+  const blocks = parseMarkdownBlocks(text);
+
+  // Build a map of source_offset -> block info for quick lookup
+  // Block byte positions are 0-based within extracted text
+  // Source offsets are actual buffer positions (viewportStart + position_in_text)
+  const offsetToBlock = new Map<number, ParsedBlock>();
+  for (const block of blocks) {
+    // Map byte positions that fall within this block to the block
+    // contentStartByte and endByte are positions within extracted text (0-based)
+    // source_offset = viewportStart + position_in_extracted_text
+    for (let textPos = block.startByte; textPos < block.endByte; textPos++) {
+      const sourceOffset = viewportStart + textPos;
+      offsetToBlock.set(sourceOffset, block);
+    }
+  }
+
+  const outputTokens: ViewTokenWire[] = [];
+  let column = 0;  // Current column position
+  let currentBlock: ParsedBlock | null = null;
+  let lineStarted = false;  // Have we output anything on current line?
+
+  for (let i = 0; i < inputTokens.length; i++) {
+    const token = inputTokens[i];
+    const kind = token.kind;
+    const sourceOffset = token.source_offset;
+
+    // Track which block we're in based on source offset
+    if (sourceOffset !== null) {
+      const block = offsetToBlock.get(sourceOffset);
+      if (block) {
+        currentBlock = block;
+      }
+    }
+
+    // Get hanging indent for current block (default 0)
+    const hangingIndent = currentBlock?.hangingIndent ?? 0;
+
+    // Handle different token types
+    if (kind === "Newline") {
+      // Real newlines pass through - they end a block
+      outputTokens.push(token);
+      column = 0;
+      lineStarted = false;
+      currentBlock = null;  // Reset at line boundary
+    } else if (kind === "Space") {
+      // Space handling - potentially wrap before space + next word
+      if (!lineStarted) {
+        // Leading space on a line - preserve it
+        outputTokens.push(token);
+        column++;
+        lineStarted = true;
+      } else {
+        // Mid-line space - look ahead to see if we need to wrap
+        // Find next non-space token to check word length
+        let nextWordLen = 0;
+        for (let j = i + 1; j < inputTokens.length; j++) {
+          const nextKind = inputTokens[j].kind;
+          if (nextKind === "Space" || nextKind === "Newline" || nextKind === "Break") {
+            break;
+          }
+          if (typeof nextKind === 'object' && 'Text' in nextKind) {
+            nextWordLen += nextKind.Text.length;
+          }
+        }
+
+        // Check if space + next word would exceed width
+        if (column + 1 + nextWordLen > width && nextWordLen > 0) {
+          // Wrap: emit soft newline + hanging indent instead of space
+          outputTokens.push({ source_offset: null, kind: "Newline" });
+          for (let j = 0; j < hangingIndent; j++) {
+            outputTokens.push({ source_offset: null, kind: "Space" });
+          }
+          column = hangingIndent;
+          // Don't emit the space - we wrapped instead
+        } else {
+          // No wrap needed - emit the space normally
+          outputTokens.push(token);
+          column++;
+        }
+      }
+    } else if (kind === "Break") {
+      // Existing soft breaks - we're replacing wrapping logic, so skip these
+      // and handle wrapping ourselves
+    } else if (typeof kind === 'object' && 'Text' in kind) {
+      const text = kind.Text;
+
+      if (!lineStarted) {
+        lineStarted = true;
+      }
+
+      // Check if this word alone would exceed width (need to wrap)
+      if (column > hangingIndent && column + text.length > width) {
+        // Wrap before this word
+        outputTokens.push({ source_offset: null, kind: "Newline" });
+        for (let j = 0; j < hangingIndent; j++) {
+          outputTokens.push({ source_offset: null, kind: "Space" });
+        }
+        column = hangingIndent;
+      }
+
+      // Emit the text token
+      outputTokens.push(token);
+      column += text.length;
+    } else {
+      // Unknown token type - pass through
+      outputTokens.push(token);
+    }
+  }
+
+  return outputTokens;
+}
+
 // Handle view transform request - receives tokens from core for transformation
 // Only applies transforms when in compose mode (not just highlighting)
 globalThis.onMarkdownViewTransform = function(data: {
@@ -982,36 +1259,26 @@ globalThis.onMarkdownViewTransform = function(data: {
 
   editor.debug(`onMarkdownViewTransform: buffer=${data.buffer_id}, split=${data.split_id}, tokens=${data.tokens.length}`);
 
-  // Reconstruct text from tokens for parsing (we need text for markdown parsing)
-  let reconstructedText = '';
-  for (const token of data.tokens) {
-    if (typeof token.kind === 'object' && 'Text' in token.kind) {
-      reconstructedText += token.kind.Text;
-    } else if (token.kind === 'Newline') {
-      reconstructedText += '\n';
-    } else if (token.kind === 'Space') {
-      reconstructedText += ' ';
-    }
-  }
+  // Transform the incoming tokens with markdown-aware wrapping
+  const transformedTokens = transformMarkdownTokens(
+    data.tokens,
+    config.composeWidth,
+    data.viewport_start
+  );
 
-  // Parse markdown from reconstructed text
-  const parser = new MarkdownParser(reconstructedText);
+  // Extract text for overlay styling
+  const text = extractTextFromTokens(data.tokens);
+  const parser = new MarkdownParser(text);
   const mdTokens = parser.parse();
 
-  // Apply overlays for styling (this still works via the existing overlay API)
-  // Offset the markdown tokens by viewport_start for correct positioning
-  const offsetTokens = mdTokens.map(t => ({
-    ...t,
-    start: t.start + data.viewport_start,
-    end: t.end + data.viewport_start,
-  }));
-  applyMarkdownStyling(data.buffer_id, offsetTokens);
+  // Adjust token offsets for viewport
+  for (const token of mdTokens) {
+    token.start += data.viewport_start;
+    token.end += data.viewport_start;
+  }
+  applyMarkdownStyling(data.buffer_id, mdTokens);
 
-  // Transform the view tokens based on markdown structure
-  // Convert newlines to spaces for soft breaks (paragraphs)
-  const transformedTokens = transformTokensForMarkdown(data.tokens, mdTokens, data.viewport_start);
-
-  // Submit the transformed tokens
+  // Submit the transformed tokens - keep compose_width for margins/centering
   const layoutHints: LayoutHints = {
     compose_width: config.composeWidth,
     column_guides: null,
@@ -1026,74 +1293,6 @@ globalThis.onMarkdownViewTransform = function(data: {
     layoutHints
   );
 };
-
-// Transform view tokens based on markdown structure
-function transformTokensForMarkdown(
-  tokens: ViewTokenWire[],
-  mdTokens: Token[],
-  viewportStart: number
-): ViewTokenWire[] {
-  const result: ViewTokenWire[] = [];
-
-  // Build a set of positions that should have hard breaks
-  const hardBreakPositions = new Set<number>();
-  for (const t of mdTokens) {
-    if (t.type === TokenType.HardBreak ||
-        t.type === TokenType.Header1 ||
-        t.type === TokenType.Header2 ||
-        t.type === TokenType.Header3 ||
-        t.type === TokenType.Header4 ||
-        t.type === TokenType.Header5 ||
-        t.type === TokenType.Header6 ||
-        t.type === TokenType.ListItem ||
-        t.type === TokenType.OrderedListItem ||
-        t.type === TokenType.Checkbox ||
-        t.type === TokenType.CodeBlockFence ||
-        t.type === TokenType.CodeBlockContent ||
-        t.type === TokenType.BlockQuote ||
-        t.type === TokenType.HorizontalRule ||
-        t.type === TokenType.Image) {
-      // Mark the end of these elements as hard breaks
-      hardBreakPositions.add(t.end + viewportStart);
-    }
-  }
-
-  // Also mark empty lines (two consecutive newlines) as hard breaks
-  let lastWasNewline = false;
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
-    if (token.kind === 'Newline') {
-      if (lastWasNewline && token.source_offset !== null) {
-        hardBreakPositions.add(token.source_offset);
-      }
-      lastWasNewline = true;
-    } else {
-      lastWasNewline = false;
-    }
-  }
-
-  // Transform tokens
-  for (const token of tokens) {
-    if (token.kind === 'Newline') {
-      const pos = token.source_offset;
-      if (pos !== null && hardBreakPositions.has(pos)) {
-        // Keep as newline (hard break)
-        result.push(token);
-      } else {
-        // Convert to space (soft break)
-        result.push({
-          source_offset: token.source_offset,
-          kind: 'Space',
-        });
-      }
-    } else {
-      // Keep other tokens as-is
-      result.push(token);
-    }
-  }
-
-  return result;
-}
 
 // Handle render_start - enable highlighting for markdown files
 globalThis.onMarkdownRenderStart = function(data: { buffer_id: number }): void {
@@ -1193,12 +1392,53 @@ editor.on("buffer_activated", "onMarkdownBufferActivated");
 editor.on("after-insert", "onMarkdownAfterInsert");
 editor.on("after-delete", "onMarkdownAfterDelete");
 editor.on("buffer_closed", "onMarkdownBufferClosed");
+editor.on("prompt_confirmed", "onMarkdownComposeWidthConfirmed");
 
-// Register command
+// Set compose width command - starts interactive prompt
+globalThis.markdownSetComposeWidth = function(): void {
+  editor.startPrompt("Compose width: ", "markdown-compose-width");
+  editor.setPromptSuggestions([
+    { text: "60", description: "Narrow - good for side panels" },
+    { text: "72", description: "Classic - traditional terminal width" },
+    { text: "80", description: "Standard - default width" },
+    { text: "100", description: "Wide - more content per line" },
+  ]);
+};
+
+// Handle compose width prompt confirmation
+globalThis.onMarkdownComposeWidthConfirmed = function(args: {
+  prompt_type: string;
+  text: string;
+}): void {
+  if (args.prompt_type !== "markdown-compose-width") return;
+
+  const width = parseInt(args.text, 10);
+  if (!isNaN(width) && width > 20 && width < 300) {
+    config.composeWidth = width;
+    editor.setStatus(`Markdown compose width set to ${width}`);
+
+    // Re-process active buffer if in compose mode
+    const bufferId = editor.getActiveBufferId();
+    if (composeBuffers.has(bufferId)) {
+      editor.refreshLines(bufferId);  // Trigger re-transform
+    }
+  } else {
+    editor.setStatus("Invalid width - must be between 20 and 300");
+  }
+};
+
+// Register commands
 editor.registerCommand(
   "Markdown: Toggle Compose",
   "Toggle beautiful Markdown rendering (soft breaks, syntax highlighting)",
   "markdownToggleCompose",
+  "normal"
+);
+
+editor.registerCommand(
+  "Markdown: Set Compose Width",
+  "Set the width for compose mode wrapping and margins",
+  "markdownSetComposeWidth",
   "normal"
 );
 
