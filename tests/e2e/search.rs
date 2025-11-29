@@ -428,7 +428,7 @@ fn test_interactive_replace_wrap_around() {
     // Should be at first match after position 25, which is at position 29 ("foo again")
     let pos1 = harness.cursor_position();
     assert_eq!(pos1, 29, "Should be at third 'foo' (position 29)");
-    harness.assert_screen_contains("Replace? (y/n/!/q)");
+    harness.assert_screen_contains("Replace? (y)es (n)o (a)ll (c)ancel");
 
     // Press 'y' to replace this occurrence
     harness.type_text("y").unwrap();
