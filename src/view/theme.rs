@@ -650,15 +650,15 @@ impl Theme {
             diagnostic_hint_fg: Color::DarkGray,
             diagnostic_hint_bg: Color::Rgb(240, 240, 240),
 
-            // Syntax highlighting colors (VSCode Light+ palette)
-            syntax_keyword: Color::Rgb(0, 0, 255),
-            syntax_string: Color::Rgb(163, 21, 21),
-            syntax_comment: Color::Rgb(0, 128, 0),
-            syntax_function: Color::Rgb(121, 94, 38),
-            syntax_type: Color::Rgb(38, 127, 153),
-            syntax_variable: Color::Rgb(0, 0, 0),
-            syntax_constant: Color::Rgb(0, 112, 193),
-            syntax_operator: Color::Rgb(0, 0, 0),
+            // Syntax highlighting colors (improved light theme palette)
+            syntax_keyword: Color::Rgb(175, 0, 219),   // Purple keywords
+            syntax_string: Color::Rgb(163, 21, 21),    // Dark red strings
+            syntax_comment: Color::Rgb(0, 128, 0),     // Green comments
+            syntax_function: Color::Rgb(121, 94, 38),  // Brown functions
+            syntax_type: Color::Rgb(0, 128, 128),      // Teal types
+            syntax_variable: Color::Rgb(0, 16, 128),   // Dark blue variables
+            syntax_constant: Color::Rgb(0, 112, 193),  // Blue constants
+            syntax_operator: Color::Rgb(0, 0, 0),      // Black operators
         }
     }
 
@@ -882,15 +882,15 @@ impl Theme {
             diagnostic_hint_fg: Color::Rgb(170, 170, 170),
             diagnostic_hint_bg: Color::Rgb(0, 0, 128),
 
-            // Syntax highlighting colors (Turbo Pascal style)
-            syntax_keyword: Color::Rgb(255, 255, 255), // White keywords
-            syntax_string: Color::Rgb(85, 255, 255),   // Cyan strings
-            syntax_comment: Color::Rgb(170, 170, 170), // Gray comments
-            syntax_function: Color::Rgb(255, 255, 85), // Yellow functions
-            syntax_type: Color::Rgb(85, 255, 85),      // Green types
+            // Syntax highlighting colors (Turbo Pascal / Borland style)
+            syntax_keyword: Color::Rgb(255, 255, 255), // Bright white keywords
+            syntax_string: Color::Rgb(0, 255, 255),    // Bright cyan strings
+            syntax_comment: Color::Rgb(128, 128, 128), // Dark gray comments
+            syntax_function: Color::Rgb(255, 255, 0),  // Bright yellow functions
+            syntax_type: Color::Rgb(0, 255, 0),        // Bright green types
             syntax_variable: Color::Rgb(255, 255, 85), // Yellow variables
-            syntax_constant: Color::Rgb(255, 85, 255), // Magenta constants
-            syntax_operator: Color::Rgb(255, 255, 255), // White operators
+            syntax_constant: Color::Rgb(255, 0, 255),  // Bright magenta constants
+            syntax_operator: Color::Rgb(170, 170, 170), // Light gray operators
         }
     }
 }
