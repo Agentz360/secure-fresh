@@ -1121,8 +1121,11 @@ impl Editor {
         }
 
         // Create new help buffer with "special" mode (has 'q' to close)
-        let buffer_id =
-            self.create_virtual_buffer(help::HELP_MANUAL_BUFFER_NAME.to_string(), "special".to_string(), true);
+        let buffer_id = self.create_virtual_buffer(
+            help::HELP_MANUAL_BUFFER_NAME.to_string(),
+            "special".to_string(),
+            true,
+        );
 
         // Set the content
         if let Some(state) = self.buffers.get_mut(&buffer_id) {
@@ -2658,7 +2661,11 @@ impl Editor {
         let file_size = std::fs::metadata(path).ok().map(|m| m.len()).unwrap_or(0);
         if file_size > self.config.editor.large_file_threshold_bytes {
             let reason = format!("File too large ({} bytes)", file_size);
-            tracing::warn!("Skipping LSP for large file: {} ({})", path.display(), reason);
+            tracing::warn!(
+                "Skipping LSP for large file: {} ({})",
+                path.display(),
+                reason
+            );
             metadata.disable_lsp(reason);
             return;
         }
@@ -2690,7 +2697,11 @@ impl Editor {
         };
 
         tracing::debug!("LSP manager available for file: {}", path.display());
-        tracing::debug!("Detected language: {} for file: {}", language, path.display());
+        tracing::debug!(
+            "Detected language: {} for file: {}",
+            language,
+            path.display()
+        );
         tracing::debug!("Using URI from metadata: {}", uri.as_str());
         tracing::debug!("Attempting to spawn LSP client for language: {}", language);
 
@@ -5294,9 +5305,10 @@ impl Editor {
 
         // Create events for all edits
         for edit in edits {
-            let state = self.buffers.get_mut(&buffer_id).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::NotFound, "Buffer not found")
-            })?;
+            let state = self
+                .buffers
+                .get_mut(&buffer_id)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Buffer not found"))?;
 
             // Convert LSP range to byte positions
             let start_line = edit.range.start.line as usize;
@@ -5337,9 +5349,10 @@ impl Editor {
 
             // Insert new text
             if !edit.new_text.is_empty() {
-                let state = self.buffers.get(&buffer_id).ok_or_else(|| {
-                    io::Error::new(io::ErrorKind::NotFound, "Buffer not found")
-                })?;
+                let state = self
+                    .buffers
+                    .get(&buffer_id)
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Buffer not found"))?;
                 let cursor_id = state.cursors.primary_id();
                 let insert_event = Event::Insert {
                     position: start_pos,

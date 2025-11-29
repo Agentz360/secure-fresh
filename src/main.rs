@@ -2,8 +2,8 @@ use clap::Parser;
 use crossterm::{
     cursor::SetCursorStyle,
     event::{
-        poll as event_poll, read as event_read, Event as CrosstermEvent, KeyEvent,
-        KeyEventKind, KeyboardEnhancementFlags, MouseEvent, PopKeyboardEnhancementFlags,
+        poll as event_poll, read as event_read, Event as CrosstermEvent, KeyEvent, KeyEventKind,
+        KeyboardEnhancementFlags, MouseEvent, PopKeyboardEnhancementFlags,
         PushKeyboardEnhancementFlags,
     },
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},

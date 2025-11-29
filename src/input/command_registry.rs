@@ -594,9 +594,11 @@ mod tests {
                 name
             );
             assert_eq!(
-                cmd.unwrap().action, expected_action,
+                cmd.unwrap().action,
+                expected_action,
                 "Command '{}' should have action {:?}",
-                name, expected_action
+                name,
+                expected_action
             );
         }
     }

@@ -578,13 +578,13 @@ impl Theme {
 
             status_bar_fg: Color::Rgb(60, 60, 60),
             status_bar_bg: Color::Rgb(240, 240, 240),
-            prompt_fg: Color::Rgb(80, 80, 80),        // Light gray text
-            prompt_bg: Color::Rgb(255, 255, 255),     // White background
+            prompt_fg: Color::Rgb(80, 80, 80),    // Light gray text
+            prompt_bg: Color::Rgb(255, 255, 255), // White background
             prompt_selection_fg: Color::Black,
             prompt_selection_bg: Color::Rgb(173, 214, 255), // Light blue selection
 
             popup_border_fg: Color::Rgb(180, 180, 180),
-            popup_bg: Color::Rgb(232, 238, 245),      // Light blue-gray
+            popup_bg: Color::Rgb(232, 238, 245), // Light blue-gray
             popup_selection_bg: Color::Rgb(209, 226, 243),
             popup_text_fg: Color::Rgb(30, 30, 30),
 
@@ -774,9 +774,9 @@ impl Theme {
             name: "nostalgia".to_string(),
 
             // Editor colors - classic blue background with yellow/white text
-            editor_bg: Color::Rgb(0, 0, 170),   // Classic DOS blue
+            editor_bg: Color::Rgb(0, 0, 170),    // Classic DOS blue
             editor_fg: Color::Rgb(255, 255, 85), // Bright yellow
-            cursor: Color::Rgb(255, 255, 255),  // White block cursor
+            cursor: Color::Rgb(255, 255, 255),   // White block cursor
             inactive_cursor: Color::Rgb(170, 170, 170),
             selection_bg: Color::Rgb(170, 170, 170), // Gray selection
             current_line_bg: Color::Rgb(0, 0, 128),  // Slightly darker blue

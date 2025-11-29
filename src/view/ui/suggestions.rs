@@ -162,7 +162,9 @@ impl SuggestionsRenderer {
                         .fg(theme.help_key_fg)
                         .bg(theme.suggestion_selected_bg)
                 } else {
-                    Style::default().fg(theme.line_number_fg).bg(theme.suggestion_bg)
+                    Style::default()
+                        .fg(theme.line_number_fg)
+                        .bg(theme.suggestion_bg)
                 };
 
                 if let Some(keybinding) = &suggestion.keybinding {

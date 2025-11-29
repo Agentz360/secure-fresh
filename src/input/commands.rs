@@ -488,7 +488,8 @@ pub fn get_all_commands() -> Vec<Command> {
         },
         Command {
             name: "Smart Home".to_string(),
-            description: "Move to first non-whitespace character, or line start if already there".to_string(),
+            description: "Move to first non-whitespace character, or line start if already there"
+                .to_string(),
             action: Action::SmartHome,
             contexts: vec![KeyContext::Normal],
         },

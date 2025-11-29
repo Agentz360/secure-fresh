@@ -193,8 +193,7 @@ fn render_left_margin(
             crate::view::margin::MarginPosition::Left,
             ctx.estimated_lines,
         );
-        let (rendered_text, style_opt) =
-            margin_content.render(ctx.state.margins.left_config.width);
+        let (rendered_text, style_opt) = margin_content.render(ctx.state.margins.left_config.width);
 
         // Use custom style if provided, otherwise use default theme color
         let margin_style =
@@ -341,9 +340,7 @@ fn compute_char_style(ctx: &CharStyleContext) -> CharStyleOutput {
             style = style.add_modifier(Modifier::REVERSED);
         }
     } else if ctx.is_cursor {
-        style = style
-            .fg(ctx.theme.editor_fg)
-            .bg(ctx.theme.inactive_cursor);
+        style = style.fg(ctx.theme.editor_fg).bg(ctx.theme.inactive_cursor);
     }
 
     CharStyleOutput {
@@ -1464,12 +1461,7 @@ impl SplitRenderer {
 
             // Paper edge (inner, adjacent to content)
             if paper_edge > 0 {
-                let paper_rect = Rect::new(
-                    area.x + desk_width,
-                    area.y,
-                    paper_edge,
-                    area.height,
-                );
+                let paper_rect = Rect::new(area.x + desk_width, area.y, paper_edge, area.height);
                 frame.render_widget(Block::default().style(paper_style), paper_rect);
             }
         }
@@ -1487,12 +1479,8 @@ impl SplitRenderer {
 
             // Desk area (outer)
             if desk_width > 0 {
-                let desk_rect = Rect::new(
-                    right_start + paper_edge,
-                    area.y,
-                    desk_width,
-                    area.height,
-                );
+                let desk_rect =
+                    Rect::new(right_start + paper_edge, area.y, desk_width, area.height);
                 frame.render_widget(Block::default().style(desk_style), desk_rect);
             }
         }

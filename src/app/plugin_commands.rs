@@ -22,7 +22,10 @@ impl Editor {
             return Some(menu);
         }
         // Then check plugin menus
-        self.menu_state.plugin_menus.iter_mut().find(|m| m.label == label)
+        self.menu_state
+            .plugin_menus
+            .iter_mut()
+            .find(|m| m.label == label)
     }
 
     // ==================== Overlay Commands ====================

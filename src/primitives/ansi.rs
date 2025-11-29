@@ -198,7 +198,9 @@ impl AnsiParser {
                 25 => self.current_style = self.current_style.remove_modifier(Modifier::SLOW_BLINK),
                 27 => self.current_style = self.current_style.remove_modifier(Modifier::REVERSED),
                 28 => self.current_style = self.current_style.remove_modifier(Modifier::HIDDEN),
-                29 => self.current_style = self.current_style.remove_modifier(Modifier::CROSSED_OUT),
+                29 => {
+                    self.current_style = self.current_style.remove_modifier(Modifier::CROSSED_OUT)
+                }
 
                 // Standard foreground colors (30-37)
                 30..=37 => {
@@ -226,14 +228,12 @@ impl AnsiParser {
 
                 // Bright foreground colors (90-97)
                 90..=97 => {
-                    self.current_style =
-                        self.current_style.fg(BRIGHT_COLORS[(code - 90) as usize])
+                    self.current_style = self.current_style.fg(BRIGHT_COLORS[(code - 90) as usize])
                 }
 
                 // Bright background colors (100-107)
                 100..=107 => {
-                    self.current_style =
-                        self.current_style.bg(BRIGHT_COLORS[(code - 100) as usize])
+                    self.current_style = self.current_style.bg(BRIGHT_COLORS[(code - 100) as usize])
                 }
 
                 _ => {} // Ignore unknown codes

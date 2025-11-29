@@ -36,29 +36,29 @@ const DEFAULT_HIGHLIGHT_COLORS: &[Color] = &[
 
 /// TypeScript-specific highlight color scheme with extended categories.
 const TYPESCRIPT_HIGHLIGHT_COLORS: &[Color] = &[
-    Color::Cyan,       // 0: attribute
-    Color::DarkGray,   // 1: comment
-    Color::Magenta,    // 2: constant
-    Color::Magenta,    // 3: constant.builtin (null, undefined, true, false)
-    Color::Blue,       // 4: constructor
-    Color::Green,      // 5: embedded (template substitutions)
-    Color::Yellow,     // 6: function
-    Color::Yellow,     // 7: function.builtin (require)
-    Color::Yellow,     // 8: function.method
-    Color::Red,        // 9: keyword
-    Color::Magenta,    // 10: number
-    Color::White,      // 11: operator
-    Color::Cyan,       // 12: property
-    Color::White,      // 13: punctuation.bracket
-    Color::White,      // 14: punctuation.delimiter
-    Color::Cyan,       // 15: punctuation.special (template ${})
-    Color::Green,      // 16: string
-    Color::Green,      // 17: string.special (regex)
-    Color::Blue,       // 18: type
-    Color::Blue,       // 19: type.builtin
-    Color::White,      // 20: variable
-    Color::Magenta,    // 21: variable.builtin (this, super, arguments)
-    Color::LightCyan,  // 22: variable.parameter
+    Color::Cyan,      // 0: attribute
+    Color::DarkGray,  // 1: comment
+    Color::Magenta,   // 2: constant
+    Color::Magenta,   // 3: constant.builtin (null, undefined, true, false)
+    Color::Blue,      // 4: constructor
+    Color::Green,     // 5: embedded (template substitutions)
+    Color::Yellow,    // 6: function
+    Color::Yellow,    // 7: function.builtin (require)
+    Color::Yellow,    // 8: function.method
+    Color::Red,       // 9: keyword
+    Color::Magenta,   // 10: number
+    Color::White,     // 11: operator
+    Color::Cyan,      // 12: property
+    Color::White,     // 13: punctuation.bracket
+    Color::White,     // 14: punctuation.delimiter
+    Color::Cyan,      // 15: punctuation.special (template ${})
+    Color::Green,     // 16: string
+    Color::Green,     // 17: string.special (regex)
+    Color::Blue,      // 18: type
+    Color::Blue,      // 19: type.builtin
+    Color::White,     // 20: variable
+    Color::Magenta,   // 21: variable.builtin (this, super, arguments)
+    Color::LightCyan, // 22: variable.parameter
 ];
 
 /// A highlighted span of text

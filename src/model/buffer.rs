@@ -3031,12 +3031,18 @@ mod tests {
 
     #[test]
     fn test_detect_crlf() {
-        assert_eq!(TextBuffer::detect_line_ending(b"hello\r\nworld\r\n"), LineEnding::CRLF);
+        assert_eq!(
+            TextBuffer::detect_line_ending(b"hello\r\nworld\r\n"),
+            LineEnding::CRLF
+        );
     }
 
     #[test]
     fn test_detect_lf() {
-        assert_eq!(TextBuffer::detect_line_ending(b"hello\nworld\n"), LineEnding::LF);
+        assert_eq!(
+            TextBuffer::detect_line_ending(b"hello\nworld\n"),
+            LineEnding::LF
+        );
     }
 
     #[test]

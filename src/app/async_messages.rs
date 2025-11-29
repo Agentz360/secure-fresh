@@ -59,10 +59,18 @@ impl Editor {
 impl Editor {
     /// Handle LSP diagnostics (push model)
     pub(super) fn handle_lsp_diagnostics(&mut self, uri: String, diagnostics: Vec<Diagnostic>) {
-        tracing::debug!("Processing {} LSP diagnostics for {}", diagnostics.len(), uri);
+        tracing::debug!(
+            "Processing {} LSP diagnostics for {}",
+            diagnostics.len(),
+            uri
+        );
 
         if let Some(buffer_id) = self.apply_diagnostics_to_buffer(&uri, &diagnostics) {
-            tracing::info!("Applied {} diagnostics to buffer {:?}", diagnostics.len(), buffer_id);
+            tracing::info!(
+                "Applied {} diagnostics to buffer {:?}",
+                diagnostics.len(),
+                buffer_id
+            );
         } else {
             tracing::debug!("No buffer found for diagnostic URI: {}", uri);
         }
@@ -77,7 +85,11 @@ impl Editor {
         unchanged: bool,
     ) {
         if unchanged {
-            tracing::debug!("Diagnostics unchanged for {} (result_id: {:?})", uri, result_id);
+            tracing::debug!(
+                "Diagnostics unchanged for {} (result_id: {:?})",
+                uri,
+                result_id
+            );
             return;
         }
 
@@ -89,7 +101,11 @@ impl Editor {
         );
 
         if let Some(buffer_id) = self.apply_diagnostics_to_buffer(&uri, &diagnostics) {
-            tracing::info!("Applied {} pulled diagnostics to buffer {:?}", diagnostics.len(), buffer_id);
+            tracing::info!(
+                "Applied {} pulled diagnostics to buffer {:?}",
+                diagnostics.len(),
+                buffer_id
+            );
         } else {
             tracing::debug!("No buffer found for pulled diagnostic URI: {}", uri);
         }

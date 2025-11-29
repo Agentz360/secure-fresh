@@ -95,7 +95,10 @@ fn test_crlf_cursor_movement() {
 
     // Should have moved past second line as well
     let pos_after_second_down = harness.cursor_position();
-    assert!(pos_after_second_down > pos_after_down, "Cursor should continue moving forward");
+    assert!(
+        pos_after_second_down > pos_after_down,
+        "Cursor should continue moving forward"
+    );
 }
 
 /// Test editing in CRLF buffer
@@ -155,7 +158,9 @@ fn test_crlf_new_line_insertion() {
 
     // Move to end of first line and insert a new line
     harness.send_key(KeyCode::End, KeyModifiers::NONE).unwrap();
-    harness.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
     harness.type_text("Line 2").unwrap();
     harness.render().unwrap();
 
@@ -165,7 +170,9 @@ fn test_crlf_new_line_insertion() {
     harness.assert_screen_contains("Line 3");
 
     // Save the file using Ctrl+S
-    harness.send_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+    harness
+        .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
     harness.render().unwrap();
 
     // Read the file back and verify CRLF line endings are preserved
@@ -237,7 +244,9 @@ fn test_lf_new_line_insertion() {
 
     // Move to end of first line and insert a new line
     harness.send_key(KeyCode::End, KeyModifiers::NONE).unwrap();
-    harness.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
     harness.type_text("Line 2").unwrap();
     harness.render().unwrap();
 
@@ -247,7 +256,9 @@ fn test_lf_new_line_insertion() {
     harness.assert_screen_contains("Line 3");
 
     // Save the file using Ctrl+S
-    harness.send_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+    harness
+        .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
     harness.render().unwrap();
 
     // Read the file back and verify LF line endings are preserved

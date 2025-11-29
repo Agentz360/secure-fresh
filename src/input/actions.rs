@@ -4,11 +4,11 @@ use crate::input::keybindings::Action;
 use crate::model::buffer::Buffer;
 use crate::model::cursor::{Position2D, SelectionMode};
 use crate::model::event::{CursorId, Event};
-use std::ops::Range;
 use crate::primitives::word_navigation::{
     find_word_end, find_word_start, find_word_start_left, find_word_start_right,
 };
 use crate::state::EditorState;
+use std::ops::Range;
 
 /// Direction for block selection movement
 #[derive(Debug, Clone, Copy)]

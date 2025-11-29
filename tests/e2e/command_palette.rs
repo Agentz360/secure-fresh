@@ -792,7 +792,9 @@ fn test_show_keyboard_shortcuts_command() {
     harness.assert_screen_contains("Show Keyboard Shortcuts");
 
     // Execute the command
-    harness.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
     harness.render().unwrap();
 
     let screen = harness.screen_to_string();
@@ -830,7 +832,9 @@ fn test_show_keyboard_shortcuts_open_close_reopen() {
         .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
         .unwrap();
     harness.type_text("keyboard").unwrap();
-    harness.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
     harness.render().unwrap();
 
     // Verify keyboard shortcuts are shown
@@ -843,7 +847,9 @@ fn test_show_keyboard_shortcuts_open_close_reopen() {
     );
 
     // Close with 'q' (standard way to close help/read-only buffers)
-    harness.send_key(KeyCode::Char('q'), KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Char('q'), KeyModifiers::NONE)
+        .unwrap();
     harness.render().unwrap();
 
     let screen_after_close = harness.screen_to_string();
@@ -856,7 +862,9 @@ fn test_show_keyboard_shortcuts_open_close_reopen() {
         .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
         .unwrap();
     harness.type_text("keyboard").unwrap();
-    harness.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
     harness.render().unwrap();
 
     // Verify keyboard shortcuts are shown again

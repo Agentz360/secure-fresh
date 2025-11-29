@@ -480,9 +480,13 @@ fn test_open_file_prompt_shows_completions_immediately() {
     }
 
     // Create harness with temp directory
-    let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, Default::default(), project_root.clone())
-            .unwrap();
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        80,
+        24,
+        Default::default(),
+        project_root.clone(),
+    )
+    .unwrap();
 
     // Let plugins load
     harness.render().unwrap();
@@ -505,7 +509,9 @@ fn test_open_file_prompt_shows_completions_immediately() {
         .wait_until(|h| {
             let screen = h.screen_to_string();
             // Should see test files in completions (these only appear in suggestions)
-            screen.contains("alpha.txt") || screen.contains("beta.txt") || screen.contains("gamma.txt")
+            screen.contains("alpha.txt")
+                || screen.contains("beta.txt")
+                || screen.contains("gamma.txt")
         })
         .expect("Completions should appear immediately when Open File prompt opens");
 

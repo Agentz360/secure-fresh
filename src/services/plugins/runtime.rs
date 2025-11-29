@@ -1752,16 +1752,17 @@ fn op_fresh_read_dir(
         std::path::PathBuf::from(&path)
     } else {
         // Try to get the working directory from the editor state
-        let working_dir = state
-            .try_borrow::<Rc<RefCell<TsRuntimeState>>>()
-            .and_then(|runtime_state| {
-                let runtime_state = runtime_state.borrow();
-                runtime_state
-                    .state_snapshot
-                    .read()
-                    .ok()
-                    .map(|snapshot| snapshot.working_dir.clone())
-            });
+        let working_dir =
+            state
+                .try_borrow::<Rc<RefCell<TsRuntimeState>>>()
+                .and_then(|runtime_state| {
+                    let runtime_state = runtime_state.borrow();
+                    runtime_state
+                        .state_snapshot
+                        .read()
+                        .ok()
+                        .map(|snapshot| snapshot.working_dir.clone())
+                });
 
         if let Some(wd) = working_dir {
             wd.join(&path)
