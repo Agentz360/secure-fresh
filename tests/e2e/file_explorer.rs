@@ -16,16 +16,20 @@ fn test_file_explorer_toggle() {
     harness
         .send_key(KeyCode::Char('e'), KeyModifiers::CONTROL)
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let _ = harness.editor_mut().process_async_messages();
-    harness.render().unwrap();
+    // Wait for file explorer to appear
+    harness
+        .wait_until(|h| {
+            let screen = h.screen_to_string();
+            screen.contains("File Explorer")
+        })
+        .unwrap();
 
     // Screen should show file explorer (check for the border or title)
     let screen_after = harness.screen_to_string();
 
     // Should show "File Explorer" in the UI
     assert!(
-        screen_after.contains("File Explorer") || screen_after.contains("[D]"),
+        screen_after.contains("File Explorer"),
         "Screen should show file explorer after toggle"
     );
 
@@ -207,7 +211,7 @@ fn test_file_explorer_open_file() {
     harness
         .wait_until(|h| {
             let screen = h.screen_to_string();
-            screen.contains("File Explorer") || screen.contains("[D]")
+            screen.contains("File Explorer")
         })
         .unwrap();
 
@@ -215,7 +219,7 @@ fn test_file_explorer_open_file() {
 
     // Verify file explorer is showing
     assert!(
-        screen_with_explorer.contains("File Explorer") || screen_with_explorer.contains("[D]"),
+        screen_with_explorer.contains("File Explorer"),
         "File explorer should be visible"
     );
 
@@ -1396,8 +1400,13 @@ fn test_file_explorer_keybinding_when_focused() {
     harness
         .send_key(KeyCode::Char('e'), KeyModifiers::CONTROL)
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let _ = harness.editor_mut().process_async_messages();
+    // Wait for file explorer to appear
+    harness
+        .wait_until(|h| {
+            let screen = h.screen_to_string();
+            screen.contains("File Explorer")
+        })
+        .unwrap();
 
     // Focus the file explorer
     harness
@@ -1426,9 +1435,13 @@ fn test_file_explorer_keybinding_matches_behavior() {
     harness
         .send_key(KeyCode::Char('e'), KeyModifiers::CONTROL)
         .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    let _ = harness.editor_mut().process_async_messages();
-    harness.render().unwrap();
+    // Wait for file explorer to appear
+    harness
+        .wait_until(|h| {
+            let screen = h.screen_to_string();
+            screen.contains("File Explorer")
+        })
+        .unwrap();
 
     let screen_with_explorer = harness.screen_to_string();
 
