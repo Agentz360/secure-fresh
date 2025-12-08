@@ -212,6 +212,21 @@ pub enum HookArgs {
         /// Content area Y offset (where the buffer content starts on screen)
         content_y: u16,
     },
+
+    /// LSP server request (server -> client)
+    /// This hook fires when the LSP server sends a custom request method
+    /// that isn't handled by the core. Plugins can use this to handle
+    /// language-specific extension methods.
+    LspServerRequest {
+        /// The language/server that sent the request (e.g., "csharp", "rust")
+        language: String,
+        /// The JSON-RPC method name (e.g., "workspace/_roslyn_projectNeedsRestore")
+        method: String,
+        /// The server command that was used to spawn this LSP (e.g., "csharp-language-server")
+        server_command: String,
+        /// The request parameters as a JSON string (may be null)
+        params: Option<String>,
+    },
 }
 
 /// Information about a single line for the LinesChanged hook
@@ -614,6 +629,19 @@ pub fn hook_args_to_json(args: &HookArgs) -> Result<String> {
                 "row": row,
                 "content_x": content_x,
                 "content_y": content_y,
+            })
+        }
+        HookArgs::LspServerRequest {
+            language,
+            method,
+            server_command,
+            params,
+        } => {
+            serde_json::json!({
+                "language": language,
+                "method": method,
+                "server_command": server_command,
+                "params": params,
             })
         }
     };

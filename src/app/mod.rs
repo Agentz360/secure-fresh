@@ -4409,6 +4409,14 @@ impl Editor {
                 } => {
                     self.handle_custom_notification(language, method, params);
                 }
+                AsyncMessage::LspServerRequest {
+                    language,
+                    server_command,
+                    method,
+                    params,
+                } => {
+                    self.handle_lsp_server_request(language, server_command, method, params);
+                }
                 AsyncMessage::PluginLspResponse {
                     language: _,
                     request_id,

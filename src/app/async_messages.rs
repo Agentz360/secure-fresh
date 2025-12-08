@@ -395,6 +395,38 @@ impl Editor {
         self.emit_event("lsp/custom_notification", payload);
     }
 
+    /// Handle LSP server request (server -> client)
+    /// These are requests from the LSP server that require handling, typically
+    /// custom/extension methods specific to certain language servers.
+    pub(super) fn handle_lsp_server_request(
+        &mut self,
+        language: String,
+        server_command: String,
+        method: String,
+        params: Option<Value>,
+    ) {
+        tracing::debug!(
+            "LSP server request {} from {} ({})",
+            method,
+            language,
+            server_command
+        );
+
+        // Convert params to JSON string for the hook
+        let params_str = params.map(|p| p.to_string());
+
+        // Run the lsp_server_request hook for plugins
+        if let Some(ref ts_manager) = self.ts_plugin_manager {
+            let hook_args = crate::services::plugins::hooks::HookArgs::LspServerRequest {
+                language,
+                method,
+                server_command,
+                params: params_str,
+            };
+            ts_manager.run_hook("lsp_server_request", hook_args);
+        }
+    }
+
     /// Handle plugin LSP response
     pub(super) fn handle_plugin_lsp_response(
         &mut self,

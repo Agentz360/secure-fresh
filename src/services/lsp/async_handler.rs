@@ -1507,6 +1507,9 @@ struct LspTask {
     /// Language ID (for error reporting)
     language: String,
 
+    /// Server command (for plugin identification)
+    server_command: String,
+
     /// Path to stderr log file
     stderr_log_path: std::path::PathBuf,
 }
@@ -1573,6 +1576,7 @@ impl LspTask {
             initialized: false,
             async_tx,
             language,
+            server_command: command.to_string(),
             stderr_log_path,
         })
     }
@@ -1583,6 +1587,7 @@ impl LspTask {
         pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
         async_tx: std_mpsc::Sender<AsyncMessage>,
         language: String,
+        server_command: String,
         server_response_tx: mpsc::Sender<JsonRpcResponse>,
         stderr_log_path: std::path::PathBuf,
         shutting_down: Arc<AtomicBool>,
@@ -1598,6 +1603,7 @@ impl LspTask {
                             &pending,
                             &async_tx,
                             &language,
+                            &server_command,
                             &server_response_tx,
                         )
                         .await
@@ -1664,6 +1670,7 @@ impl LspTask {
             pending.clone(),
             async_tx.clone(),
             language_clone.clone(),
+            self.server_command.clone(),
             server_response_tx,
             self.stderr_log_path,
             shutting_down.clone(),
@@ -2627,6 +2634,7 @@ async fn handle_message_dispatch(
     pending: &Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
     async_tx: &std_mpsc::Sender<AsyncMessage>,
     language: &str,
+    server_command: &str,
     server_response_tx: &mpsc::Sender<JsonRpcResponse>,
 ) -> Result<(), String> {
     match message {
@@ -2733,8 +2741,14 @@ async fn handle_message_dispatch(
                     }
                 }
                 _ => {
-                    // For unknown methods, return null to acknowledge receipt
-                    tracing::warn!("Unhandled server request: {}", request.method);
+                    // For unknown methods, notify plugins and return null to acknowledge receipt
+                    tracing::debug!("Server request for plugins: {}", request.method);
+                    let _ = async_tx.send(AsyncMessage::LspServerRequest {
+                        language: language.to_string(),
+                        server_command: server_command.to_string(),
+                        method: request.method.clone(),
+                        params: request.params.clone(),
+                    });
                     JsonRpcResponse {
                         jsonrpc: "2.0".to_string(),
                         id: request.id,

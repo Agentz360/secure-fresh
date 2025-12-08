@@ -172,6 +172,15 @@ pub enum AsyncMessage {
         method: String,
         params: Option<Value>,
     },
+
+    /// LSP server request (server -> client)
+    /// Used for custom/extension methods that plugins can handle
+    LspServerRequest {
+        language: String,
+        server_command: String,
+        method: String,
+        params: Option<Value>,
+    },
     /// Response for a plugin-initiated LSP request
     PluginLspResponse {
         language: String,
