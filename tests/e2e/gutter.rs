@@ -1,6 +1,6 @@
 //! E2E tests for gutter indicator plugins (git gutter and buffer modified)
 
-use crate::common::git_test_helper::GitTestRepo;
+use crate::common::git_test_helper::{DirGuard, GitTestRepo};
 use crate::common::harness::EditorTestHarness;
 use crossterm::event::{KeyCode, KeyModifiers};
 use fresh::config::Config;
@@ -182,6 +182,10 @@ fn test_git_gutter_shows_on_file_open() {
     repo.setup_typical_project();
     repo.setup_git_gutter_plugin();
 
+    // Change to repo directory so git commands work correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
     // Modify a file in the working copy (not staged, not committed)
     repo.modify_file(
         "src/main.rs",
@@ -234,6 +238,10 @@ fn test_git_gutter_updates_after_save() {
     repo.setup_typical_project();
     repo.setup_git_gutter_plugin();
 
+    // Change to repo directory so git commands work correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
     let mut harness = EditorTestHarness::with_config_and_working_dir(
         120,
         40,
@@ -278,6 +286,10 @@ fn test_git_gutter_added_lines() {
     let repo = GitTestRepo::new();
     repo.setup_typical_project();
     repo.setup_git_gutter_plugin();
+
+    // Change to repo directory so git commands work correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
 
     // Add new lines to a file
     repo.modify_file(
@@ -335,6 +347,10 @@ fn test_git_gutter_deleted_lines() {
     repo.setup_typical_project();
     repo.setup_git_gutter_plugin();
 
+    // Change to repo directory so git commands work correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
     // Delete some lines from a file
     repo.modify_file(
         "src/main.rs",
@@ -378,6 +394,10 @@ fn test_git_gutter_staged_changes() {
     let repo = GitTestRepo::new();
     repo.setup_typical_project();
     repo.setup_git_gutter_plugin();
+
+    // Change to repo directory so git commands work correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
 
     // Modify and stage a file
     repo.modify_file(
@@ -429,6 +449,10 @@ fn test_git_gutter_clears_after_commit() {
     let repo = GitTestRepo::new();
     repo.setup_typical_project();
     repo.setup_git_gutter_plugin();
+
+    // Change to repo directory so git commands work correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
 
     // First, create a change and commit it
     repo.modify_file(
@@ -485,6 +509,10 @@ fn test_git_gutter_untracked_file() {
     repo.setup_typical_project();
     repo.setup_git_gutter_plugin();
 
+    // Change to repo directory so git commands work correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
     // Create a new untracked file
     repo.create_file("src/new_file.rs", "fn new_function() {}\n");
 
@@ -523,6 +551,10 @@ fn test_buffer_modified_shows_on_edit() {
     let repo = GitTestRepo::new();
     repo.setup_typical_project();
     repo.setup_buffer_modified_plugin();
+
+    // Change to repo directory so plugin can find files correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
 
     let mut harness = EditorTestHarness::with_config_and_working_dir(
         120,
@@ -563,6 +595,10 @@ fn test_buffer_modified_clears_after_save() {
     let repo = GitTestRepo::new();
     repo.setup_typical_project();
     repo.setup_buffer_modified_plugin();
+
+    // Change to repo directory so plugin can find files correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
 
     let mut harness = EditorTestHarness::with_config_and_working_dir(
         120,
@@ -616,6 +652,10 @@ fn test_both_plugins_coexist() {
     let repo = GitTestRepo::new();
     repo.setup_typical_project();
     repo.setup_gutter_plugins(); // Sets up both plugins
+
+    // Change to repo directory so git commands work correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
 
     // Create an uncommitted change on disk
     repo.modify_file(
@@ -684,6 +724,10 @@ fn test_git_gutter_priority_over_buffer_modified() {
     repo.setup_typical_project();
     repo.setup_gutter_plugins();
 
+    // Change to repo directory so git commands work correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
     // Create a committed file first, then modify on disk (for git diff)
     repo.modify_file(
         "src/main.rs",
@@ -747,6 +791,10 @@ fn test_gutter_indicators_comprehensive() {
 
     // Create a fresh git repo with a simple test file
     let repo = GitTestRepo::new();
+
+    // Change to repo directory so git commands work correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
 
     // Create a simple file with numbered lines for easy tracking
     let initial_content = r#"line 1: unchanged
@@ -890,6 +938,10 @@ line 5: unchanged
 fn test_unsaved_changes_get_indicators() {
     let repo = GitTestRepo::new();
 
+    // Change to repo directory so plugin can find files correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
     // Create and commit a simple file
     let initial_content = "line 1\nline 2\nline 3\n";
     repo.create_file("test.txt", initial_content);
@@ -962,6 +1014,10 @@ fn test_unsaved_changes_get_indicators() {
 fn test_buffer_modified_clears_after_undo_on_same_line() {
     let repo = GitTestRepo::new();
 
+    // Change to repo directory so plugin can find files correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
     // Create and commit a multi-line file
     let initial_content = (1..=15)
         .map(|i| format!("line {:02}\n", i))
@@ -1023,6 +1079,10 @@ fn test_buffer_modified_clears_after_undo_on_same_line() {
 #[test]
 fn test_buffer_modified_single_line_in_multi_line_file() {
     let repo = GitTestRepo::new();
+
+    // Change to repo directory so plugin can find files correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
 
     // Create and commit a multi-line file
     let initial_content = (1..=15)
@@ -1090,6 +1150,10 @@ fn test_buffer_modified_single_line_in_multi_line_file() {
 fn test_buffer_modified_newline_insert_only_marks_affected_lines() {
     let repo = GitTestRepo::new();
 
+    // Change to repo directory so plugin can find files correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
     // Create and commit a file with multiple lines
     let initial_content = "line 1\nline 2\nline 3\nline 4\nline 5\n";
     repo.create_file("test.txt", initial_content);
@@ -1156,6 +1220,10 @@ fn test_buffer_modified_clears_after_manual_delete_restores_content() {
 
     let repo = GitTestRepo::new();
 
+    // Change to repo directory so plugin can find files correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
+
     // Create and commit a file
     let initial_content = "line 01\nline 02\nline 03\nline 04\nline 05\n";
     repo.create_file("test.txt", initial_content);
@@ -1219,6 +1287,10 @@ fn test_buffer_modified_clears_after_manual_delete_restores_content() {
 #[ignore = "flaky test - times out intermittently"]
 fn test_buffer_modified_clears_after_paste_restores_content() {
     let repo = GitTestRepo::new();
+
+    // Change to repo directory so plugin can find files correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
 
     // Create and commit a file
     let initial_content = "hello world\n";
@@ -1294,6 +1366,10 @@ fn test_indicator_line_shifting() {
     use std::fs;
 
     let repo = GitTestRepo::new();
+
+    // Change to repo directory so git commands work correctly
+    let original_dir = repo.change_to_repo_dir();
+    let _guard = DirGuard::new(original_dir);
 
     // Create a file with a modification on a specific line
     let initial_content = "line 1\nline 2\nline 3\nline 4\nline 5\n";
