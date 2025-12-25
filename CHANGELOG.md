@@ -18,9 +18,21 @@
 
 * **Global File Positions**: Cursor/scroll positions stored globally per file, not per project (#423).
 
+* **Relative Line Numbers**: Show relative distances from cursor in gutter for easier vim-style navigation. Enable via `relative_line_numbers` config (#454).
+
 ### Bug Fixes
 
 * **On-Save Missing Tools**: Graceful handling when formatter/linter command not found.
+
+* **Settings UI Nested Dialogs**: Fixed nested ObjectArray navigation and save not persisting (e.g., editing on_save inside language config).
+
+* **Live Grep Working Directory**: Fixed search plugins using process cwd instead of project working directory.
+
+* **Open File Path Resolution**: Fixed relative paths resolving incorrectly when editor launched from different directory.
+
+### Performance
+
+* **Live Grep UI**: Fixed UI freezing for seconds during large codebase searches by making plugin event loop non-blocking.
 
 ### Internal
 
@@ -31,6 +43,8 @@
 * Extracted modules from mod.rs (file_operations, split_actions, clipboard, etc.).
 
 * Pinned Rust 1.92 via rust-toolchain.toml (#338).
+
+* Windows build switched from MSVC to GNU target.
 
 ---
 
