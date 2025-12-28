@@ -901,3 +901,123 @@ fn test_file_browser_prompt_shows_buffer_directory() {
         "Should show the current file in the list"
     );
 }
+
+/// Test that the "Show Hidden" checkbox appears and shows correct state
+#[test]
+fn test_file_browser_hidden_checkbox_appears() {
+    let temp_dir = TempDir::new().unwrap();
+    let project_root = temp_dir.path().to_path_buf();
+
+    // Create visible and hidden files
+    fs::write(project_root.join("visible.txt"), "visible content").unwrap();
+    fs::write(project_root.join(".hidden_file"), "hidden content").unwrap();
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        80,
+        24,
+        Default::default(),
+        project_root.clone(),
+    )
+    .unwrap();
+
+    // Open file browser with Ctrl+O
+    harness
+        .send_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+
+    // Wait for the dialog to appear with the checkbox
+    harness
+        .wait_until(|h| {
+            let screen = h.screen_to_string();
+            screen.contains("visible.txt") && screen.contains("Show Hidden")
+        })
+        .expect("Visible file and Show Hidden checkbox should appear");
+
+    let screen = harness.screen_to_string();
+
+    // Verify checkbox appears in unchecked state (☐ Show Hidden with underlined H)
+    assert!(
+        screen.contains("Show") && screen.contains("idden"),
+        "Checkbox should show 'Show Hidden'. Screen:\n{}",
+        screen
+    );
+
+    // Verify hidden files are not shown by default
+    assert!(
+        !screen.contains(".hidden_file"),
+        "Hidden files should NOT be shown by default"
+    );
+}
+
+/// Test that clicking the "Show Hidden" checkbox toggles hidden files visibility
+#[test]
+fn test_file_browser_toggle_hidden_checkbox_click() {
+    use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+
+    let temp_dir = TempDir::new().unwrap();
+    let project_root = temp_dir.path().to_path_buf();
+
+    // Create visible and hidden files
+    fs::write(project_root.join("visible.txt"), "visible content").unwrap();
+    fs::write(project_root.join(".hidden_file"), "hidden content").unwrap();
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        80,
+        24,
+        Default::default(),
+        project_root.clone(),
+    )
+    .unwrap();
+
+    // Open file browser with Ctrl+O
+    harness
+        .send_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+
+    // Wait for the dialog to appear
+    harness
+        .wait_until(|h| {
+            let screen = h.screen_to_string();
+            screen.contains("visible.txt") && screen.contains("Show Hidden")
+        })
+        .expect("File browser should appear with checkbox");
+
+    // Find the row containing "Show Hidden" checkbox by searching screen lines
+    let screen = harness.screen_to_string();
+    let lines: Vec<&str> = screen.lines().collect();
+    let checkbox_row = lines
+        .iter()
+        .position(|line| {
+            line.contains("Show Hidden") || line.contains("Show") && line.contains("idden")
+        })
+        .expect("Should find Show Hidden checkbox row");
+
+    // Click on the checkbox area (right side of the line)
+    // The checkbox " ☐ Show Hidden " is at the right edge
+    harness
+        .send_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: 72, // Right side where checkbox is
+            row: checkbox_row as u16,
+            modifiers: KeyModifiers::NONE,
+        })
+        .unwrap();
+    harness.render().unwrap();
+
+    // Wait for hidden files to appear (gives time for async reload)
+    harness
+        .wait_until(|h| h.screen_to_string().contains(".hidden_file"))
+        .expect("Hidden files should appear after clicking checkbox");
+
+    let screen_after = harness.screen_to_string();
+
+    // Verify checkbox is now checked and hidden files are visible
+    assert!(
+        screen_after.contains("☑") && screen_after.contains("Show"),
+        "Checkbox should be checked after toggle"
+    );
+    assert!(
+        screen_after.contains(".hidden_file"),
+        "Hidden files should be visible after toggle"
+    );
+}

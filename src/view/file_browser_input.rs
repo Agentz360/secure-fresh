@@ -28,7 +28,7 @@ impl<'a> InputHandler for FileBrowserInputHandler<'a> {
         let ctrl = event.modifiers.contains(KeyModifiers::CONTROL);
         let alt = event.modifiers.contains(KeyModifiers::ALT);
 
-        // Alt+key combinations pass through to keybindings
+        // Alt+key combinations pass through to keybindings (including Alt+. for toggle hidden)
         if alt {
             if let KeyCode::Char(_) = event.code {
                 return InputResult::Ignored;
@@ -210,7 +210,7 @@ mod tests {
     use std::path::PathBuf;
 
     fn create_test_file_state() -> FileOpenState {
-        FileOpenState::new(PathBuf::from("/tmp"))
+        FileOpenState::new(PathBuf::from("/tmp"), false)
     }
 
     fn create_test_prompt() -> Prompt {

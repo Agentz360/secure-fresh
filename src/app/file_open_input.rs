@@ -134,6 +134,12 @@ impl Editor {
                 true
             }
 
+            // Toggle hidden files visibility
+            Action::FileBrowserToggleHidden => {
+                self.file_open_toggle_hidden();
+                true
+            }
+
             // Text input is handled by normal prompt, but we need to update filter
             _ => false,
         }
@@ -366,10 +372,19 @@ impl Editor {
         if let Some(state) = &mut self.file_open_state {
             let show_hidden = state.show_hidden;
             state.show_hidden = !show_hidden;
+            let new_state = state.show_hidden;
 
             // Reload directory to apply change
             let current_dir = state.current_dir.clone();
             self.load_file_open_directory(current_dir);
+
+            // Show status message
+            let msg = if new_state {
+                "Showing hidden files"
+            } else {
+                "Hiding hidden files"
+            };
+            self.set_status_message(msg.to_string());
         }
     }
 
@@ -452,6 +467,12 @@ impl Editor {
                     }
                 }
             }
+            return true;
+        }
+
+        // Check if click is on "Show Hidden" checkbox (in navigation area, right side)
+        if layout.is_on_show_hidden_checkbox(x, y) {
+            self.file_open_toggle_hidden();
             return true;
         }
 
@@ -544,6 +565,11 @@ impl Editor {
         use super::types::HoverTarget;
 
         let layout = self.file_browser_layout.as_ref()?;
+
+        // Check "Show Hidden" checkbox first (priority over navigation shortcuts)
+        if layout.is_on_show_hidden_checkbox(x, y) {
+            return Some(HoverTarget::FileBrowserShowHiddenCheckbox);
+        }
 
         // Check navigation shortcuts
         if layout.is_in_nav(x, y) {
