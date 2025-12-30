@@ -1909,6 +1909,27 @@ pub fn action_to_events(
             apply_deletions(state, deletions, &mut events);
         }
 
+        Action::DeleteToLineStart => {
+            // Delete from start of line to cursor (like Ctrl+U in bash)
+            let deletions: Vec<_> = state
+                .cursors
+                .iter()
+                .filter_map(|(cursor_id, cursor)| {
+                    let iter = state
+                        .buffer
+                        .line_iterator(cursor.position, estimated_line_length);
+                    let line_start = iter.current_position();
+                    if cursor.position > line_start {
+                        Some((cursor_id, line_start..cursor.position))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            apply_deletions(state, deletions, &mut events);
+        }
+
         Action::TransposeChars => {
             // Transpose the character before the cursor with the one at the cursor
             // Collect cursor positions first to avoid borrow issues
@@ -1938,6 +1959,74 @@ pub fn action_to_events(
                             cursor_id,
                         });
                     }
+                }
+            }
+        }
+
+        Action::ToUpperCase => {
+            // Convert selected text to uppercase
+            // Process cursors in reverse order to avoid position shifts
+            let mut selections: Vec<_> = state
+                .cursors
+                .iter()
+                .filter_map(|(cursor_id, cursor)| {
+                    cursor
+                        .selection_range()
+                        .map(|range| (cursor_id, range.start, range.end))
+                })
+                .collect();
+            selections.sort_by_key(|(_, start, _)| std::cmp::Reverse(*start));
+
+            for (cursor_id, start, end) in selections {
+                let text = state.get_text_range(start, end);
+                let upper = text.to_uppercase();
+                if upper != text {
+                    // Delete the original text
+                    events.push(Event::Delete {
+                        range: start..end,
+                        deleted_text: text,
+                        cursor_id,
+                    });
+                    // Insert the uppercase text
+                    events.push(Event::Insert {
+                        position: start,
+                        text: upper,
+                        cursor_id,
+                    });
+                }
+            }
+        }
+
+        Action::ToLowerCase => {
+            // Convert selected text to lowercase
+            // Process cursors in reverse order to avoid position shifts
+            let mut selections: Vec<_> = state
+                .cursors
+                .iter()
+                .filter_map(|(cursor_id, cursor)| {
+                    cursor
+                        .selection_range()
+                        .map(|range| (cursor_id, range.start, range.end))
+                })
+                .collect();
+            selections.sort_by_key(|(_, start, _)| std::cmp::Reverse(*start));
+
+            for (cursor_id, start, end) in selections {
+                let text = state.get_text_range(start, end);
+                let lower = text.to_lowercase();
+                if lower != text {
+                    // Delete the original text
+                    events.push(Event::Delete {
+                        range: start..end,
+                        deleted_text: text,
+                        cursor_id,
+                    });
+                    // Insert the lowercase text
+                    events.push(Event::Insert {
+                        position: start,
+                        text: lower,
+                        cursor_id,
+                    });
                 }
             }
         }
@@ -2029,6 +2118,10 @@ pub fn action_to_events(
         | Action::CopyWithTheme(_)
         | Action::Cut
         | Action::Paste
+        | Action::YankWordForward
+        | Action::YankWordBackward
+        | Action::YankToLineEnd
+        | Action::YankToLineStart
         | Action::AddCursorNextMatch
         | Action::AddCursorAbove
         | Action::AddCursorBelow
@@ -2143,6 +2236,8 @@ pub fn action_to_events(
         | Action::FindInSelection
         | Action::FindNext
         | Action::FindPrevious
+        | Action::FindSelectionNext
+        | Action::FindSelectionPrevious
         | Action::Replace
         | Action::QueryReplace
         | Action::MenuActivate

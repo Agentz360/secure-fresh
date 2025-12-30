@@ -37,6 +37,7 @@ impl Editor {
         namespace: Option<OverlayNamespace>,
         range: std::ops::Range<usize>,
         color: (u8, u8, u8),
+        bg_color: Option<(u8, u8, u8)>,
         underline: bool,
         bold: bool,
         italic: bool,
@@ -44,6 +45,7 @@ impl Editor {
         if let Some(state) = self.buffers.get_mut(&buffer_id) {
             let face = crate::model::event::OverlayFace::Style {
                 color,
+                bg_color,
                 bold,
                 italic,
                 underline,
@@ -532,6 +534,86 @@ impl Editor {
         }
     }
 
+    /// Handle SetSplitScroll command
+    pub(super) fn handle_set_split_scroll(&mut self, split_id: SplitId, top_byte: usize) {
+        if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
+            // Get the buffer associated with this split to check bounds
+            let buffer_id = if let Some(id) = self.split_manager.buffer_for_split(split_id) {
+                id
+            } else {
+                tracing::warn!("SetSplitScroll: buffer for split {:?} not found", split_id);
+                return;
+            };
+
+            if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                // Manually set top_byte, then perform validity check with scroll_to logic if needed,
+                // or just clamp it. viewport.scroll_to takes a line number, not byte.
+                // But viewport.top_byte is public.
+
+                // Let's use set_top_byte_with_limit internal logic via a public helper or direct assignment
+                // if we trust the plugin. But safer to ensure valid range.
+                let max_byte = state.buffer.len();
+                let clamped_byte = top_byte.min(max_byte);
+
+                // We don't have direct access to set_top_byte_with_limit here easily without exposing it.
+                // However, Viewport struct is in another crate (view::viewport).
+                // Let's trust the Viewport's internal state management or just set it.
+                // Viewport.top_byte is pub.
+
+                view_state.viewport.top_byte = clamped_byte;
+                // Also reset view line offset to 0 as we are setting absolute byte position
+                view_state.viewport.top_view_line_offset = 0;
+
+                tracing::debug!(
+                    "SetSplitScroll: split {:?} scrolled to byte {}",
+                    split_id,
+                    clamped_byte
+                );
+            }
+        } else {
+            tracing::warn!("SetSplitScroll: split {:?} not found", split_id);
+        }
+    }
+
+    /// Handle RequestHighlights command
+    pub(super) fn handle_request_highlights(
+        &mut self,
+        buffer_id: BufferId,
+        range: std::ops::Range<usize>,
+        request_id: u64,
+    ) {
+        let spans = if let Some(state) = self.buffers.get_mut(&buffer_id) {
+            let spans = state.highlighter.highlight_viewport(
+                &state.buffer,
+                range.start,
+                range.end,
+                &self.theme,
+                self.config.editor.highlight_context_bytes,
+            );
+
+            spans
+                .into_iter()
+                .map(|s| {
+                    let color = match s.color {
+                        ratatui::style::Color::Rgb(r, g, b) => (r, g, b),
+                        _ => (128, 128, 128), // fallback for indexed colors
+                    };
+                    crate::services::plugins::runtime::TsHighlightSpan {
+                        start: s.range.start as u32,
+                        end: s.range.end as u32,
+                        color,
+                        bold: false,
+                        italic: false,
+                    }
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+
+        self.send_plugin_response(PluginResponse::HighlightsComputed { request_id, spans });
+    }
+
     // ==================== Text Editing Commands ====================
 
     /// Handle InsertText command
@@ -959,11 +1041,36 @@ impl Editor {
         }
 
         // Parse key bindings from strings
+        // Key strings can be single keys ("g", "C-f") or chord sequences ("g g", "z z")
         for (key_str, command) in bindings {
-            if let Some((code, modifiers)) = parse_key_string(&key_str) {
-                mode = mode.with_binding(code, modifiers, command);
+            let parts: Vec<&str> = key_str.split_whitespace().collect();
+
+            if parts.len() == 1 {
+                // Single key binding
+                if let Some((code, modifiers)) = parse_key_string(&key_str) {
+                    mode = mode.with_binding(code, modifiers, command);
+                } else {
+                    tracing::warn!("Failed to parse key binding: {}", key_str);
+                }
             } else {
-                tracing::warn!("Failed to parse key binding: {}", key_str);
+                // Chord sequence (multiple keys separated by space)
+                let mut sequence = Vec::new();
+                let mut parse_failed = false;
+
+                for part in &parts {
+                    if let Some((code, modifiers)) = parse_key_string(part) {
+                        sequence.push((code, modifiers));
+                    } else {
+                        tracing::warn!("Failed to parse key in chord: {} (in {})", part, key_str);
+                        parse_failed = true;
+                        break;
+                    }
+                }
+
+                if !parse_failed && !sequence.is_empty() {
+                    tracing::debug!("Adding chord binding: {:?} -> {}", sequence, command);
+                    mode = mode.with_chord_binding(sequence, command);
+                }
             }
         }
 

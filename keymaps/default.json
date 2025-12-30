@@ -66,13 +66,6 @@
       "when": "global"
     },
     {
-      "key": "l",
-      "modifiers": ["alt"],
-      "action": "menu_open",
-      "args": {"name": "LSP"},
-      "when": "global"
-    },
-    {
       "key": ",",
       "modifiers": ["ctrl"],
       "action": "open_settings",
@@ -429,6 +422,22 @@
       "when": "normal"
     },
     {
+      "comment": "Transform to uppercase (Alt+U)",
+      "key": "u",
+      "modifiers": ["alt"],
+      "action": "to_upper_case",
+      "args": {},
+      "when": "normal"
+    },
+    {
+      "comment": "Transform to lowercase (Alt+L - Emacs M-l style)",
+      "key": "l",
+      "modifiers": ["alt"],
+      "action": "to_lower_case",
+      "args": {},
+      "when": "normal"
+    },
+    {
       "key": "Right",
       "modifiers": ["ctrl", "shift"],
       "action": "expand_selection",
@@ -543,6 +552,38 @@
       "key": "n",
       "modifiers": ["ctrl", "shift"],
       "action": "find_previous",
+      "args": {},
+      "when": "normal"
+    },
+    {
+      "comment": "Quick find - search for next occurrence of selection",
+      "key": "F3",
+      "modifiers": ["ctrl"],
+      "action": "find_selection_next",
+      "args": {},
+      "when": "normal"
+    },
+    {
+      "comment": "Quick find - search for previous occurrence of selection",
+      "key": "F3",
+      "modifiers": ["ctrl", "shift"],
+      "action": "find_selection_previous",
+      "args": {},
+      "when": "normal"
+    },
+    {
+      "comment": "Alternative for Ctrl+F3 (works in more terminals) - find next occurrence of selection",
+      "key": "n",
+      "modifiers": ["alt"],
+      "action": "find_selection_next",
+      "args": {},
+      "when": "normal"
+    },
+    {
+      "comment": "Alternative for Ctrl+Shift+F3 (works in more terminals) - find previous occurrence of selection",
+      "key": "p",
+      "modifiers": ["alt"],
+      "action": "find_selection_previous",
       "args": {},
       "when": "normal"
     },

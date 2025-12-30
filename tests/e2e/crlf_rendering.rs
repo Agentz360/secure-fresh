@@ -633,3 +633,143 @@ fn test_crlf_cursor_visibility() {
         "Should contain variable declaration"
     );
 }
+
+/// Test that changing line ending format and saving converts the file
+/// When a file with LF endings has its format changed to CRLF via command palette,
+/// saving should convert all line endings to CRLF
+#[test]
+fn test_set_line_ending_converts_on_save_lf_to_crlf() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("lf_to_crlf.txt");
+
+    // Create a test file with LF line endings
+    let content = "Line 1\nLine 2\nLine 3\n";
+    std::fs::write(&file_path, content).unwrap();
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Verify initial line ending is LF in status bar
+    harness.assert_screen_contains("LF");
+
+    // Open command palette with Ctrl+P
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.wait_for_prompt().unwrap();
+
+    // Type "set line" to filter to "Set Line Ending" command
+    harness.type_text("set line").unwrap();
+    harness.render().unwrap();
+
+    // Select the command with Enter - this opens the Set Line Ending prompt
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    // Wait for the SetLineEnding prompt to open
+    harness.wait_for_prompt().unwrap();
+
+    // Use Down arrow to move from LF to CRLF, then Enter to select
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.wait_for_prompt_closed().unwrap();
+
+    // Verify status bar now shows CRLF
+    harness.assert_screen_contains("CRLF");
+
+    // Save the file
+    harness
+        .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
+    // Wait for save to complete by checking buffer is no longer modified
+    harness
+        .wait_until(|h| !h.editor().active_state().buffer.is_modified())
+        .unwrap();
+
+    // Read the file back and verify CRLF line endings
+    let saved_bytes = std::fs::read(&file_path).unwrap();
+    let saved_content = String::from_utf8_lossy(&saved_bytes);
+
+    // All lines should have CRLF endings
+    assert!(
+        saved_content.contains("\r\n"),
+        "File should contain CRLF sequences after conversion"
+    );
+    assert_eq!(
+        saved_content, "Line 1\r\nLine 2\r\nLine 3\r\n",
+        "All line endings should be converted to CRLF"
+    );
+}
+
+/// Test that changing line ending format and saving converts the file
+/// When a file with CRLF endings has its format changed to LF via command palette,
+/// saving should convert all line endings to LF
+#[test]
+fn test_set_line_ending_converts_on_save_crlf_to_lf() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("crlf_to_lf.txt");
+
+    // Create a test file with CRLF line endings
+    let content = "Line 1\r\nLine 2\r\nLine 3\r\n";
+    std::fs::write(&file_path, content).unwrap();
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Verify initial line ending is CRLF in status bar
+    harness.assert_screen_contains("CRLF");
+
+    // Open command palette with Ctrl+P
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.wait_for_prompt().unwrap();
+
+    // Type "set line" to filter to "Set Line Ending" command
+    harness.type_text("set line").unwrap();
+    harness.render().unwrap();
+
+    // Select the command with Enter - this opens the Set Line Ending prompt
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    // Wait for the SetLineEnding prompt to open
+    harness.wait_for_prompt().unwrap();
+
+    // Use Up arrow to move from CRLF to LF, then Enter to select
+    harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.wait_for_prompt_closed().unwrap();
+
+    // Verify status bar now shows LF
+    harness.assert_screen_contains("LF");
+
+    // Save the file
+    harness
+        .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
+    // Wait for save to complete by checking buffer is no longer modified
+    harness
+        .wait_until(|h| !h.editor().active_state().buffer.is_modified())
+        .unwrap();
+
+    // Read the file back and verify LF line endings
+    let saved_bytes = std::fs::read(&file_path).unwrap();
+    let saved_content = String::from_utf8_lossy(&saved_bytes);
+
+    // All lines should have LF endings (no CRLF)
+    assert!(
+        !saved_content.contains("\r\n"),
+        "File should not contain CRLF sequences after conversion to LF"
+    );
+    assert_eq!(
+        saved_content, "Line 1\nLine 2\nLine 3\n",
+        "All line endings should be converted to LF"
+    );
+}

@@ -256,6 +256,7 @@ pub enum Action {
     DeleteWordForward,
     DeleteLine,
     DeleteToLineEnd,
+    DeleteToLineStart,
     TransposeChars,
     OpenLine,
 
@@ -270,6 +271,12 @@ pub enum Action {
     CopyWithTheme(String),
     Cut,
     Paste,
+
+    // Vi-style yank (copy without selection, then restore cursor)
+    YankWordForward,
+    YankWordBackward,
+    YankToLineEnd,
+    YankToLineStart,
 
     // Multi-cursor
     AddCursorAbove,
@@ -470,6 +477,8 @@ pub enum Action {
     FindInSelection,
     FindNext,
     FindPrevious,
+    FindSelectionNext,     // Quick find next occurrence of selection (Ctrl+F3)
+    FindSelectionPrevious, // Quick find previous occurrence of selection (Ctrl+Shift+F3)
     Replace,
     QueryReplace, // Interactive replace (y/n/!/q for each match)
 
@@ -512,6 +521,10 @@ pub enum Action {
     // Shell command operations
     ShellCommand,        // Run shell command on buffer/selection, output to new buffer
     ShellCommandReplace, // Run shell command on buffer/selection, replace content
+
+    // Case conversion
+    ToUpperCase, // Convert selection to uppercase
+    ToLowerCase, // Convert selection to lowercase
 
     // No-op
     None,
@@ -573,6 +586,7 @@ impl Action {
             "delete_word_forward" => Some(Action::DeleteWordForward),
             "delete_line" => Some(Action::DeleteLine),
             "delete_to_line_end" => Some(Action::DeleteToLineEnd),
+            "delete_to_line_start" => Some(Action::DeleteToLineStart),
             "transpose_chars" => Some(Action::TransposeChars),
             "open_line" => Some(Action::OpenLine),
             "recenter" => Some(Action::Recenter),
@@ -586,6 +600,12 @@ impl Action {
             }
             "cut" => Some(Action::Cut),
             "paste" => Some(Action::Paste),
+
+            // Vi-style yank actions
+            "yank_word_forward" => Some(Action::YankWordForward),
+            "yank_word_backward" => Some(Action::YankWordBackward),
+            "yank_to_line_end" => Some(Action::YankToLineEnd),
+            "yank_to_line_start" => Some(Action::YankToLineStart),
 
             "add_cursor_above" => Some(Action::AddCursorAbove),
             "add_cursor_below" => Some(Action::AddCursorBelow),
@@ -789,6 +809,8 @@ impl Action {
             "find_in_selection" => Some(Action::FindInSelection),
             "find_next" => Some(Action::FindNext),
             "find_previous" => Some(Action::FindPrevious),
+            "find_selection_next" => Some(Action::FindSelectionNext),
+            "find_selection_previous" => Some(Action::FindSelectionPrevious),
             "replace" => Some(Action::Replace),
             "query_replace" => Some(Action::QueryReplace),
 
@@ -820,6 +842,10 @@ impl Action {
             // Shell command actions
             "shell_command" => Some(Action::ShellCommand),
             "shell_command_replace" => Some(Action::ShellCommandReplace),
+
+            // Case conversion
+            "to_upper_case" => Some(Action::ToUpperCase),
+            "to_lower_case" => Some(Action::ToLowerCase),
 
             // Settings actions
             "open_settings" => Some(Action::OpenSettings),
@@ -1573,6 +1599,7 @@ impl KeybindingResolver {
             Action::DeleteWordForward => "Delete word forward".to_string(),
             Action::DeleteLine => "Delete line".to_string(),
             Action::DeleteToLineEnd => "Delete to end of line".to_string(),
+            Action::DeleteToLineStart => "Delete to start of line".to_string(),
             Action::TransposeChars => "Transpose characters".to_string(),
             Action::OpenLine => "Open line below".to_string(),
             Action::Recenter => "Recenter view on cursor".to_string(),
@@ -1582,6 +1609,10 @@ impl KeybindingResolver {
             Action::CopyWithTheme(theme) => format!("Copy with {} theme", theme),
             Action::Cut => "Cut".to_string(),
             Action::Paste => "Paste".to_string(),
+            Action::YankWordForward => "Yank word forward".to_string(),
+            Action::YankWordBackward => "Yank word backward".to_string(),
+            Action::YankToLineEnd => "Yank to end of line".to_string(),
+            Action::YankToLineStart => "Yank to start of line".to_string(),
             Action::AddCursorAbove => "Add cursor above".to_string(),
             Action::AddCursorBelow => "Add cursor below".to_string(),
             Action::AddCursorNextMatch => "Add cursor at next match".to_string(),
@@ -1733,6 +1764,8 @@ impl KeybindingResolver {
             Action::FindInSelection => "Search within selection".to_string(),
             Action::FindNext => "Find next search match".to_string(),
             Action::FindPrevious => "Find previous search match".to_string(),
+            Action::FindSelectionNext => "Find next occurrence of selection".to_string(),
+            Action::FindSelectionPrevious => "Find previous occurrence of selection".to_string(),
             Action::Replace => "Replace text in buffer".to_string(),
             Action::QueryReplace => "Interactive replace (y/n/!/q for each match)".to_string(),
             Action::MenuActivate => "Activate menu bar".to_string(),
@@ -1769,6 +1802,8 @@ impl KeybindingResolver {
             Action::SettingsDecrement => "Decrement value".to_string(),
             Action::ShellCommand => "Run shell command on buffer/selection".to_string(),
             Action::ShellCommandReplace => "Run shell command and replace".to_string(),
+            Action::ToUpperCase => "Convert to uppercase".to_string(),
+            Action::ToLowerCase => "Convert to lowercase".to_string(),
             Action::None => "No action".to_string(),
         }
     }

@@ -140,6 +140,21 @@ interface TsBufferSavedDiff {
   line_ranges?: [number, number][] | null;
 }
 
+/** Line diff result for plugins */
+interface TsLineDiff {
+  equal: boolean;
+  changed_lines: [number, number][];
+}
+
+/** Syntax highlighting span for plugins */
+interface TsHighlightSpan {
+  start: number;
+  end: number;
+  color: [number, number, number];
+  bold: boolean;
+  italic: boolean;
+}
+
 /** Selection range */
 interface SelectionRange {
   /** Start byte position */
@@ -294,6 +309,26 @@ interface CreateVirtualBufferInCurrentSplitOptions {
   editing_disabled?: boolean | null;
 }
 
+/** JavaScript representation of ActionSpec (with optional count) */
+interface ActionSpecJs {
+  action: string;
+  count?: number | null;
+}
+
+/** TypeScript struct for action popup action */
+interface TsActionPopupAction {
+  id: string;
+  label: string;
+}
+
+/** TypeScript struct for action popup options */
+interface TsActionPopupOptions {
+  id: string;
+  title: string;
+  message: string;
+  actions: TsActionPopupAction[];
+}
+
 /**
  * Main editor API interface
  */
@@ -402,6 +437,10 @@ interface EditorAPI {
    * @returns true if process is running, false if not found or exited
    */
   isProcessRunning(#[bigint] process_id: number): boolean;
+  /** Compute syntax highlighting for a buffer range */
+  getHighlights(buffer_id: number, start: number, end: number): Promise<TsHighlightSpan[]>;
+  /** Get the byte offset of a line in a buffer */
+  getLineByteOffset(buffer_id: number, line: number): number;
   /** Get diff vs last saved snapshot for a buffer */
   getBufferSavedDiff(buffer_id: number): TsBufferSavedDiff | null;
   /**
@@ -409,6 +448,22 @@ interface EditorAPI {
    * @returns Array of Diagnostic objects with file URI, severity, message, and range
    */
   getAllDiagnostics(): TsDiagnostic[];
+  /**
+   * Get text from a buffer range
+   *
+   * Used by vi mode plugin for yank operations - reads text without deleting.
+   * @param buffer_id - Buffer ID
+   * @param start - Start byte offset
+   * @param end - End byte offset
+   * @returns Text content of the range, or empty string on error
+   */
+  getBufferText(buffer_id: number, start: number, end: number): Promise<string>;
+  /**
+   * Get the current global editor mode
+   *
+   * @returns Current mode name or null if no mode is active
+   */
+  getEditorMode(): string;
 
   // === Buffer Info Queries ===
   /**
@@ -661,6 +716,10 @@ interface EditorAPI {
    * await editor.delay(100);  // Wait 100ms
    */
   delay(#[bigint] ms: number): Promise<[]>;
+  /** Find a buffer ID by its file path */
+  findBufferByPath(path: string): number;
+  /** Compute line diff between two strings */
+  diffLines(original: string, modified: string): TsLineDiff;
   /**
    * Start a prompt with pre-filled initial value
    * @param label - Label to display (e.g., "Git grep: ")
@@ -677,6 +736,13 @@ interface EditorAPI {
    * @returns Promise resolving to the JSON response value
    */
   sendLspRequest(language: string, method: string, params?: unknown | null): Promise<unknown>;
+  /**
+   * Set the scroll position of a specific split
+   * @param split_id - The split ID
+   * @param top_byte - The byte offset of the top visible line
+   * @returns true if successful
+   */
+  setSplitScroll(split_id: number, top_byte: number): boolean;
   /**
    * Set the ratio of a split container
    * @param split_id - ID of the split
@@ -697,6 +763,55 @@ interface EditorAPI {
    * @returns true if the command was sent successfully
    */
   setBufferCursor(buffer_id: number, position: number): boolean;
+  /**
+   * Execute a built-in editor action by name
+   *
+   * This is used by vi mode plugin to run motions and then check cursor position.
+   * For example, to implement "dw" (delete word), the plugin:
+   * 1. Saves current cursor position
+   * 2. Calls executeAction("move_word_right") - cursor moves
+   * 3. Gets new cursor position
+   * 4. Deletes from old to new position
+   *
+   * @param action_name - Action name (e.g., "move_word_right", "move_line_end")
+   * @returns true if action was sent successfully
+   */
+  executeAction(action_name: string): boolean;
+  /**
+   * Execute multiple actions in sequence, each with an optional repeat count
+   *
+   * Used by vi mode for count prefix (e.g., "3dw" = delete 3 words).
+   * All actions execute atomically with no plugin roundtrips between them.
+   *
+   * @param actions - Array of {action: string, count?: number} objects
+   * @returns true if actions were sent successfully
+   */
+  executeActions(actions: ActionSpecJs[]): boolean;
+  /**
+   * Set the global editor mode (for modal editing like vi mode)
+   *
+   * When a mode is set, its keybindings take precedence over normal key handling.
+   * Pass null/undefined to clear the mode and return to normal editing.
+   *
+   * @param mode - Mode name (e.g., "vi-normal") or null to clear
+   * @returns true if command was sent successfully
+   */
+  setEditorMode(mode?: string | null): boolean;
+  /**
+   * Show an action popup with buttons for user interaction
+   *
+   * When the user selects an action, the ActionPopupResult hook is fired.
+   * @param options - Popup configuration with id, title, message, and actions
+   */
+  showActionPopup(options: TsActionPopupOptions): boolean;
+  /**
+   * Disable LSP for a specific language and persist to config
+   *
+   * This is used by LSP helper plugins to let users disable LSP for languages
+   * where the server is not available or not working.
+   * @param language - The language to disable LSP for (e.g., "python", "rust")
+   */
+  disableLspForLanguage(language: string): boolean;
 
   /**
    * Spawn an external process and return a cancellable handle
@@ -736,7 +851,7 @@ interface EditorAPI {
    * @param italic - Use italic text
    * @returns true if overlay was added
    */
-  addOverlay(buffer_id: number, namespace: string, start: number, end: number, r: number, g: number, b: number, underline: boolean, bold: boolean, italic: boolean): boolean;
+  addOverlay(buffer_id: number, namespace: string, start: number, end: number, r: number, g: number, b: number, bg_r: i16, bg_g: i16, bg_b: i16, underline: boolean, bold: boolean, italic: boolean): boolean;
   /**
    * Remove a specific overlay by its handle
    * @param buffer_id - The buffer ID
@@ -1011,7 +1126,7 @@ interface EditorAPI {
    * ["q", "close_buffer"]
    * ], true);
    */
-  defineMode(name: string, parent?: string | null, bindings: Vec<(String, String): boolean;
+  defineMode(name: string, parent: string, bindings: Vec<(String, String): boolean;
   /**
    * Switch the current split to display a buffer
    * @param buffer_id - ID of the buffer to show

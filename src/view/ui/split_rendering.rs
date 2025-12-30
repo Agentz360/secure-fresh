@@ -26,6 +26,13 @@ use ratatui::Frame;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 
+/// Maximum line width before forced wrapping is applied, even when line wrapping is disabled.
+/// This prevents memory exhaustion when opening files with extremely long lines (e.g., 10MB
+/// single-line JSON files). Lines exceeding this width are wrapped into multiple visual lines,
+/// each bounded to this width. 10,000 columns is far wider than any monitor while keeping
+/// memory usage reasonable (~80KB per ViewLine instead of hundreds of MB).
+const MAX_SAFE_LINE_WIDTH: usize = 10_000;
+
 fn push_span_with_map(
     spans: &mut Vec<Span<'static>>,
     map: &mut Vec<Option<usize>>,
@@ -1209,10 +1216,16 @@ impl SplitRenderer {
         // Use plugin transform if available, otherwise use base tokens
         let mut tokens = view_transform.map(|vt| vt.tokens).unwrap_or(base_tokens);
 
-        // Apply wrapping transform if enabled
-        if line_wrap_enabled {
-            tokens = Self::apply_wrapping_transform(tokens, content_width, gutter_width);
-        }
+        // Apply wrapping transform - always enabled for safety, but with different thresholds.
+        // When line_wrap is on: wrap at viewport width for normal text flow.
+        // When line_wrap is off: wrap at MAX_SAFE_LINE_WIDTH to prevent memory exhaustion
+        // from extremely long lines (e.g., 10MB single-line JSON files).
+        let effective_width = if line_wrap_enabled {
+            content_width
+        } else {
+            MAX_SAFE_LINE_WIDTH
+        };
+        tokens = Self::apply_wrapping_transform(tokens, effective_width, gutter_width);
 
         // Convert tokens to display lines using the view pipeline
         // Each ViewLine preserves LineStart info for correct line number rendering
@@ -1371,7 +1384,25 @@ impl SplitRenderer {
                 let mut byte_offset = 0usize;
                 let content_bytes = line_content.as_bytes();
                 let mut skip_next_lf = false; // Track if we should skip \n after \r in CRLF
+                let mut chars_this_line = 0usize; // Track chars to enforce MAX_SAFE_LINE_WIDTH
                 for ch in line_content.chars() {
+                    // Limit characters per line to prevent memory exhaustion from huge lines.
+                    // Insert a Break token to force wrapping at safe intervals.
+                    if chars_this_line >= MAX_SAFE_LINE_WIDTH {
+                        tokens.push(ViewTokenWire {
+                            source_offset: None,
+                            kind: ViewTokenWireKind::Break,
+                            style: None,
+                        });
+                        chars_this_line = 0;
+                        // Count this as a new visual line for the max_lines limit
+                        lines_seen += 1;
+                        if lines_seen >= max_lines {
+                            break;
+                        }
+                    }
+                    chars_this_line += 1;
+
                     let ch_len = ch.len_utf8();
                     let source_offset = Some(line_start + byte_offset);
 
@@ -2998,7 +3029,14 @@ impl SplitRenderer {
             if let Some((cursor_screen_x, cursor_screen_y)) = cursor {
                 // cursor_screen_x already includes gutter width from line_view_map
                 let screen_x = render_area.x.saturating_add(cursor_screen_x);
-                let screen_y = render_area.y.saturating_add(cursor_screen_y);
+
+                // Clamp cursor_screen_y to stay within the render area bounds.
+                // This prevents the cursor from jumping to the status bar when
+                // the cursor is at EOF and the buffer ends with a newline.
+                // Issue #468: "Cursor is jumping on statusbar"
+                let max_y = render_area.height.saturating_sub(1);
+                let clamped_cursor_y = cursor_screen_y.min(max_y);
+                let screen_y = render_area.y.saturating_add(clamped_cursor_y);
 
                 frame.set_cursor_position((screen_x, screen_y));
 
@@ -4222,6 +4260,195 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Test that apply_wrapping_transform correctly breaks long lines.
+    /// This prevents memory exhaustion from extremely long single-line files (issue #481).
+    #[test]
+    fn test_apply_wrapping_transform_breaks_long_lines() {
+        use crate::services::plugins::api::{ViewTokenWire, ViewTokenWireKind};
+
+        // Create a token with 25,000 characters (longer than MAX_SAFE_LINE_WIDTH of 10,000)
+        let long_text = "x".repeat(25_000);
+        let tokens = vec![
+            ViewTokenWire {
+                kind: ViewTokenWireKind::Text(long_text),
+                source_offset: Some(0),
+                style: None,
+            },
+            ViewTokenWire {
+                kind: ViewTokenWireKind::Newline,
+                source_offset: Some(25_000),
+                style: None,
+            },
+        ];
+
+        // Apply wrapping with MAX_SAFE_LINE_WIDTH (simulating line_wrap disabled)
+        let wrapped = SplitRenderer::apply_wrapping_transform(tokens, MAX_SAFE_LINE_WIDTH, 0);
+
+        // Count Break tokens - should have at least 2 breaks for 25K chars at 10K width
+        let break_count = wrapped
+            .iter()
+            .filter(|t| matches!(t.kind, ViewTokenWireKind::Break))
+            .count();
+
+        assert!(
+            break_count >= 2,
+            "25K char line should have at least 2 breaks at 10K width, got {}",
+            break_count
+        );
+
+        // Verify total content is preserved (excluding Break tokens)
+        let total_chars: usize = wrapped
+            .iter()
+            .filter_map(|t| match &t.kind {
+                ViewTokenWireKind::Text(s) => Some(s.len()),
+                _ => None,
+            })
+            .sum();
+
+        assert_eq!(
+            total_chars, 25_000,
+            "Total character count should be preserved after wrapping"
+        );
+    }
+
+    /// Test that normal-length lines are not affected by safety wrapping.
+    #[test]
+    fn test_apply_wrapping_transform_preserves_short_lines() {
+        use crate::services::plugins::api::{ViewTokenWire, ViewTokenWireKind};
+
+        // Create a token with 100 characters (much shorter than MAX_SAFE_LINE_WIDTH)
+        let short_text = "x".repeat(100);
+        let tokens = vec![
+            ViewTokenWire {
+                kind: ViewTokenWireKind::Text(short_text.clone()),
+                source_offset: Some(0),
+                style: None,
+            },
+            ViewTokenWire {
+                kind: ViewTokenWireKind::Newline,
+                source_offset: Some(100),
+                style: None,
+            },
+        ];
+
+        // Apply wrapping with MAX_SAFE_LINE_WIDTH (simulating line_wrap disabled)
+        let wrapped = SplitRenderer::apply_wrapping_transform(tokens, MAX_SAFE_LINE_WIDTH, 0);
+
+        // Should have no Break tokens for short lines
+        let break_count = wrapped
+            .iter()
+            .filter(|t| matches!(t.kind, ViewTokenWireKind::Break))
+            .count();
+
+        assert_eq!(
+            break_count, 0,
+            "Short lines should not have any breaks, got {}",
+            break_count
+        );
+
+        // Original text should be preserved exactly
+        let text_tokens: Vec<_> = wrapped
+            .iter()
+            .filter_map(|t| match &t.kind {
+                ViewTokenWireKind::Text(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(text_tokens.len(), 1, "Should have exactly one Text token");
+        assert_eq!(
+            text_tokens[0], short_text,
+            "Text content should be unchanged"
+        );
+    }
+
+    /// End-to-end test: verify large single-line content with sequential markers
+    /// is correctly chunked, wrapped, and all data is preserved through the pipeline.
+    #[test]
+    fn test_large_single_line_sequential_data_preserved() {
+        use crate::services::plugins::api::{ViewTokenWire, ViewTokenWireKind};
+        use crate::view::ui::view_pipeline::ViewLineIterator;
+
+        // Create content with sequential markers that span multiple chunks
+        // Format: "[00001][00002]..." - each marker is 7 chars
+        let num_markers = 5_000; // ~35KB, enough to test chunking at 10K char intervals
+        let content: String = (1..=num_markers).map(|i| format!("[{:05}]", i)).collect();
+
+        // Create tokens simulating what build_base_tokens would produce
+        let tokens = vec![
+            ViewTokenWire {
+                kind: ViewTokenWireKind::Text(content.clone()),
+                source_offset: Some(0),
+                style: None,
+            },
+            ViewTokenWire {
+                kind: ViewTokenWireKind::Newline,
+                source_offset: Some(content.len()),
+                style: None,
+            },
+        ];
+
+        // Apply safety wrapping (simulating line_wrap=false with MAX_SAFE_LINE_WIDTH)
+        let wrapped = SplitRenderer::apply_wrapping_transform(tokens, MAX_SAFE_LINE_WIDTH, 0);
+
+        // Convert to ViewLines
+        let view_lines: Vec<_> = ViewLineIterator::new(&wrapped, false, false, 4).collect();
+
+        // Reconstruct content from ViewLines
+        let mut reconstructed = String::new();
+        for line in &view_lines {
+            // Skip the trailing newline character in each line's text
+            let text = line.text.trim_end_matches('\n');
+            reconstructed.push_str(text);
+        }
+
+        // Verify all content is preserved
+        assert_eq!(
+            reconstructed.len(),
+            content.len(),
+            "Reconstructed content length should match original"
+        );
+
+        // Verify sequential markers are all present
+        for i in 1..=num_markers {
+            let marker = format!("[{:05}]", i);
+            assert!(
+                reconstructed.contains(&marker),
+                "Missing marker {} after pipeline",
+                marker
+            );
+        }
+
+        // Verify order is preserved by checking sample positions
+        let pos_100 = reconstructed.find("[00100]").expect("Should find [00100]");
+        let pos_1000 = reconstructed.find("[01000]").expect("Should find [01000]");
+        let pos_3000 = reconstructed.find("[03000]").expect("Should find [03000]");
+        assert!(
+            pos_100 < pos_1000 && pos_1000 < pos_3000,
+            "Markers should be in sequential order: {} < {} < {}",
+            pos_100,
+            pos_1000,
+            pos_3000
+        );
+
+        // Verify we got multiple visual lines (content was wrapped)
+        assert!(
+            view_lines.len() >= 3,
+            "35KB content should produce multiple visual lines at 10K width, got {}",
+            view_lines.len()
+        );
+
+        // Verify each ViewLine is bounded in size (memory safety check)
+        for (i, line) in view_lines.iter().enumerate() {
+            assert!(
+                line.text.len() <= MAX_SAFE_LINE_WIDTH + 10, // +10 for newline and rounding
+                "ViewLine {} exceeds safe width: {} chars",
+                i,
+                line.text.len()
+            );
         }
     }
 }

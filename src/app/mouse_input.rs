@@ -651,9 +651,18 @@ impl Editor {
             }
         }
 
-        // Check status bar warning indicators
+        // Check status bar indicators
         if let Some((status_row, _status_x, _status_width)) = self.cached_layout.status_bar_area {
             if row == status_row {
+                // Check line ending indicator area
+                if let Some((le_row, le_start, le_end)) =
+                    self.cached_layout.status_bar_line_ending_area
+                {
+                    if row == le_row && col >= le_start && col < le_end {
+                        return Some(HoverTarget::StatusBarLineEndingIndicator);
+                    }
+                }
+
                 // Check LSP indicator area
                 if let Some((lsp_row, lsp_start, lsp_end)) = self.cached_layout.status_bar_lsp_area
                 {
@@ -670,6 +679,20 @@ impl Editor {
                         return Some(HoverTarget::StatusBarWarningBadge);
                     }
                 }
+            }
+        }
+
+        // Check search options bar checkboxes
+        if let Some(ref layout) = self.cached_layout.search_options_layout {
+            use crate::view::ui::status_bar::SearchOptionsHover;
+            if let Some(hover) = layout.checkbox_at(col, row) {
+                return Some(match hover {
+                    SearchOptionsHover::CaseSensitive => HoverTarget::SearchOptionCaseSensitive,
+                    SearchOptionsHover::WholeWord => HoverTarget::SearchOptionWholeWord,
+                    SearchOptionsHover::Regex => HoverTarget::SearchOptionRegex,
+                    SearchOptionsHover::ConfirmEach => HoverTarget::SearchOptionConfirmEach,
+                    SearchOptionsHover::None => return None,
+                });
             }
         }
 
@@ -944,9 +967,18 @@ impl Editor {
             return Ok(());
         }
 
-        // Check if click is on status bar warning indicators
+        // Check if click is on status bar indicators
         if let Some((status_row, _status_x, _status_width)) = self.cached_layout.status_bar_area {
             if row == status_row {
+                // Check line ending indicator - click opens line ending selector
+                if let Some((le_row, le_start, le_end)) =
+                    self.cached_layout.status_bar_line_ending_area
+                {
+                    if row == le_row && col >= le_start && col < le_end {
+                        return self.handle_action(Action::SetLineEnding);
+                    }
+                }
+
                 // Check LSP indicator - click opens LSP status popup
                 if let Some((lsp_row, lsp_start, lsp_end)) = self.cached_layout.status_bar_lsp_area
                 {
@@ -962,6 +994,28 @@ impl Editor {
                     if row == warn_row && col >= warn_start && col < warn_end {
                         return self.handle_action(Action::ShowWarnings);
                     }
+                }
+            }
+        }
+
+        // Check if click is on search options checkboxes
+        if let Some(ref layout) = self.cached_layout.search_options_layout.clone() {
+            use crate::view::ui::status_bar::SearchOptionsHover;
+            if let Some(hover) = layout.checkbox_at(col, row) {
+                match hover {
+                    SearchOptionsHover::CaseSensitive => {
+                        return self.handle_action(Action::ToggleSearchCaseSensitive);
+                    }
+                    SearchOptionsHover::WholeWord => {
+                        return self.handle_action(Action::ToggleSearchWholeWord);
+                    }
+                    SearchOptionsHover::Regex => {
+                        return self.handle_action(Action::ToggleSearchRegex);
+                    }
+                    SearchOptionsHover::ConfirmEach => {
+                        return self.handle_action(Action::ToggleSearchConfirmEach);
+                    }
+                    SearchOptionsHover::None => {}
                 }
             }
         }

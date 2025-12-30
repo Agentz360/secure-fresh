@@ -776,6 +776,10 @@ impl SemanticHighlighter {
         }
     }
 
+    /// Maximum search range for semantic highlighting (1MB)
+    /// Beyond this, skip highlighting to avoid performance issues with huge single-line files
+    const MAX_SEARCH_RANGE: usize = 1024 * 1024;
+
     /// Find all whole-word occurrences of a word in a byte range
     fn find_occurrences_in_range(
         &self,
@@ -784,6 +788,11 @@ impl SemanticHighlighter {
         start: usize,
         end: usize,
     ) -> Vec<Range<usize>> {
+        // Skip if search range is too large (e.g., huge single-line files)
+        if end.saturating_sub(start) > Self::MAX_SEARCH_RANGE {
+            return Vec::new();
+        }
+
         let mut occurrences = Vec::new();
 
         // Get the text in the range (with some padding for edge words)
@@ -796,11 +805,11 @@ impl SemanticHighlighter {
             Err(_) => return occurrences,
         };
 
-        // Find all occurrences
-        let mut search_pos = 0;
-
-        while let Some(rel_pos) = text[search_pos..].find(word) {
-            let abs_start = search_start + search_pos + rel_pos;
+        // Use match_indices for single-pass searching (creates StrSearcher once)
+        // This is much more efficient than repeatedly calling find() which creates
+        // a new searcher each time
+        for (rel_pos, _) in text.match_indices(word) {
+            let abs_start = search_start + rel_pos;
             let abs_end = abs_start + word.len();
 
             // Check if this is a whole word match (not part of a larger word)
@@ -820,8 +829,6 @@ impl SemanticHighlighter {
                     occurrences.push(abs_start..abs_end);
                 }
             }
-
-            search_pos += rel_pos + 1;
         }
 
         occurrences

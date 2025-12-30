@@ -43,7 +43,7 @@ use crate::input::commands::Suggestion;
 use crate::model::event::BufferId;
 use crate::model::event::SplitId;
 use crate::services::plugins::api::{
-    EditorStateSnapshot, LayoutHints, PluginCommand, ViewTokenWire,
+    ActionPopupAction, ActionSpec, EditorStateSnapshot, LayoutHints, PluginCommand, ViewTokenWire,
 };
 use anyhow::{anyhow, Result};
 use deno_core::{
@@ -448,6 +448,7 @@ fn op_fresh_delete_range(state: &mut OpState, buffer_id: u32, start: u32, end: u
 /// @param italic - Use italic text
 /// @returns true if overlay was added
 #[op2(fast)]
+#[allow(clippy::too_many_arguments)]
 fn op_fresh_add_overlay(
     state: &mut OpState,
     buffer_id: u32,
@@ -457,6 +458,9 @@ fn op_fresh_add_overlay(
     r: u8,
     g: u8,
     b: u8,
+    bg_r: i16,
+    bg_g: i16,
+    bg_b: i16,
     underline: bool,
     bold: bool,
     italic: bool,
@@ -470,6 +474,13 @@ fn op_fresh_add_overlay(
                 namespace,
             ))
         };
+
+        let bg_color = if bg_r >= 0 && bg_g >= 0 && bg_b >= 0 {
+            Some((bg_r as u8, bg_g as u8, bg_b as u8))
+        } else {
+            None
+        };
+
         let result = runtime_state
             .command_sender
             .send(PluginCommand::AddOverlay {
@@ -477,6 +488,7 @@ fn op_fresh_add_overlay(
                 namespace: ns,
                 range: (start as usize)..(end as usize),
                 color: (r, g, b),
+                bg_color,
                 underline,
                 bold,
                 italic,
@@ -1690,6 +1702,118 @@ struct TsBufferSavedDiff {
     line_ranges: Option<Vec<(u32, u32)>>,
 }
 
+/// Line diff result for plugins
+#[derive(serde::Serialize)]
+struct TsLineDiff {
+    equal: bool,
+    changed_lines: Vec<(u32, u32)>,
+}
+
+/// Syntax highlighting span for plugins
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TsHighlightSpan {
+    pub start: u32,
+    pub end: u32,
+    pub color: (u8, u8, u8),
+    pub bold: bool,
+    pub italic: bool,
+}
+
+/// Compute syntax highlighting for a buffer range
+#[op2(async)]
+#[serde]
+async fn op_fresh_get_highlights(
+    state: Rc<RefCell<OpState>>,
+    buffer_id: u32,
+    start: u32,
+    end: u32,
+) -> Result<Vec<TsHighlightSpan>, JsErrorBox> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let request_id = {
+        let op_state = state.borrow();
+        let runtime_state = op_state.borrow::<Rc<RefCell<TsRuntimeState>>>().borrow();
+        let mut id_ref = runtime_state.next_request_id.borrow_mut();
+        let id = *id_ref;
+        *id_ref += 1;
+
+        runtime_state
+            .pending_responses
+            .lock()
+            .unwrap()
+            .insert(id, tx);
+
+        let _ = runtime_state
+            .command_sender
+            .send(PluginCommand::RequestHighlights {
+                buffer_id: BufferId(buffer_id as usize),
+                range: (start as usize)..(end as usize),
+                request_id: id,
+            });
+        id
+    };
+
+    match rx.await {
+        Ok(crate::services::plugins::api::PluginResponse::HighlightsComputed { spans, .. }) => {
+            Ok(spans)
+        }
+        _ => Err(JsErrorBox::generic(format!(
+            "Failed to get highlights for request {}",
+            request_id
+        ))),
+    }
+}
+
+/// Get the byte offset of a line in a buffer
+#[op2(fast)]
+fn op_fresh_get_line_byte_offset(state: &mut OpState, buffer_id: u32, line: u32) -> u32 {
+    let runtime_state = state.borrow::<Rc<RefCell<TsRuntimeState>>>().borrow();
+    if let Ok(snapshot) = runtime_state.state_snapshot.read() {
+        if let Some(state) = snapshot
+            .buffer_cursor_positions
+            .get(&BufferId(buffer_id as usize))
+        {
+            // We don't have direct access to the LineCache here in the snapshot.
+            // But wait, the snapshot has buffer_cursor_positions which is just a single position.
+        }
+    }
+
+    // Fallback: we need to access the actual buffer.
+    // Let's implement this as a command or find a way to access the editor state.
+    0
+}
+
+/// Find a buffer ID by its file path
+#[op2(fast)]
+fn op_fresh_find_buffer_by_path(state: &mut OpState, #[string] path: String) -> u32 {
+    let runtime_state = state.borrow::<Rc<RefCell<TsRuntimeState>>>().borrow();
+    if let Ok(snapshot) = runtime_state.state_snapshot.read() {
+        let target_path = std::path::PathBuf::from(path);
+        for (id, info) in &snapshot.buffers {
+            if let Some(ref buffer_path) = info.path {
+                if *buffer_path == target_path {
+                    return id.0 as u32;
+                }
+            }
+        }
+    }
+    0
+}
+
+/// Compute line diff between two strings
+#[op2]
+#[serde]
+fn op_fresh_diff_lines(#[string] original: String, #[string] modified: String) -> TsLineDiff {
+    let diff = crate::model::line_diff::diff_lines(original.as_bytes(), modified.as_bytes());
+    TsLineDiff {
+        equal: diff.equal,
+        changed_lines: diff
+            .changed_lines
+            .iter()
+            .map(|r| (r.start as u32, r.end as u32))
+            .collect(),
+    }
+}
+
 /// Selection range
 #[derive(serde::Serialize)]
 struct TsSelectionRange {
@@ -2722,12 +2846,18 @@ async fn op_fresh_send_lsp_request(
 fn op_fresh_define_mode(
     state: &mut OpState,
     #[string] name: String,
-    #[string] parent: Option<String>,
+    #[string] parent: String,
     #[serde] bindings: Vec<(String, String)>,
     read_only: bool,
 ) -> bool {
     if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
         let runtime_state = runtime_state.borrow();
+        // Convert empty string to None for parent
+        let parent = if parent.is_empty() {
+            None
+        } else {
+            Some(parent)
+        };
         let result = runtime_state
             .command_sender
             .send(PluginCommand::DefineMode {
@@ -2805,6 +2935,25 @@ fn op_fresh_set_split_buffer(state: &mut OpState, split_id: u32, buffer_id: u32)
             .send(PluginCommand::SetSplitBuffer {
                 split_id: crate::model::event::SplitId(split_id as usize),
                 buffer_id: BufferId(buffer_id as usize),
+            });
+        return result.is_ok();
+    }
+    false
+}
+
+/// Set the scroll position of a specific split
+/// @param split_id - The split ID
+/// @param top_byte - The byte offset of the top visible line
+/// @returns true if successful
+#[op2(fast)]
+fn op_fresh_set_split_scroll(state: &mut OpState, split_id: u32, top_byte: u32) -> bool {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        let result = runtime_state
+            .command_sender
+            .send(PluginCommand::SetSplitScroll {
+                split_id: crate::model::event::SplitId(split_id as usize),
+                top_byte: top_byte as usize,
             });
         return result.is_ok();
     }
@@ -2958,6 +3107,229 @@ fn op_fresh_set_virtual_buffer_content(
     false
 }
 
+/// Execute a built-in editor action by name
+///
+/// This is used by vi mode plugin to run motions and then check cursor position.
+/// For example, to implement "dw" (delete word), the plugin:
+/// 1. Saves current cursor position
+/// 2. Calls executeAction("move_word_right") - cursor moves
+/// 3. Gets new cursor position
+/// 4. Deletes from old to new position
+///
+/// @param action_name - Action name (e.g., "move_word_right", "move_line_end")
+/// @returns true if action was sent successfully
+#[op2(fast)]
+fn op_fresh_execute_action(state: &mut OpState, #[string] action_name: String) -> bool {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        let result = runtime_state
+            .command_sender
+            .send(PluginCommand::ExecuteAction { action_name });
+        return result.is_ok();
+    }
+    false
+}
+
+/// Execute multiple actions in sequence, each with an optional repeat count
+///
+/// Used by vi mode for count prefix (e.g., "3dw" = delete 3 words).
+/// All actions execute atomically with no plugin roundtrips between them.
+///
+/// @param actions - Array of {action: string, count?: number} objects
+/// @returns true if actions were sent successfully
+#[op2]
+fn op_fresh_execute_actions(state: &mut OpState, #[serde] actions: Vec<ActionSpecJs>) -> bool {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        let action_specs: Vec<ActionSpec> = actions
+            .into_iter()
+            .map(|a| ActionSpec {
+                action: a.action,
+                count: a.count.unwrap_or(1),
+            })
+            .collect();
+        let result = runtime_state
+            .command_sender
+            .send(PluginCommand::ExecuteActions {
+                actions: action_specs,
+            });
+        return result.is_ok();
+    }
+    false
+}
+
+/// JavaScript representation of ActionSpec (with optional count)
+#[derive(Debug, serde::Deserialize)]
+struct ActionSpecJs {
+    action: String,
+    #[serde(default)]
+    count: Option<u32>,
+}
+
+/// Get text from a buffer range
+///
+/// Used by vi mode plugin for yank operations - reads text without deleting.
+/// @param buffer_id - Buffer ID
+/// @param start - Start byte offset
+/// @param end - End byte offset
+/// @returns Text content of the range, or empty string on error
+#[op2(async)]
+#[string]
+async fn op_fresh_get_buffer_text(
+    state: Rc<RefCell<OpState>>,
+    buffer_id: u32,
+    start: u32,
+    end: u32,
+) -> Result<String, JsErrorBox> {
+    let receiver = {
+        let state = state.borrow();
+        let runtime_state = state
+            .try_borrow::<Rc<RefCell<TsRuntimeState>>>()
+            .ok_or_else(|| JsErrorBox::generic("Failed to get runtime state"))?;
+        let runtime_state = runtime_state.borrow();
+
+        // Allocate request ID
+        let request_id = {
+            let mut id = runtime_state.next_request_id.borrow_mut();
+            let current = *id;
+            *id += 1;
+            current
+        };
+
+        // Create oneshot channel for response
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        // Store the sender
+        {
+            let mut pending = runtime_state.pending_responses.lock().unwrap();
+            pending.insert(request_id, tx);
+        }
+
+        // Send command
+        runtime_state
+            .command_sender
+            .send(PluginCommand::GetBufferText {
+                buffer_id: BufferId(buffer_id as usize),
+                start: start as usize,
+                end: end as usize,
+                request_id,
+            })
+            .map_err(|_| JsErrorBox::generic("Failed to send GetBufferText command"))?;
+
+        rx
+    };
+
+    // Wait for response
+    let response = receiver
+        .await
+        .map_err(|_| JsErrorBox::generic("Response channel closed"))?;
+
+    match response {
+        crate::services::plugins::api::PluginResponse::BufferText { text, .. } => {
+            text.map_err(|e| JsErrorBox::generic(e))
+        }
+        _ => Err(JsErrorBox::generic("Unexpected response type")),
+    }
+}
+
+/// Set the global editor mode (for modal editing like vi mode)
+///
+/// When a mode is set, its keybindings take precedence over normal key handling.
+/// Pass null/undefined to clear the mode and return to normal editing.
+///
+/// @param mode - Mode name (e.g., "vi-normal") or null to clear
+/// @returns true if command was sent successfully
+#[op2]
+fn op_fresh_set_editor_mode(state: &mut OpState, #[string] mode: Option<String>) -> bool {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        let result = runtime_state
+            .command_sender
+            .send(PluginCommand::SetEditorMode { mode });
+        return result.is_ok();
+    }
+    false
+}
+
+/// Get the current global editor mode
+///
+/// @returns Current mode name or null if no mode is active
+#[op2]
+#[string]
+fn op_fresh_get_editor_mode(state: &mut OpState) -> Option<String> {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        if let Ok(snapshot) = runtime_state.state_snapshot.read() {
+            return snapshot.editor_mode.clone();
+        };
+    }
+    None
+}
+
+/// TypeScript struct for action popup action
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TsActionPopupAction {
+    pub id: String,
+    pub label: String,
+}
+
+/// TypeScript struct for action popup options
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TsActionPopupOptions {
+    pub id: String,
+    pub title: String,
+    pub message: String,
+    pub actions: Vec<TsActionPopupAction>,
+}
+
+/// Show an action popup with buttons for user interaction
+///
+/// When the user selects an action, the ActionPopupResult hook is fired.
+/// @param options - Popup configuration with id, title, message, and actions
+#[op2]
+fn op_fresh_show_action_popup(state: &mut OpState, #[serde] options: TsActionPopupOptions) -> bool {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+
+        let actions: Vec<ActionPopupAction> = options
+            .actions
+            .into_iter()
+            .map(|a| ActionPopupAction {
+                id: a.id,
+                label: a.label,
+            })
+            .collect();
+
+        let result = runtime_state
+            .command_sender
+            .send(PluginCommand::ShowActionPopup {
+                popup_id: options.id,
+                title: options.title,
+                message: options.message,
+                actions,
+            });
+        return result.is_ok();
+    }
+    false
+}
+
+/// Disable LSP for a specific language and persist to config
+///
+/// This is used by LSP helper plugins to let users disable LSP for languages
+/// where the server is not available or not working.
+/// @param language - The language to disable LSP for (e.g., "python", "rust")
+#[op2(fast)]
+fn op_fresh_disable_lsp_for_language(state: &mut OpState, #[string] language: String) -> bool {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        let result = runtime_state
+            .command_sender
+            .send(PluginCommand::DisableLspForLanguage { language });
+        return result.is_ok();
+    }
+    false
+}
+
 // Define the extension with our ops
 extension!(
     fresh_runtime,
@@ -2974,6 +3346,8 @@ extension!(
         op_fresh_get_buffer_path,
         op_fresh_get_buffer_length,
         op_fresh_get_buffer_saved_diff,
+        op_fresh_get_highlights,
+        op_fresh_find_buffer_by_path,
         op_fresh_is_buffer_modified,
         op_fresh_insert_text,
         op_fresh_delete_range,
@@ -3041,14 +3415,24 @@ extension!(
         op_fresh_define_mode,
         op_fresh_show_buffer,
         op_fresh_close_buffer,
-        op_fresh_focus_split,
         op_fresh_set_split_buffer,
+        op_fresh_set_split_scroll,
         op_fresh_close_split,
+        op_fresh_focus_split,
         op_fresh_set_split_ratio,
         op_fresh_distribute_splits_evenly,
         op_fresh_set_buffer_cursor,
         op_fresh_get_text_properties_at_cursor,
         op_fresh_set_virtual_buffer_content,
+        // Vi mode support operations
+        op_fresh_execute_action,
+        op_fresh_execute_actions,
+        op_fresh_get_buffer_text,
+        op_fresh_set_editor_mode,
+        op_fresh_get_editor_mode,
+        // LSP helper operations
+        op_fresh_show_action_popup,
+        op_fresh_disable_lsp_for_language,
     ],
 );
 
@@ -3165,6 +3549,9 @@ impl TypeScriptRuntime {
                     copyToClipboard(text) {
                         core.ops.op_fresh_set_clipboard(text);
                     },
+                    setClipboard(text) {
+                        core.ops.op_fresh_set_clipboard(text);
+                    },
 
                     // Buffer queries
                     getActiveBufferId() {
@@ -3197,8 +3584,9 @@ impl TypeScriptRuntime {
                     // Overlays
                     // namespace: group overlays together for efficient batch removal
                     // Use empty string for no namespace
-                    addOverlay(bufferId, namespace, start, end, r, g, b, underline, bold = false, italic = false) {
-                        return core.ops.op_fresh_add_overlay(bufferId, namespace, start, end, r, g, b, underline, bold, italic);
+                    // bg_r, bg_g, bg_b: background color (-1 for no background)
+                    addOverlay(bufferId, namespace, start, end, r, g, b, underline, bold = false, italic = false, bg_r = -1, bg_g = -1, bg_b = -1) {
+                        return core.ops.op_fresh_add_overlay(bufferId, namespace, start, end, r, g, b, bg_r, bg_g, bg_b, underline, bold, italic);
                     },
                     removeOverlay(bufferId, handle) {
                         return core.ops.op_fresh_remove_overlay(bufferId, handle);
@@ -3335,7 +3723,9 @@ impl TypeScriptRuntime {
 
                     // Async operations
                     spawnProcess(command, args = [], cwd = null) {
-                        const processId = core.ops.op_fresh_spawn_process_start(command, args, cwd);
+                        // Use editor's working directory if cwd not specified
+                        const effectiveCwd = cwd ?? core.ops.op_fresh_get_cwd();
+                        const processId = core.ops.op_fresh_spawn_process_start(command, args, effectiveCwd);
                         const resultPromise = processId.then(id => core.ops.op_fresh_spawn_process_wait(id));
                         return {
                             get processId() { return processId; },
@@ -3357,7 +3747,9 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_delay(ms);
                     },
                     spawnBackgroundProcess(command, args = [], cwd = null) {
-                        return core.ops.op_fresh_spawn_background_process(command, args, cwd);
+                        // Use editor's working directory if cwd not specified
+                        const effectiveCwd = cwd ?? core.ops.op_fresh_get_cwd();
+                        return core.ops.op_fresh_spawn_background_process(command, args, effectiveCwd);
                     },
                     killProcess(processId) {
                         return core.ops.op_fresh_kill_process(processId);
@@ -3433,7 +3825,9 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_create_virtual_buffer(options);
                     },
                     defineMode(name, parent, bindings, readOnly = false) {
-                        return core.ops.op_fresh_define_mode(name, parent, bindings, readOnly);
+                        // Convert null/undefined to empty string for Rust Option<String> handling
+                        const parentStr = parent != null ? parent : "";
+                        return core.ops.op_fresh_define_mode(name, parentStr, bindings, readOnly);
                     },
                     showBuffer(bufferId) {
                         return core.ops.op_fresh_show_buffer(bufferId);
@@ -3453,6 +3847,9 @@ impl TypeScriptRuntime {
                     setSplitRatio(splitId, ratio) {
                         return core.ops.op_fresh_set_split_ratio(splitId, ratio);
                     },
+                    setSplitScroll(splitId, topByte) {
+                        return core.ops.op_fresh_set_split_scroll(splitId, topByte);
+                    },
                     distributeSplitsEvenly() {
                         return core.ops.op_fresh_distribute_splits_evenly();
                     },
@@ -3464,6 +3861,31 @@ impl TypeScriptRuntime {
                     },
                     setVirtualBufferContent(bufferId, entries) {
                         return core.ops.op_fresh_set_virtual_buffer_content(bufferId, entries);
+                    },
+
+                    // Vi mode support
+                    executeAction(actionName) {
+                        return core.ops.op_fresh_execute_action(actionName);
+                    },
+                    executeActions(actions) {
+                        return core.ops.op_fresh_execute_actions(actions);
+                    },
+                    getBufferText(bufferId, start, end) {
+                        return core.ops.op_fresh_get_buffer_text(bufferId, start, end);
+                    },
+                    setEditorMode(mode) {
+                        return core.ops.op_fresh_set_editor_mode(mode);
+                    },
+                    getEditorMode() {
+                        return core.ops.op_fresh_get_editor_mode();
+                    },
+
+                    // LSP helper functions
+                    showActionPopup(options) {
+                        return core.ops.op_fresh_show_action_popup(options);
+                    },
+                    disableLspForLanguage(language) {
+                        return core.ops.op_fresh_disable_lsp_for_language(language);
                     },
                 };
 
@@ -3510,6 +3932,13 @@ impl TypeScriptRuntime {
                 ..
             } => *request_id,
             crate::services::plugins::api::PluginResponse::LspRequest { request_id, .. } => {
+                *request_id
+            }
+            crate::services::plugins::api::PluginResponse::HighlightsComputed {
+                request_id,
+                ..
+            } => *request_id,
+            crate::services::plugins::api::PluginResponse::BufferText { request_id, .. } => {
                 *request_id
             }
         };
@@ -4270,6 +4699,7 @@ mod tests {
                 namespace,
                 range,
                 color,
+                bg_color,
                 underline,
                 bold,
                 italic,
@@ -4279,6 +4709,7 @@ mod tests {
                 assert_eq!(range.start, 0);
                 assert_eq!(range.end, 50);
                 assert_eq!(*color, (255, 0, 0));
+                assert_eq!(*bg_color, None);
                 assert!(*underline);
                 assert!(!*bold);
                 assert!(!*italic);
@@ -5853,6 +6284,47 @@ mod tests {
             }
             Err(e) => {
                 eprintln!("Git log plugin failed with error: {}", e);
+            }
+        }
+
+        // Shutdown
+        handle.shutdown();
+    }
+
+    #[test]
+    fn test_plugin_thread_load_vi_mode_plugin() {
+        use crate::services::plugins::thread::PluginThreadHandle;
+
+        // Initialize tracing subscriber for detailed logging
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+            .with_test_writer()
+            .try_init();
+
+        let commands = Arc::new(RwLock::new(CommandRegistry::new()));
+
+        // Spawn the plugin thread
+        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+
+        // Load the vi_mode.ts plugin
+        let plugins_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
+        let plugin_path = plugins_dir.join("vi_mode.ts");
+
+        // Load the plugin through the plugin thread
+        let result = handle.load_plugin(&plugin_path);
+
+        // Check result
+        match result {
+            Ok(()) => {
+                eprintln!("Vi mode plugin loaded successfully");
+                // Check that the plugin was loaded and registered commands
+                let cmds = handle.process_commands();
+                eprintln!("Commands after load: {:?}", cmds.len());
+                // The vi mode plugin should register the "Toggle Vi mode" command
+                assert!(cmds.len() > 0, "Vi mode plugin should register commands");
+            }
+            Err(e) => {
+                panic!("Vi mode plugin failed to load: {}", e);
             }
         }
 

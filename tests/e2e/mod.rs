@@ -5,6 +5,7 @@ pub mod basic;
 pub mod binary_file;
 pub mod buffer_lifecycle;
 pub mod buffer_settings_commands;
+pub mod case_conversion;
 pub mod command_palette;
 pub mod crlf_rendering;
 pub mod document_model;
@@ -67,6 +68,8 @@ pub mod undo_redo;
 pub mod unicode_cursor;
 pub mod unicode_prompt_bugs;
 pub mod update_notification;
+#[cfg(feature = "plugins")]
+pub mod vi_mode;
 pub mod virtual_lines;
 pub mod visual_regression;
 pub mod warning_indicators;

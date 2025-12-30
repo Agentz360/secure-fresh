@@ -312,6 +312,18 @@ impl Editor {
 
         let is_maximized = self.split_manager.is_maximized();
 
+        // Record initial viewport states to detect changes
+        let initial_viewports: HashMap<SplitId, (usize, u16, u16)> = self
+            .split_view_states
+            .iter()
+            .map(|(id, vs)| {
+                (
+                    *id,
+                    (vs.viewport.top_byte, vs.viewport.width, vs.viewport.height),
+                )
+            })
+            .collect();
+
         let (split_areas, tab_areas, close_split_areas, maximize_split_areas, view_line_mappings) =
             SplitRenderer::render_content(
                 frame,
@@ -336,6 +348,33 @@ impl Editor {
                 is_maximized,
                 self.config.editor.relative_line_numbers,
             );
+
+        // Detect viewport changes and fire hooks
+        if self.plugin_manager.is_active() {
+            for (split_id, view_state) in &self.split_view_states {
+                let current = (
+                    view_state.viewport.top_byte,
+                    view_state.viewport.width,
+                    view_state.viewport.height,
+                );
+                if let Some(initial) = initial_viewports.get(split_id) {
+                    if *initial != current {
+                        if let Some(buffer_id) = self.split_manager.get_buffer_id(*split_id) {
+                            self.plugin_manager.run_hook(
+                                "viewport_changed",
+                                crate::services::plugins::hooks::HookArgs::ViewportChanged {
+                                    split_id: *split_id,
+                                    buffer_id,
+                                    top_byte: view_state.viewport.top_byte,
+                                    width: view_state.viewport.width,
+                                    height: view_state.viewport.height,
+                                },
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // Render terminal content on top of split content for terminal buffers
         self.render_terminal_splits(frame, &split_areas);
@@ -444,6 +483,9 @@ impl Editor {
             let status_bar_hover = match &self.mouse_state.hover_target {
                 Some(HoverTarget::StatusBarLspIndicator) => StatusBarHover::LspIndicator,
                 Some(HoverTarget::StatusBarWarningBadge) => StatusBarHover::WarningBadge,
+                Some(HoverTarget::StatusBarLineEndingIndicator) => {
+                    StatusBarHover::LineEndingIndicator
+                }
                 _ => StatusBarHover::None,
             };
 
@@ -470,6 +512,8 @@ impl Editor {
                 Some((status_bar_area.y, status_bar_area.x, status_bar_area.width));
             self.cached_layout.status_bar_lsp_area = status_bar_layout.lsp_indicator;
             self.cached_layout.status_bar_warning_area = status_bar_layout.warning_badge;
+            self.cached_layout.status_bar_line_ending_area =
+                status_bar_layout.line_ending_indicator;
         }
 
         // Render search options bar when in search prompt
@@ -489,7 +533,17 @@ impl Editor {
                 }
             });
 
-            StatusBarRenderer::render_search_options(
+            // Determine hover state for search options
+            use crate::view::ui::status_bar::SearchOptionsHover;
+            let search_options_hover = match &self.mouse_state.hover_target {
+                Some(HoverTarget::SearchOptionCaseSensitive) => SearchOptionsHover::CaseSensitive,
+                Some(HoverTarget::SearchOptionWholeWord) => SearchOptionsHover::WholeWord,
+                Some(HoverTarget::SearchOptionRegex) => SearchOptionsHover::Regex,
+                Some(HoverTarget::SearchOptionConfirmEach) => SearchOptionsHover::ConfirmEach,
+                _ => SearchOptionsHover::None,
+            };
+
+            let search_options_layout = StatusBarRenderer::render_search_options(
                 frame,
                 main_chunks[search_options_idx],
                 self.search_case_sensitive,
@@ -498,7 +552,11 @@ impl Editor {
                 confirm_each,
                 &theme,
                 &keybindings_cloned,
+                search_options_hover,
             );
+            self.cached_layout.search_options_layout = Some(search_options_layout);
+        } else {
+            self.cached_layout.search_options_layout = None;
         }
 
         // Render prompt line if active
@@ -1851,6 +1909,160 @@ impl Editor {
             self.set_status_message(format!("Match {} of {}", prev_index + 1, matches_len));
         } else {
             self.set_status_message("No active search. Press Ctrl+F to search.".to_string());
+        }
+    }
+
+    /// Find the next occurrence of the current selection (or word under cursor).
+    /// This is a "quick find" that doesn't require opening the search panel.
+    /// The search term is stored so subsequent Alt+N/Alt+P/F3 navigation works.
+    ///
+    /// If there's already an active search, this continues with the same search term.
+    /// Otherwise, it starts a new search with the current selection or word under cursor.
+    pub(super) fn find_selection_next(&mut self) {
+        // If there's already a search active, just continue to next match
+        if self.search_state.is_some() {
+            self.find_next();
+            return;
+        }
+
+        // No active search - start a new one with selection or word under cursor
+        let (search_text, selection_start) = self.get_selection_or_word_for_search_with_pos();
+
+        match search_text {
+            Some(text) if !text.is_empty() => {
+                // Record cursor position before search
+                let cursor_before = self.active_state().cursors.primary().position;
+
+                // Perform the search to set up search state
+                self.perform_search(&text);
+
+                // Check if we need to move to next match
+                if let Some(ref search_state) = self.search_state {
+                    let cursor_after = self.active_state().cursors.primary().position;
+
+                    // If we started at a match (selection_start matches a search result),
+                    // and perform_search didn't move us (or moved us to the same match),
+                    // then we need to find_next
+                    let started_at_match = selection_start
+                        .map(|start| search_state.matches.contains(&start))
+                        .unwrap_or(false);
+
+                    let landed_at_start = selection_start
+                        .map(|start| cursor_after == start)
+                        .unwrap_or(false);
+
+                    // Only call find_next if:
+                    // 1. We started at a match AND landed back at it, OR
+                    // 2. We didn't move at all
+                    if (started_at_match && landed_at_start) || cursor_before == cursor_after {
+                        if search_state.matches.len() > 1 {
+                            self.find_next();
+                        }
+                    }
+                }
+            }
+            _ => {
+                self.set_status_message("No text to search".to_string());
+            }
+        }
+    }
+
+    /// Find the previous occurrence of the current selection (or word under cursor).
+    /// This is a "quick find" that doesn't require opening the search panel.
+    ///
+    /// If there's already an active search, this continues with the same search term.
+    /// Otherwise, it starts a new search with the current selection or word under cursor.
+    pub(super) fn find_selection_previous(&mut self) {
+        // If there's already a search active, just continue to previous match
+        if self.search_state.is_some() {
+            self.find_previous();
+            return;
+        }
+
+        // No active search - start a new one with selection or word under cursor
+        let (search_text, selection_start) = self.get_selection_or_word_for_search_with_pos();
+
+        match search_text {
+            Some(text) if !text.is_empty() => {
+                // Record cursor position before search
+                let cursor_before = self.active_state().cursors.primary().position;
+
+                // Perform the search to set up search state
+                self.perform_search(&text);
+
+                // If we found matches, navigate to previous
+                if let Some(ref search_state) = self.search_state {
+                    let cursor_after = self.active_state().cursors.primary().position;
+
+                    // Check if we started at a match
+                    let started_at_match = selection_start
+                        .map(|start| search_state.matches.contains(&start))
+                        .unwrap_or(false);
+
+                    let landed_at_start = selection_start
+                        .map(|start| cursor_after == start)
+                        .unwrap_or(false);
+
+                    // For find previous, we always need to call find_previous at least once.
+                    // If we landed at our starting match, we need to go back once to get previous.
+                    // If we landed at a different match (because cursor was past start of selection),
+                    // we still want to find_previous to get to where we should be.
+                    if started_at_match && landed_at_start {
+                        // We're at the same match we started at, go to previous
+                        self.find_previous();
+                    } else if cursor_before != cursor_after {
+                        // perform_search moved us, now go back to find the actual previous
+                        // from our original position (which is before where we landed)
+                        self.find_previous();
+                    } else {
+                        // Cursor didn't move, just find previous
+                        self.find_previous();
+                    }
+                }
+            }
+            _ => {
+                self.set_status_message("No text to search".to_string());
+            }
+        }
+    }
+
+    /// Get the text to search for from selection or word under cursor,
+    /// along with the start position of that text (for determining if we're at a match).
+    fn get_selection_or_word_for_search_with_pos(&mut self) -> (Option<String>, Option<usize>) {
+        use crate::primitives::word_navigation::{find_word_end, find_word_start};
+
+        // First get selection range and cursor position with immutable borrow
+        let (selection_range, cursor_pos) = {
+            let state = self.active_state();
+            let primary = state.cursors.primary();
+            (primary.selection_range(), primary.position)
+        };
+
+        // Check if there's a selection
+        if let Some(range) = selection_range {
+            let state = self.active_state_mut();
+            let text = state.get_text_range(range.start, range.end);
+            if !text.is_empty() {
+                return (Some(text), Some(range.start));
+            }
+        }
+
+        // No selection - try to get word under cursor
+        let (word_start, word_end) = {
+            let state = self.active_state();
+            let word_start = find_word_start(&state.buffer, cursor_pos);
+            let word_end = find_word_end(&state.buffer, cursor_pos);
+            (word_start, word_end)
+        };
+
+        if word_start < word_end {
+            let state = self.active_state_mut();
+            (
+                Some(state.get_text_range(word_start, word_end)),
+                Some(word_start),
+            )
+        } else {
+            (None, None)
         }
     }
 

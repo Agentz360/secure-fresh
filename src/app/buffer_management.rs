@@ -437,6 +437,10 @@ impl Editor {
         state
             .margins
             .set_line_numbers(self.config.editor.line_numbers);
+        // Set default line ending for new buffers from config
+        state
+            .buffer
+            .set_default_line_ending(self.config.editor.default_line_ending.to_line_ending());
         self.buffers.insert(buffer_id, state);
         self.event_logs
             .insert(buffer_id, crate::model::event::EventLog::new());
@@ -886,6 +890,25 @@ impl Editor {
     /// Show LSP status - opens the warning log file if there are LSP warnings,
     /// otherwise shows a brief status message.
     pub fn show_lsp_status_popup(&mut self) {
+        // Get the current buffer's language for the hook
+        let language = self
+            .buffer_metadata
+            .get(&self.active_buffer())
+            .and_then(|m| m.file_path())
+            .and_then(|path| detect_language(path, &self.config.languages))
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let has_error = self.warning_domains.lsp.level() == crate::app::WarningLevel::Error;
+
+        // Fire the LspStatusClicked hook for plugins
+        self.plugin_manager.run_hook(
+            "lsp_status_clicked",
+            crate::services::plugins::hooks::HookArgs::LspStatusClicked {
+                language: language.clone(),
+                has_error,
+            },
+        );
+
         if !self.warning_domains.lsp.has_warnings() {
             if self.lsp_status.is_empty() {
                 self.status_message = Some("No LSP server active".to_string());

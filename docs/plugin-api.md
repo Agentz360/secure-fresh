@@ -116,6 +116,31 @@ interface TsBufferSavedDiff {
 }
 ```
 
+### TsLineDiff
+
+Line diff result for plugins
+
+```typescript
+interface TsLineDiff {
+  equal: boolean;
+  changed_lines: [number, number][];
+}
+```
+
+### TsHighlightSpan
+
+Syntax highlighting span for plugins
+
+```typescript
+interface TsHighlightSpan {
+  start: number;
+  end: number;
+  color: [number, number, number];
+  bold: boolean;
+  italic: boolean;
+}
+```
+
 ### SelectionRange
 
 Selection range
@@ -365,6 +390,41 @@ interface CreateVirtualBufferInCurrentSplitOptions {
 | `show_cursors` | Whether to show cursors in the buffer (default true) |
 | `editing_disabled` | Whether editing is disabled for this buffer (default false) |
 
+### ActionSpecJs
+
+JavaScript representation of ActionSpec (with optional count)
+
+```typescript
+interface ActionSpecJs {
+  action: string;
+  count?: number | null;
+}
+```
+
+### TsActionPopupAction
+
+TypeScript struct for action popup action
+
+```typescript
+interface TsActionPopupAction {
+  id: string;
+  label: string;
+}
+```
+
+### TsActionPopupOptions
+
+TypeScript struct for action popup options
+
+```typescript
+interface TsActionPopupOptions {
+  id: string;
+  title: string;
+  message: string;
+  actions: TsActionPopupAction[];
+}
+```
+
 ## API Reference
 
 ### Status and Logging
@@ -538,6 +598,37 @@ isProcessRunning(#[bigint] process_id: number): boolean
 |------|------|-------------|
 | `#[bigint] process_id` | `number` | - |
 
+#### `getHighlights`
+
+Compute syntax highlighting for a buffer range
+
+```typescript
+getHighlights(buffer_id: number, start: number, end: number): Promise<TsHighlightSpan[]>
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `buffer_id` | `number` | - |
+| `start` | `number` | - |
+| `end` | `number` | - |
+
+#### `getLineByteOffset`
+
+Get the byte offset of a line in a buffer
+
+```typescript
+getLineByteOffset(buffer_id: number, line: number): number
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `buffer_id` | `number` | - |
+| `line` | `number` | - |
+
 #### `getBufferSavedDiff`
 
 Get diff vs last saved snapshot for a buffer
@@ -558,6 +649,31 @@ Get all LSP diagnostics across all files
 
 ```typescript
 getAllDiagnostics(): TsDiagnostic[]
+```
+
+#### `getBufferText`
+
+Get text from a buffer range
+Used by vi mode plugin for yank operations - reads text without deleting.
+
+```typescript
+getBufferText(buffer_id: number, start: number, end: number): Promise<string>
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `buffer_id` | `number` | Buffer ID |
+| `start` | `number` | Start byte offset |
+| `end` | `number` | End byte offset |
+
+#### `getEditorMode`
+
+Get the current global editor mode
+
+```typescript
+getEditorMode(): string
 ```
 
 ### Buffer Info Queries
@@ -1027,6 +1143,35 @@ delay(#[bigint] ms: number): Promise<[]>
 await editor.delay(100);  // Wait 100ms
 ```
 
+#### `findBufferByPath`
+
+Find a buffer ID by its file path
+
+```typescript
+findBufferByPath(path: string): number
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `path` | `string` | - |
+
+#### `diffLines`
+
+Compute line diff between two strings
+
+```typescript
+diffLines(original: string, modified: string): TsLineDiff
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `original` | `string` | - |
+| `modified` | `string` | - |
+
 #### `startPromptWithInitial`
 
 Start a prompt with pre-filled initial value
@@ -1058,6 +1203,21 @@ sendLspRequest(language: string, method: string, params?: unknown | null): Promi
 | `language` | `string` | Language ID (e.g., "cpp") |
 | `method` | `string` | Full LSP method (e.g., "textDocument/switchSourceHeader") |
 | `params` | `unknown | null` (optional) | Optional request payload |
+
+#### `setSplitScroll`
+
+Set the scroll position of a specific split
+
+```typescript
+setSplitScroll(split_id: number, top_byte: number): boolean
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `split_id` | `number` | The split ID |
+| `top_byte` | `number` | The byte offset of the top visible line |
 
 #### `setSplitRatio`
 
@@ -1098,6 +1258,89 @@ setBufferCursor(buffer_id: number, position: number): boolean
 | `buffer_id` | `number` | ID of the buffer |
 | `position` | `number` | Byte offset position for the cursor |
 
+#### `executeAction`
+
+Execute a built-in editor action by name
+This is used by vi mode plugin to run motions and then check cursor position.
+For example, to implement "dw" (delete word), the plugin:
+1. Saves current cursor position
+2. Calls executeAction("move_word_right") - cursor moves
+3. Gets new cursor position
+4. Deletes from old to new position
+
+```typescript
+executeAction(action_name: string): boolean
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `action_name` | `string` | Action name (e.g., "move_word_right", "move_line_end") |
+
+#### `executeActions`
+
+Execute multiple actions in sequence, each with an optional repeat count
+Used by vi mode for count prefix (e.g., "3dw" = delete 3 words).
+All actions execute atomically with no plugin roundtrips between them.
+
+```typescript
+executeActions(actions: ActionSpecJs[]): boolean
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `actions` | `ActionSpecJs[]` | Array of {action: string, count?: number} objects |
+
+#### `setEditorMode`
+
+Set the global editor mode (for modal editing like vi mode)
+When a mode is set, its keybindings take precedence over normal key handling.
+Pass null/undefined to clear the mode and return to normal editing.
+
+```typescript
+setEditorMode(mode?: string | null): boolean
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `mode` | `string | null` (optional) | Mode name (e.g., "vi-normal") or null to clear |
+
+#### `showActionPopup`
+
+Show an action popup with buttons for user interaction
+When the user selects an action, the ActionPopupResult hook is fired.
+
+```typescript
+showActionPopup(options: TsActionPopupOptions): boolean
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `options` | `TsActionPopupOptions` | Popup configuration with id, title, message, and actions |
+
+#### `disableLspForLanguage`
+
+Disable LSP for a specific language and persist to config
+This is used by LSP helper plugins to let users disable LSP for languages
+where the server is not available or not working.
+
+```typescript
+disableLspForLanguage(language: string): boolean
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `language` | `string` | The language to disable LSP for (e.g., "python", "rust") |
+
 ### Overlay Operations
 
 #### `addOverlay`
@@ -1109,7 +1352,7 @@ Use namespaces for easy batch removal (e.g., "spell", "todo").
 Multiple overlays can apply to the same range; colors blend.
 
 ```typescript
-addOverlay(buffer_id: number, namespace: string, start: number, end: number, r: number, g: number, b: number, underline: boolean, bold: boolean, italic: boolean): boolean
+addOverlay(buffer_id: number, namespace: string, start: number, end: number, r: number, g: number, b: number, bg_r: i16, bg_g: i16, bg_b: i16, underline: boolean, bold: boolean, italic: boolean): boolean
 ```
 
 **Parameters:**
@@ -1123,6 +1366,9 @@ addOverlay(buffer_id: number, namespace: string, start: number, end: number, r: 
 | `r` | `number` | Red (0-255) |
 | `g` | `number` | Green (0-255) |
 | `b` | `number` | uffer_id - Target buffer ID |
+| `bg_r` | `i16` | - |
+| `bg_g` | `i16` | - |
+| `bg_b` | `i16` | - |
 | `underline` | `boolean` | Add underline decoration |
 | `bold` | `boolean` | Use bold text |
 | `italic` | `boolean` | Use italic text |
@@ -1669,7 +1915,7 @@ editor.defineMode("diagnostics-list", "special", [
 ], true);
 
 ```typescript
-defineMode(name: string, parent?: string | null, bindings: Vec<(String, String): boolean
+defineMode(name: string, parent: string, bindings: Vec<(String, String): boolean
 ```
 
 **Parameters:**
@@ -1677,7 +1923,7 @@ defineMode(name: string, parent?: string | null, bindings: Vec<(String, String):
 | Name | Type | Description |
 |------|------|-------------|
 | `name` | `string` | Mode name (e.g., "diagnostics-list") |
-| `parent` | `string | null` (optional) | Parent mode name for inheritance (e.g., "special"), or null |
+| `parent` | `string` | Parent mode name for inheritance (e.g., "special"), or null |
 | `bindings` | `Vec<(String, String` | Array of [key_string, command_name] pairs |
 
 **Example:**

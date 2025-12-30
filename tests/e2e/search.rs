@@ -1428,3 +1428,292 @@ fn test_status_bar_hidden_during_suggestions() {
         "Status bar should show 'Palette:' indicator after closing command palette"
     );
 }
+
+/// Test Ctrl+F3 finds next occurrence of word under cursor
+#[test]
+fn test_find_selection_next_from_word_under_cursor() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+
+    // Create a test file with searchable content
+    std::fs::write(&file_path, "hello world\nfoo bar\nhello again\nhello final").unwrap();
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Cursor is at the start, on "hello"
+    assert_eq!(
+        harness.cursor_position(),
+        0,
+        "Cursor should start at position 0"
+    );
+
+    // Press Ctrl+F3 to find next occurrence of word under cursor
+    harness
+        .send_key(KeyCode::F(3), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Should move to second "hello" (at "hello again")
+    let expected_pos = "hello world\nfoo bar\n".len();
+    assert_eq!(
+        harness.cursor_position(),
+        expected_pos,
+        "Ctrl+F3 should move cursor to second 'hello'"
+    );
+
+    // Press Ctrl+F3 again to find the next occurrence
+    harness
+        .send_key(KeyCode::F(3), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Should move to third "hello" (at "hello final")
+    let expected_pos = "hello world\nfoo bar\nhello again\n".len();
+    assert_eq!(
+        harness.cursor_position(),
+        expected_pos,
+        "Second Ctrl+F3 should move cursor to third 'hello'"
+    );
+}
+
+/// Test Ctrl+Shift+F3 finds previous occurrence of word under cursor
+#[test]
+fn test_find_selection_previous_from_word_under_cursor() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+
+    // Create a test file with searchable content
+    std::fs::write(&file_path, "hello world\nfoo bar\nhello again\nhello final").unwrap();
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Move to the last "hello" position
+    let last_hello_pos = "hello world\nfoo bar\nhello again\n".len();
+    harness
+        .editor_mut()
+        .active_state_mut()
+        .cursors
+        .primary_mut()
+        .position = last_hello_pos;
+    harness.render().unwrap();
+
+    // Press Ctrl+Shift+F3 to find previous occurrence
+    harness
+        .send_key(KeyCode::F(3), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Should move to second "hello" (at "hello again")
+    let expected_pos = "hello world\nfoo bar\n".len();
+    assert_eq!(
+        harness.cursor_position(),
+        expected_pos,
+        "Ctrl+Shift+F3 should move cursor to previous 'hello'"
+    );
+}
+
+/// Test Ctrl+F3 with a selection uses the selection text for search
+#[test]
+fn test_find_selection_next_with_selection() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+
+    // Create a test file with "foo" appearing multiple times
+    std::fs::write(&file_path, "foo bar baz\nfoo test\nanother foo here").unwrap();
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Select "foo" at the start using Ctrl+W (select word)
+    harness
+        .send_key(KeyCode::Char('w'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Verify "foo" is selected
+    let selected_text = harness.get_selected_text();
+    assert_eq!(selected_text, "foo", "Should have 'foo' selected");
+
+    // Press Ctrl+F3 to find next occurrence of selection
+    harness
+        .send_key(KeyCode::F(3), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Should move to second "foo" (at "foo test")
+    let expected_pos = "foo bar baz\n".len();
+    assert_eq!(
+        harness.cursor_position(),
+        expected_pos,
+        "Ctrl+F3 should move cursor to second 'foo'"
+    );
+}
+
+/// Test that Ctrl+F3 wraps around to find matches from the beginning
+#[test]
+fn test_find_selection_next_wraps_around() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+
+    // Create a test file with "hello" at the start and cursor at the end
+    std::fs::write(&file_path, "hello world\ntest").unwrap();
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Move cursor to "test" at the end
+    let test_pos = "hello world\n".len();
+    harness
+        .editor_mut()
+        .active_state_mut()
+        .cursors
+        .primary_mut()
+        .position = test_pos;
+    harness.render().unwrap();
+
+    // Press Ctrl+F3 to find next occurrence of "test"
+    harness
+        .send_key(KeyCode::F(3), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Since there's only one "test", it should stay at the same position (wrap around to self)
+    assert_eq!(
+        harness.cursor_position(),
+        test_pos,
+        "Ctrl+F3 should wrap around to the same match when only one exists"
+    );
+}
+
+/// Test that F3 continues searching after Ctrl+F3 establishes search term
+#[test]
+fn test_f3_continues_after_find_selection() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+
+    // Create a test file with "hello" appearing multiple times
+    std::fs::write(&file_path, "hello world\nhello again\nhello final").unwrap();
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Cursor is at the start, on "hello"
+    assert_eq!(
+        harness.cursor_position(),
+        0,
+        "Cursor should start at position 0"
+    );
+
+    // Press Ctrl+F3 to find next occurrence
+    harness
+        .send_key(KeyCode::F(3), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Should be at second "hello"
+    let second_hello_pos = "hello world\n".len();
+    assert_eq!(
+        harness.cursor_position(),
+        second_hello_pos,
+        "Should be at second 'hello'"
+    );
+
+    // Now press regular F3 to continue searching
+    harness.send_key(KeyCode::F(3), KeyModifiers::NONE).unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Should move to third "hello"
+    let third_hello_pos = "hello world\nhello again\n".len();
+    assert_eq!(
+        harness.cursor_position(),
+        third_hello_pos,
+        "F3 should continue to third 'hello' after Ctrl+F3"
+    );
+}
+
+/// Test that repeated Ctrl+F3 keeps the same search term even when landing on a longer word
+/// e.g., searching for "bla" should keep searching for "bla" even when landing on "blafoo"
+#[test]
+fn test_find_selection_keeps_search_term() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+
+    // Create a test file where "test" appears as standalone and as part of "testing"
+    // test -> testing -> test -> tester
+    std::fs::write(
+        &file_path,
+        "test word\ntesting here\ntest again\ntester end",
+    )
+    .unwrap();
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Cursor starts at "test" on line 1
+    assert_eq!(
+        harness.cursor_position(),
+        0,
+        "Cursor should start at position 0"
+    );
+
+    // Press Ctrl+F3 to find next occurrence of "test"
+    harness
+        .send_key(KeyCode::F(3), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Should move to "testing" (position 10) - this contains "test"
+    let testing_pos = "test word\n".len();
+    assert_eq!(
+        harness.cursor_position(),
+        testing_pos,
+        "First Ctrl+F3 should move to 'testing' which contains 'test'"
+    );
+
+    // Press Ctrl+F3 again - should continue searching for "test", NOT "testing"
+    harness
+        .send_key(KeyCode::F(3), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    // Should move to standalone "test" on line 3
+    let test_again_pos = "test word\ntesting here\n".len();
+    assert_eq!(
+        harness.cursor_position(),
+        test_again_pos,
+        "Second Ctrl+F3 should continue searching for 'test', not 'testing'"
+    );
+
+    // Press Ctrl+F3 again - should find "tester" which also contains "test"
+    harness
+        .send_key(KeyCode::F(3), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    let tester_pos = "test word\ntesting here\ntest again\n".len();
+    assert_eq!(
+        harness.cursor_position(),
+        tester_pos,
+        "Third Ctrl+F3 should find 'tester' which contains 'test'"
+    );
+
+    // Press Ctrl+F3 again - should wrap around to first "test"
+    harness
+        .send_key(KeyCode::F(3), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.process_async_and_render().unwrap();
+
+    assert_eq!(
+        harness.cursor_position(),
+        0,
+        "Fourth Ctrl+F3 should wrap around to first 'test'"
+    );
+}

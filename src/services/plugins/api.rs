@@ -29,6 +29,16 @@ pub enum PluginResponse {
         request_id: u64,
         result: Result<Value, String>,
     },
+    /// Response to RequestHighlights
+    HighlightsComputed {
+        request_id: u64,
+        spans: Vec<crate::services::plugins::runtime::TsHighlightSpan>,
+    },
+    /// Response to GetBufferText with the text content
+    BufferText {
+        request_id: u64,
+        text: Result<String, String>,
+    },
 }
 
 /// Information about a cursor in the editor
@@ -38,6 +48,15 @@ pub struct CursorInfo {
     pub position: usize,
     /// Selection range (if any)
     pub selection: Option<Range<usize>>,
+}
+
+/// Specification for an action to execute, with optional repeat count
+#[derive(Debug, Clone)]
+pub struct ActionSpec {
+    /// Action name (e.g., "move_word_right", "delete_line")
+    pub action: String,
+    /// Number of times to repeat the action (default 1)
+    pub count: u32,
 }
 
 /// Information about a buffer
@@ -181,6 +200,9 @@ pub struct EditorStateSnapshot {
     /// User config as serde_json::Value (only what's in the user's config file)
     /// Fields not present here are using default values
     pub user_config: serde_json::Value,
+    /// Global editor mode for modal editing (e.g., "vi-normal", "vi-insert")
+    /// When set, this mode's keybindings take precedence over normal key handling
+    pub editor_mode: Option<String>,
 }
 
 impl EditorStateSnapshot {
@@ -201,6 +223,7 @@ impl EditorStateSnapshot {
             diagnostics: HashMap::new(),
             config: serde_json::Value::Null,
             user_config: serde_json::Value::Null,
+            editor_mode: None,
         }
     }
 }
@@ -240,6 +263,7 @@ pub enum PluginCommand {
         namespace: Option<OverlayNamespace>,
         range: Range<usize>,
         color: (u8, u8, u8),
+        bg_color: Option<(u8, u8, u8)>,
         underline: bool,
         bold: bool,
         italic: bool,
@@ -573,6 +597,16 @@ pub enum PluginCommand {
         buffer_id: BufferId,
     },
 
+    /// Set the scroll position of a specific split
+    SetSplitScroll { split_id: SplitId, top_byte: usize },
+
+    /// Request syntax highlights for a buffer range
+    RequestHighlights {
+        buffer_id: BufferId,
+        range: Range<usize>,
+        request_id: u64,
+    },
+
     /// Close a split (if not the last one)
     CloseSplit { split_id: SplitId },
 
@@ -620,6 +654,92 @@ pub enum PluginCommand {
         /// Whether the context is active
         active: bool,
     },
+
+    /// Set the hunks for the Review Diff tool
+    SetReviewDiffHunks { hunks: Vec<ReviewHunk> },
+
+    /// Execute an editor action by name (e.g., "move_word_right", "delete_line")
+    /// Used by vi mode plugin to run motions and calculate cursor ranges
+    ExecuteAction {
+        /// Action name (e.g., "move_word_right", "move_line_end")
+        action_name: String,
+    },
+
+    /// Execute multiple actions in sequence, each with an optional repeat count
+    /// Used by vi mode for count prefix (e.g., "3dw" = delete 3 words)
+    /// All actions execute atomically with no plugin roundtrips between them
+    ExecuteActions {
+        /// List of actions to execute in sequence
+        actions: Vec<ActionSpec>,
+    },
+
+    /// Get text from a buffer range (for yank operations)
+    GetBufferText {
+        /// Buffer ID
+        buffer_id: BufferId,
+        /// Start byte offset
+        start: usize,
+        /// End byte offset
+        end: usize,
+        /// Request ID for async response
+        request_id: u64,
+    },
+
+    /// Set the global editor mode (for modal editing like vi mode)
+    /// When set, the mode's keybindings take precedence over normal editing
+    SetEditorMode {
+        /// Mode name (e.g., "vi-normal", "vi-insert") or None to clear
+        mode: Option<String>,
+    },
+
+    /// Show an action popup with buttons for user interaction
+    /// When the user selects an action, the ActionPopupResult hook is fired
+    ShowActionPopup {
+        /// Unique identifier for the popup (used in ActionPopupResult)
+        popup_id: String,
+        /// Title text for the popup
+        title: String,
+        /// Body message (supports basic formatting)
+        message: String,
+        /// Action buttons to display
+        actions: Vec<ActionPopupAction>,
+    },
+
+    /// Disable LSP for a specific language and persist to config
+    DisableLspForLanguage {
+        /// The language to disable LSP for (e.g., "python", "rust")
+        language: String,
+    },
+}
+
+/// Hunk status for Review Diff
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum HunkStatus {
+    Pending,
+    Staged,
+    Discarded,
+}
+
+/// A high-level hunk directive for the Review Diff tool
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReviewHunk {
+    pub id: String,
+    pub file: String,
+    pub context_header: String,
+    pub status: HunkStatus,
+    /// 0-indexed line range in the base (HEAD) version
+    pub base_range: Option<(usize, usize)>,
+    /// 0-indexed line range in the modified (Working) version
+    pub modified_range: Option<(usize, usize)>,
+}
+
+/// Action button for action popups
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActionPopupAction {
+    /// Unique action identifier (returned in ActionPopupResult)
+    pub id: String,
+    /// Display text for the button (can include command hints)
+    pub label: String,
 }
 
 /// Plugin API context - provides safe access to editor functionality
@@ -711,6 +831,7 @@ impl PluginApi {
         namespace: Option<String>,
         range: Range<usize>,
         color: (u8, u8, u8),
+        bg_color: Option<(u8, u8, u8)>,
         underline: bool,
         bold: bool,
         italic: bool,
@@ -720,6 +841,7 @@ impl PluginApi {
             namespace: namespace.map(crate::view::overlay::OverlayNamespace::from_string),
             range,
             color,
+            bg_color,
             underline,
             bold,
             italic,
@@ -928,6 +1050,28 @@ impl PluginApi {
         self.send_command(PluginCommand::ShowBuffer { buffer_id })
     }
 
+    /// Set the scroll position of a specific split
+    pub fn set_split_scroll(&self, split_id: usize, top_byte: usize) -> Result<(), String> {
+        self.send_command(PluginCommand::SetSplitScroll {
+            split_id: SplitId(split_id),
+            top_byte,
+        })
+    }
+
+    /// Request syntax highlights for a buffer range
+    pub fn get_highlights(
+        &self,
+        buffer_id: BufferId,
+        range: Range<usize>,
+        request_id: u64,
+    ) -> Result<(), String> {
+        self.send_command(PluginCommand::RequestHighlights {
+            buffer_id,
+            range,
+            request_id,
+        })
+    }
+
     // === Query Methods ===
 
     /// Get the currently active buffer ID
@@ -1065,6 +1209,7 @@ mod tests {
             Some("test-overlay".to_string()),
             0..10,
             (255, 0, 0),
+            None,
             true,
             false,
             false,
@@ -1078,6 +1223,7 @@ mod tests {
                 namespace,
                 range,
                 color,
+                bg_color,
                 underline,
                 bold,
                 italic,
@@ -1086,6 +1232,7 @@ mod tests {
                 assert_eq!(namespace.as_ref().map(|n| n.as_str()), Some("test-overlay"));
                 assert_eq!(range, 0..10);
                 assert_eq!(color, (255, 0, 0));
+                assert_eq!(bg_color, None);
                 assert!(underline);
                 assert!(!bold);
                 assert!(!italic);

@@ -227,6 +227,50 @@ pub enum HookArgs {
         /// The request parameters as a JSON string (may be null)
         params: Option<String>,
     },
+
+    /// Viewport changed (scrolled or resized)
+    ViewportChanged {
+        split_id: SplitId,
+        buffer_id: BufferId,
+        top_byte: usize,
+        width: u16,
+        height: u16,
+    },
+
+    /// LSP server failed to start or crashed
+    /// This hook fires when an LSP server encounters an error during startup
+    /// or unexpectedly terminates. Plugins can use this to offer installation
+    /// instructions or disable LSP for the affected language.
+    LspServerError {
+        /// The language that failed (e.g., "python", "rust")
+        language: String,
+        /// The server command that failed (e.g., "pylsp", "rust-analyzer")
+        server_command: String,
+        /// Error type: "not_found", "spawn_failed", "timeout", "crash"
+        error_type: String,
+        /// Human-readable error message
+        message: String,
+    },
+
+    /// User clicked the LSP status indicator in the status bar
+    /// This hook fires when the user clicks on the LSP status area,
+    /// allowing plugins to show contextual help or actions.
+    LspStatusClicked {
+        /// The language of the current buffer
+        language: String,
+        /// Whether there's an active error for this language
+        has_error: bool,
+    },
+
+    /// User selected an action from an action popup
+    /// This hook fires when the user selects an action or dismisses a popup
+    /// created with showActionPopup.
+    ActionPopupResult {
+        /// The popup ID (set when showing popup)
+        popup_id: String,
+        /// The action ID selected, or "dismissed" if closed without selection
+        action_id: String,
+    },
 }
 
 /// Information about a single line for the LinesChanged hook
@@ -644,6 +688,52 @@ pub fn hook_args_to_json(args: &HookArgs) -> Result<String> {
                 "params": params,
             })
         }
+        HookArgs::ViewportChanged {
+            split_id,
+            buffer_id,
+            top_byte,
+            width,
+            height,
+        } => {
+            serde_json::json!({
+                "split_id": split_id.0,
+                "buffer_id": buffer_id.0,
+                "top_byte": top_byte,
+                "width": width,
+                "height": height,
+            })
+        }
+        HookArgs::LspServerError {
+            language,
+            server_command,
+            error_type,
+            message,
+        } => {
+            serde_json::json!({
+                "language": language,
+                "server_command": server_command,
+                "error_type": error_type,
+                "message": message,
+            })
+        }
+        HookArgs::LspStatusClicked {
+            language,
+            has_error,
+        } => {
+            serde_json::json!({
+                "language": language,
+                "has_error": has_error,
+            })
+        }
+        HookArgs::ActionPopupResult {
+            popup_id,
+            action_id,
+        } => {
+            serde_json::json!({
+                "popup_id": popup_id,
+                "action_id": action_id,
+            })
+        }
     };
 
     serde_json::to_string(&json_value).map_err(|e| anyhow!("Failed to serialize hook args: {}", e))
@@ -809,6 +899,20 @@ mod tests {
             },
             HookArgs::Idle { milliseconds: 500 },
             HookArgs::EditorInitialized,
+            HookArgs::LspServerError {
+                language: "python".to_string(),
+                server_command: "pylsp".to_string(),
+                error_type: "not_found".to_string(),
+                message: "Server not found".to_string(),
+            },
+            HookArgs::LspStatusClicked {
+                language: "rust".to_string(),
+                has_error: true,
+            },
+            HookArgs::ActionPopupResult {
+                popup_id: "test-popup".to_string(),
+                action_id: "copy_pip".to_string(),
+            },
         ];
 
         // All should run without panicking
@@ -816,6 +920,43 @@ mod tests {
             let result = registry.run_hooks("test", &args);
             assert!(result);
         }
+    }
+
+    #[test]
+    fn test_lsp_hook_args_serialization() {
+        // Test LspServerError serialization
+        let args = HookArgs::LspServerError {
+            language: "python".to_string(),
+            server_command: "pylsp".to_string(),
+            error_type: "not_found".to_string(),
+            message: "Server 'pylsp' not found in PATH".to_string(),
+        };
+        let json = hook_args_to_json(&args).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["language"], "python");
+        assert_eq!(parsed["server_command"], "pylsp");
+        assert_eq!(parsed["error_type"], "not_found");
+        assert!(parsed["message"].as_str().unwrap().contains("pylsp"));
+
+        // Test LspStatusClicked serialization
+        let args = HookArgs::LspStatusClicked {
+            language: "rust".to_string(),
+            has_error: true,
+        };
+        let json = hook_args_to_json(&args).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["language"], "rust");
+        assert_eq!(parsed["has_error"], true);
+
+        // Test ActionPopupResult serialization
+        let args = HookArgs::ActionPopupResult {
+            popup_id: "python-lsp-help".to_string(),
+            action_id: "copy_pip".to_string(),
+        };
+        let json = hook_args_to_json(&args).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["popup_id"], "python-lsp-help");
+        assert_eq!(parsed["action_id"], "copy_pip");
     }
 
     #[test]

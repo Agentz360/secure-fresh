@@ -449,6 +449,10 @@ pub struct Editor {
     /// Plugin-defined contexts like "config-editor" that control command availability
     active_custom_contexts: HashSet<String>,
 
+    /// Global editor mode for modal editing (e.g., "vi-normal", "vi-insert")
+    /// When set, this mode's keybindings take precedence over normal key handling
+    editor_mode: Option<String>,
+
     /// Warning log receiver and path (for tracking warnings)
     warning_log: Option<(std::sync::mpsc::Receiver<()>, PathBuf)>,
 
@@ -496,6 +500,13 @@ pub struct Editor {
 
     /// Terminal color capability (true color, 256, or 16 colors)
     color_capability: crate::view::color_support::ColorCapability,
+
+    /// Hunks for the Review Diff tool
+    review_hunks: Vec<crate::services::plugins::api::ReviewHunk>,
+
+    /// Active action popup (for plugin showActionPopup API)
+    /// Stores (popup_id, Vec<(action_id, action_label)>)
+    active_action_popup: Option<(String, Vec<(String, String)>)>,
 
     /// Stdin streaming state (if reading from stdin)
     stdin_streaming: Option<StdinStreamingState>,
@@ -908,6 +919,7 @@ impl Editor {
             time_source: time_source.clone(),
             last_auto_save: time_source.now(),
             active_custom_contexts: HashSet::new(),
+            editor_mode: None,
             warning_log: None,
             warning_domains: WarningDomainRegistry::new(),
             update_checker,
@@ -923,6 +935,8 @@ impl Editor {
             settings_state: None,
             color_capability,
             stdin_streaming: None,
+            review_hunks: Vec::new(),
+            active_action_popup: None,
         })
     }
 
@@ -1009,15 +1023,28 @@ impl Editor {
         self.active_state().editing_disabled
     }
 
-    /// Resolve a keybinding for the active buffer's mode
+    /// Resolve a keybinding for the current mode
     ///
-    /// If the active buffer has a mode (virtual buffer), check if that mode
-    /// has a keybinding for the given key. Returns the command name if found.
+    /// First checks the global editor mode (for vi mode and other modal editing).
+    /// If no global mode is set or no binding is found, falls back to the
+    /// active buffer's mode (for virtual buffers with custom modes).
+    /// Returns the command name if found.
     pub fn resolve_mode_keybinding(
         &self,
         code: KeyCode,
         modifiers: KeyModifiers,
     ) -> Option<String> {
+        // First check global editor mode (e.g., "vi-normal", "vi-operator-pending")
+        if let Some(ref global_mode) = self.editor_mode {
+            if let Some(binding) =
+                self.mode_registry
+                    .resolve_keybinding(global_mode, code, modifiers)
+            {
+                return Some(binding);
+            }
+        }
+
+        // Fall back to buffer-local mode (for virtual buffers)
         let mode_name = self.active_buffer_mode()?;
         self.mode_registry
             .resolve_keybinding(mode_name, code, modifiers)
@@ -1730,90 +1757,142 @@ impl Editor {
         use crate::view::ui::view_pipeline::ViewLineIterator;
 
         let active_split = self.split_manager.active_split();
-        let buffer_id = self.active_buffer();
-        let tab_size = self.config.editor.tab_size;
 
-        // Get view_transform tokens from SplitViewState (if any)
-        let view_transform_tokens = self
+        // Find other splits in the same sync group if any
+        let sync_group = self
             .split_view_states
             .get(&active_split)
-            .and_then(|vs| vs.view_transform.as_ref())
-            .map(|vt| vt.tokens.clone());
+            .and_then(|vs| vs.sync_group);
+        let splits_to_scroll = if let Some(group_id) = sync_group {
+            self.split_manager
+                .get_splits_in_group(group_id, &self.split_view_states)
+        } else {
+            vec![active_split]
+        };
 
-        // Get mutable references to both buffer and view state
-        let buffer = &mut self.buffers.get_mut(&buffer_id).unwrap().buffer;
-        let view_state = self.split_view_states.get_mut(&active_split);
-
-        if let Some(view_state) = view_state {
-            if let Some(tokens) = view_transform_tokens {
-                // Use view-aware scrolling with the transform's tokens
-                let view_lines: Vec<_> =
-                    ViewLineIterator::new(&tokens, false, false, tab_size).collect();
-                view_state
-                    .viewport
-                    .scroll_view_lines(&view_lines, line_offset);
+        for split_id in splits_to_scroll {
+            let buffer_id = if let Some(id) = self.split_manager.buffer_for_split(split_id) {
+                id
             } else {
-                // No view transform - use traditional buffer-based scrolling
-                // Still use SplitViewState's viewport (not EditorState's)
-                if line_offset > 0 {
-                    view_state
-                        .viewport
-                        .scroll_down(buffer, line_offset as usize);
-                } else {
-                    view_state
-                        .viewport
-                        .scroll_up(buffer, line_offset.unsigned_abs());
+                continue;
+            };
+            let tab_size = self.config.editor.tab_size;
+
+            // Get view_transform tokens from SplitViewState (if any)
+            let view_transform_tokens = self
+                .split_view_states
+                .get(&split_id)
+                .and_then(|vs| vs.view_transform.as_ref())
+                .map(|vt| vt.tokens.clone());
+
+            // Get mutable references to both buffer and view state
+            if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                let buffer = &mut state.buffer;
+                if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
+                    if let Some(tokens) = view_transform_tokens {
+                        // Use view-aware scrolling with the transform's tokens
+                        let view_lines: Vec<_> =
+                            ViewLineIterator::new(&tokens, false, false, tab_size).collect();
+                        view_state
+                            .viewport
+                            .scroll_view_lines(&view_lines, line_offset);
+                    } else {
+                        // No view transform - use traditional buffer-based scrolling
+                        if line_offset > 0 {
+                            view_state
+                                .viewport
+                                .scroll_down(buffer, line_offset as usize);
+                        } else {
+                            view_state
+                                .viewport
+                                .scroll_up(buffer, line_offset.unsigned_abs());
+                        }
+                    }
+                    // Mark to skip ensure_visible on next render so the scroll isn't undone
+                    view_state.viewport.set_skip_ensure_visible();
                 }
             }
-            // Mark to skip ensure_visible on next render so the scroll isn't undone
-            view_state.viewport.set_skip_ensure_visible();
         }
-        // Note: SplitViewState is now authoritative for viewport, no sync needed
     }
 
     /// Handle SetViewport event using SplitViewState's viewport
     fn handle_set_viewport_event(&mut self, top_line: usize) {
         let active_split = self.split_manager.active_split();
-        let buffer_id = self.active_buffer();
 
-        // Get mutable references to both buffer and view state
-        let buffer = self.buffers.get_mut(&buffer_id).map(|s| &mut s.buffer);
-        let view_state = self.split_view_states.get_mut(&active_split);
+        // Find other splits in the same sync group if any
+        let sync_group = self
+            .split_view_states
+            .get(&active_split)
+            .and_then(|vs| vs.sync_group);
+        let splits_to_scroll = if let Some(group_id) = sync_group {
+            self.split_manager
+                .get_splits_in_group(group_id, &self.split_view_states)
+        } else {
+            vec![active_split]
+        };
 
-        if let (Some(buffer), Some(view_state)) = (buffer, view_state) {
-            view_state.viewport.scroll_to(buffer, top_line);
-            // Skip ensure_visible so the explicit scroll position isn't undone during render
-            view_state.viewport.set_skip_ensure_visible();
+        for split_id in splits_to_scroll {
+            let buffer_id = if let Some(id) = self.split_manager.buffer_for_split(split_id) {
+                id
+            } else {
+                continue;
+            };
+
+            if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                let buffer = &mut state.buffer;
+                if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
+                    view_state.viewport.scroll_to(buffer, top_line);
+                    // Mark to skip ensure_visible on next render so the scroll isn't undone
+                    view_state.viewport.set_skip_ensure_visible();
+                }
+            }
         }
     }
 
-    /// Handle Recenter event using SplitViewState's viewport and cursors
+    /// Handle Recenter event using SplitViewState's viewport
     fn handle_recenter_event(&mut self) {
         let active_split = self.split_manager.active_split();
-        let buffer_id = self.active_buffer();
 
-        // Get cursor position from SplitViewState's cursors
-        let cursor_position = self
+        // Find other splits in the same sync group if any
+        let sync_group = self
             .split_view_states
             .get(&active_split)
-            .and_then(|vs| vs.cursors.iter().next())
-            .map(|(_, c)| c.position);
+            .and_then(|vs| vs.sync_group);
+        let splits_to_recenter = if let Some(group_id) = sync_group {
+            self.split_manager
+                .get_splits_in_group(group_id, &self.split_view_states)
+        } else {
+            vec![active_split]
+        };
 
-        if let Some(cursor_pos) = cursor_position {
-            // Get buffer to calculate line
-            if let Some(state) = self.buffers.get(&buffer_id) {
-                let cursor_line = state.buffer.position_to_line_col(cursor_pos).0;
-                let half_height = self
-                    .split_view_states
-                    .get(&active_split)
-                    .map(|vs| (vs.viewport.height / 2) as usize)
-                    .unwrap_or(12);
-                let new_top = cursor_line.saturating_sub(half_height);
+        for split_id in splits_to_recenter {
+            let buffer_id = if let Some(id) = self.split_manager.buffer_for_split(split_id) {
+                id
+            } else {
+                continue;
+            };
 
-                // Now scroll the viewport
-                let buffer = &mut self.buffers.get_mut(&buffer_id).unwrap().buffer;
-                if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
-                    view_state.viewport.scroll_to(buffer, new_top);
+            if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                let buffer = &mut state.buffer;
+                let view_state = self.split_view_states.get_mut(&split_id);
+
+                if let Some(view_state) = view_state {
+                    // Recenter viewport on cursor
+                    let cursor = view_state.cursors.primary().clone();
+                    let viewport_height = view_state.viewport.visible_line_count();
+                    let target_rows_from_top = viewport_height / 2;
+
+                    // Move backwards from cursor position target_rows_from_top lines
+                    let mut iter = buffer.line_iterator(cursor.position, 80);
+                    for _ in 0..target_rows_from_top {
+                        if iter.prev().is_none() {
+                            break;
+                        }
+                    }
+                    let new_top_byte = iter.current_position();
+                    view_state.viewport.top_byte = new_top_byte;
+                    // Mark to skip ensure_visible on next render so the scroll isn't undone
+                    view_state.viewport.set_skip_ensure_visible();
                 }
             }
         }
@@ -2345,6 +2424,17 @@ impl Editor {
         self.prompt.is_some()
     }
 
+    /// Get the current global editor mode (e.g., "vi-normal", "vi-insert")
+    /// Returns None if no special mode is active
+    pub fn editor_mode(&self) -> Option<String> {
+        self.editor_mode.clone()
+    }
+
+    /// Get access to the command registry
+    pub fn command_registry(&self) -> &Arc<RwLock<CommandRegistry>> {
+        &self.command_registry
+    }
+
     /// Check if file explorer has focus
     pub fn file_explorer_is_focused(&self) -> bool {
         self.key_context == KeyContext::FileExplorer
@@ -2519,6 +2609,37 @@ impl Editor {
                     tracing::error!("LSP error for {}: {}", language, error);
                     self.status_message = Some(format!("LSP error ({}): {}", language, error));
 
+                    // Get server command from config for the hook
+                    let server_command = self
+                        .config
+                        .lsp
+                        .get(&language)
+                        .map(|c| c.command.clone())
+                        .unwrap_or_else(|| "unknown".to_string());
+
+                    // Determine error type from error message
+                    let error_type = if error.contains("not found") || error.contains("NotFound") {
+                        "not_found"
+                    } else if error.contains("permission") || error.contains("PermissionDenied") {
+                        "spawn_failed"
+                    } else if error.contains("timeout") {
+                        "timeout"
+                    } else {
+                        "spawn_failed"
+                    }
+                    .to_string();
+
+                    // Fire the LspServerError hook for plugins
+                    self.plugin_manager.run_hook(
+                        "lsp_server_error",
+                        crate::services::plugins::hooks::HookArgs::LspServerError {
+                            language: language.clone(),
+                            server_command,
+                            error_type,
+                            message: error.clone(),
+                        },
+                    );
+
                     // Open stderr log as read-only buffer if it exists and has content
                     // Opens in background (new tab) without stealing focus
                     if let Some(log_path) = stderr_log_path {
@@ -2660,6 +2781,9 @@ impl Editor {
                     result,
                 } => {
                     self.handle_plugin_lsp_response(request_id, result);
+                }
+                AsyncMessage::PluginResponse(response) => {
+                    self.handle_plugin_response(response);
                 }
                 AsyncMessage::LspProgress {
                     language,
@@ -2952,6 +3076,9 @@ impl Editor {
             // Update user config (raw file contents, not merged with defaults)
             // This allows plugins to distinguish between user-set and default values
             snapshot.user_config = Config::read_user_config_raw(&self.working_dir);
+
+            // Update editor mode (for vi mode and other modal editing)
+            snapshot.editor_mode = self.editor_mode.clone();
         }
     }
 
@@ -2982,12 +3109,13 @@ impl Editor {
                 namespace,
                 range,
                 color,
+                bg_color,
                 underline,
                 bold,
                 italic,
             } => {
                 self.handle_add_overlay(
-                    buffer_id, namespace, range, color, underline, bold, italic,
+                    buffer_id, namespace, range, color, bg_color, underline, bold, italic,
                 );
             }
             PluginCommand::RemoveOverlay { buffer_id, handle } => {
@@ -3093,6 +3221,16 @@ impl Editor {
                 buffer_id,
             } => {
                 self.handle_set_split_buffer(split_id, buffer_id);
+            }
+            PluginCommand::SetSplitScroll { split_id, top_byte } => {
+                self.handle_set_split_scroll(split_id, top_byte);
+            }
+            PluginCommand::RequestHighlights {
+                buffer_id,
+                range,
+                request_id,
+            } => {
+                self.handle_request_highlights(buffer_id, range, request_id);
             }
             PluginCommand::CloseSplit { split_id } => {
                 self.handle_close_split(split_id);
@@ -3569,8 +3707,190 @@ impl Editor {
                     tracing::debug!("Unset custom context: {}", name);
                 }
             }
+
+            // ==================== Review Diff Commands ====================
+            PluginCommand::SetReviewDiffHunks { hunks } => {
+                self.review_hunks = hunks;
+                tracing::debug!("Set {} review hunks", self.review_hunks.len());
+            }
+
+            // ==================== Vi Mode Commands ====================
+            PluginCommand::ExecuteAction { action_name } => {
+                self.handle_execute_action(action_name);
+            }
+            PluginCommand::ExecuteActions { actions } => {
+                self.handle_execute_actions(actions);
+            }
+            PluginCommand::GetBufferText {
+                buffer_id,
+                start,
+                end,
+                request_id,
+            } => {
+                self.handle_get_buffer_text(buffer_id, start, end, request_id);
+            }
+            PluginCommand::SetEditorMode { mode } => {
+                self.handle_set_editor_mode(mode);
+            }
+
+            // ==================== LSP Helper Commands ====================
+            PluginCommand::ShowActionPopup {
+                popup_id,
+                title,
+                message,
+                actions,
+            } => {
+                tracing::info!(
+                    "Action popup requested: id={}, title={}, actions={}",
+                    popup_id,
+                    title,
+                    actions.len()
+                );
+
+                // Build popup list items from actions
+                let items: Vec<crate::model::event::PopupListItemData> = actions
+                    .iter()
+                    .map(|action| crate::model::event::PopupListItemData {
+                        text: action.label.clone(),
+                        detail: None,
+                        icon: None,
+                        data: Some(action.id.clone()),
+                    })
+                    .collect();
+
+                // Store action info for when popup is confirmed/cancelled
+                let action_ids: Vec<(String, String)> =
+                    actions.into_iter().map(|a| (a.id, a.label)).collect();
+                self.active_action_popup = Some((popup_id.clone(), action_ids));
+
+                // Create popup with message + action list
+                let popup = crate::model::event::PopupData {
+                    title: Some(title),
+                    transient: false,
+                    content: crate::model::event::PopupContentData::List { items, selected: 0 },
+                    position: crate::model::event::PopupPositionData::Centered,
+                    width: 60,
+                    max_height: 15,
+                    bordered: true,
+                };
+
+                self.show_popup(popup);
+                self.status_message = Some(message);
+            }
+
+            PluginCommand::DisableLspForLanguage { language } => {
+                tracing::info!("Disabling LSP for language: {}", language);
+
+                // 1. Stop the LSP server for this language if running
+                if let Some(ref mut lsp) = self.lsp {
+                    lsp.shutdown_server(&language);
+                    tracing::info!("Stopped LSP server for {}", language);
+                }
+
+                // 2. Update the config to disable the language
+                if let Some(lsp_config) = self.config.lsp.get_mut(&language) {
+                    lsp_config.enabled = false;
+                    lsp_config.auto_start = false;
+                    tracing::info!("Disabled LSP config for {}", language);
+                }
+
+                // 3. Persist the config change
+                if let Err(e) = self.save_config() {
+                    tracing::error!("Failed to save config: {}", e);
+                    self.status_message = Some(format!(
+                        "LSP disabled for {} (config save failed)",
+                        language
+                    ));
+                } else {
+                    self.status_message = Some(format!("LSP disabled for {}", language));
+                }
+
+                // 4. Clear any LSP-related warnings for this language
+                self.warning_domains.lsp.clear();
+            }
         }
         Ok(())
+    }
+
+    /// Execute an editor action by name (for vi mode plugin)
+    fn handle_execute_action(&mut self, action_name: String) {
+        use crate::input::keybindings::Action;
+        use std::collections::HashMap;
+
+        // Parse the action name into an Action enum
+        if let Some(action) = Action::from_str(&action_name, &HashMap::new()) {
+            // Execute the action
+            if let Err(e) = self.handle_action(action) {
+                tracing::warn!("Failed to execute action '{}': {}", action_name, e);
+            } else {
+                tracing::debug!("Executed action: {}", action_name);
+            }
+        } else {
+            tracing::warn!("Unknown action: {}", action_name);
+        }
+    }
+
+    /// Execute multiple actions in sequence, each with an optional repeat count
+    /// Used by vi mode for count prefix (e.g., "3dw" = delete 3 words)
+    fn handle_execute_actions(&mut self, actions: Vec<crate::services::plugins::api::ActionSpec>) {
+        use crate::input::keybindings::Action;
+        use std::collections::HashMap;
+
+        for action_spec in actions {
+            if let Some(action) = Action::from_str(&action_spec.action, &HashMap::new()) {
+                // Execute the action `count` times
+                for _ in 0..action_spec.count {
+                    if let Err(e) = self.handle_action(action.clone()) {
+                        tracing::warn!("Failed to execute action '{}': {}", action_spec.action, e);
+                        return; // Stop on first error
+                    }
+                }
+                tracing::debug!(
+                    "Executed action '{}' {} time(s)",
+                    action_spec.action,
+                    action_spec.count
+                );
+            } else {
+                tracing::warn!("Unknown action: {}", action_spec.action);
+                return; // Stop on unknown action
+            }
+        }
+    }
+
+    /// Get text from a buffer range (for vi mode yank operations)
+    fn handle_get_buffer_text(
+        &mut self,
+        buffer_id: BufferId,
+        start: usize,
+        end: usize,
+        request_id: u64,
+    ) {
+        let result = if let Some(state) = self.buffers.get_mut(&buffer_id) {
+            // Get text from the buffer using the mutable get_text_range method
+            let len = state.buffer.len();
+            if start <= end && end <= len {
+                Ok(state.get_text_range(start, end))
+            } else {
+                Err(format!(
+                    "Invalid range {}..{} for buffer of length {}",
+                    start, end, len
+                ))
+            }
+        } else {
+            Err(format!("Buffer {:?} not found", buffer_id))
+        };
+
+        // Send response via plugin manager
+        self.send_plugin_response(crate::services::plugins::api::PluginResponse::BufferText {
+            request_id,
+            text: result,
+        });
+    }
+
+    /// Set the global editor mode (for vi mode)
+    fn handle_set_editor_mode(&mut self, mode: Option<String>) {
+        self.editor_mode = mode.clone();
+        tracing::debug!("Set editor mode: {:?}", mode);
     }
 }
 
@@ -3605,7 +3925,9 @@ fn parse_key_string(key_str: &str) -> Option<(KeyCode, KeyModifiers)> {
     }
 
     // Parse the key
-    let code = match remaining.to_uppercase().as_str() {
+    // Use uppercase for matching special keys, but preserve original for single chars
+    let upper = remaining.to_uppercase();
+    let code = match upper.as_str() {
         "RET" | "RETURN" | "ENTER" => KeyCode::Enter,
         "TAB" => KeyCode::Tab,
         "ESC" | "ESCAPE" => KeyCode::Esc,
@@ -3628,9 +3950,13 @@ fn parse_key_string(key_str: &str) -> Option<(KeyCode, KeyModifiers)> {
                 return None;
             }
         }
-        s if s.len() == 1 => {
-            // Single character
-            let c = s.chars().next()?;
+        _ if remaining.len() == 1 => {
+            // Single character - use ORIGINAL remaining, not uppercased
+            // For uppercase letters, add SHIFT modifier so 'J' != 'j'
+            let c = remaining.chars().next()?;
+            if c.is_ascii_uppercase() {
+                modifiers |= KeyModifiers::SHIFT;
+            }
             KeyCode::Char(c.to_ascii_lowercase())
         }
         _ => return None,
