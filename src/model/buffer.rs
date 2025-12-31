@@ -921,6 +921,94 @@ impl TextBuffer {
         self.recovery_pending = true;
     }
 
+    /// Replace the entire buffer content with new content
+    /// This is an O(n) operation that rebuilds the piece tree in a single pass,
+    /// avoiding the O(n²) complexity of applying individual edits.
+    ///
+    /// This is used for bulk operations like "replace all" where applying
+    /// individual edits would be prohibitively slow.
+    pub fn replace_content(&mut self, new_content: &str) {
+        let bytes = new_content.len();
+        let content_bytes = new_content.as_bytes().to_vec();
+
+        // Count line feeds in the new content
+        let line_feed_cnt = content_bytes.iter().filter(|&&b| b == b'\n').count();
+
+        // Create a new StringBuffer for the new content
+        let buffer_id = self.next_buffer_id;
+        self.next_buffer_id += 1;
+        let buffer = StringBuffer::new(buffer_id, content_bytes);
+        self.buffers.push(buffer);
+
+        // Rebuild the piece tree with a single piece containing all the new content
+        if bytes > 0 {
+            self.piece_tree = PieceTree::new(
+                BufferLocation::Added(buffer_id),
+                0,
+                bytes,
+                Some(line_feed_cnt),
+            );
+        } else {
+            self.piece_tree = PieceTree::empty();
+        }
+
+        // Mark as modified and needing recovery
+        self.modified = true;
+        self.recovery_pending = true;
+    }
+
+    /// Restore a previously saved piece tree (for undo of BulkEdit)
+    /// This is O(1) because PieceTree uses Arc internally
+    pub fn restore_piece_tree(&mut self, tree: &Arc<PieceTree>) {
+        self.piece_tree = (**tree).clone();
+        self.modified = true;
+        self.recovery_pending = true;
+    }
+
+    /// Get the current piece tree as an Arc (for saving before BulkEdit)
+    /// This is O(1) - creates an Arc wrapper around a clone of the tree
+    pub fn snapshot_piece_tree(&self) -> Arc<PieceTree> {
+        Arc::new(self.piece_tree.clone())
+    }
+
+    /// Apply bulk edits efficiently in a single pass
+    /// Returns the net change in bytes
+    pub fn apply_bulk_edits(&mut self, edits: &[(usize, usize, &str)]) -> isize {
+        // Pre-allocate buffers for all insert texts (only non-empty texts)
+        // This avoids the borrow conflict in the closure
+        // IMPORTANT: Only add entries for non-empty texts because the closure
+        // is only called for edits with non-empty insert text
+        let mut buffer_info: Vec<(BufferLocation, usize, usize, Option<usize>)> = Vec::new();
+
+        for (_, _, text) in edits {
+            if !text.is_empty() {
+                let buffer_id = self.next_buffer_id;
+                self.next_buffer_id += 1;
+                let content = text.as_bytes().to_vec();
+                let lf_cnt = content.iter().filter(|&&b| b == b'\n').count();
+                let bytes = content.len();
+                let buffer = StringBuffer::new(buffer_id, content);
+                self.buffers.push(buffer);
+                buffer_info.push((BufferLocation::Added(buffer_id), 0, bytes, Some(lf_cnt)));
+            }
+            // No placeholder for empty texts - the closure is only called for non-empty texts
+        }
+
+        // Now call apply_bulk_edits with a simple index-based closure
+        let mut idx = 0;
+        let delta = self
+            .piece_tree
+            .apply_bulk_edits(edits, &self.buffers, |_text| {
+                let info = buffer_info[idx].clone();
+                idx += 1;
+                info
+            });
+
+        self.modified = true;
+        self.recovery_pending = true;
+        delta
+    }
+
     /// Get text from a byte offset range
     /// This now uses the optimized piece_tree.iter_pieces_in_range() for a single traversal
     /// Get text from a byte offset range (read-only)

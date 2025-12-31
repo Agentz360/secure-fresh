@@ -366,6 +366,24 @@ jobs:
       - name: List artifacts
         run: ls -la artifacts/
 
+      - name: Create source tarball
+        run: |
+          # Create a stable source tarball (GitHub's auto-generated archives are not stable)
+          TARBALL_NAME="fresh-editor-${VERSION}-source.tar.gz"
+
+          # Create tarball from the current checkout (which is at the tagged commit)
+          # Use git archive to get a clean export without .git directory
+          git archive --format=tar.gz --prefix="fresh-${VERSION}/" -o "artifacts/${TARBALL_NAME}" HEAD
+
+          # Generate checksum
+          cd artifacts
+          sha256sum "${TARBALL_NAME}" > "${TARBALL_NAME}.sha256"
+          cd ..
+
+          echo "Created source tarball:"
+          ls -la "artifacts/${TARBALL_NAME}"
+          cat "artifacts/${TARBALL_NAME}.sha256"
+
       - name: Extract changelog for this version
         id: changelog
         run: |

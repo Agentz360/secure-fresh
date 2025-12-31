@@ -575,6 +575,39 @@ impl EditorState {
                     self.apply(event);
                 }
             }
+
+            Event::BulkEdit {
+                new_tree,
+                new_cursors,
+                ..
+            } => {
+                // Restore the new_tree (target tree state for this event)
+                // - For original application: this is set after apply_events_as_bulk_edit
+                // - For undo: trees are swapped, so new_tree is the original state
+                // - For redo: new_tree is the state after edits
+                if let Some(tree) = new_tree {
+                    self.buffer.restore_piece_tree(tree);
+                }
+
+                // Update cursor positions
+                for (cursor_id, position, anchor) in new_cursors {
+                    if let Some(cursor) = self.cursors.get_mut(*cursor_id) {
+                        cursor.position = *position;
+                        cursor.anchor = *anchor;
+                    }
+                }
+
+                // Invalidate highlight cache for entire buffer
+                self.highlighter.invalidate_all();
+
+                // Update primary cursor line number
+                let primary_pos = self.cursors.primary().position;
+                self.primary_cursor_line_number = match self.buffer.offset_to_position(primary_pos)
+                {
+                    Some(pos) => crate::model::buffer::LineNumber::Absolute(pos.line),
+                    None => crate::model::buffer::LineNumber::Absolute(0),
+                };
+            }
         }
     }
 
@@ -680,10 +713,12 @@ fn convert_popup_data_to_popup(data: &PopupData) -> Popup {
         PopupPositionData::AboveCursor => PopupPosition::AboveCursor,
         PopupPositionData::Fixed { x, y } => PopupPosition::Fixed { x, y },
         PopupPositionData::Centered => PopupPosition::Centered,
+        PopupPositionData::BottomRight => PopupPosition::BottomRight,
     };
 
     let popup = Popup {
         title: data.title.clone(),
+        description: data.description.clone(),
         transient: data.transient,
         content,
         position,

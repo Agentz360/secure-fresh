@@ -1,6 +1,8 @@
+use crate::model::piece_tree::PieceTree;
 use crate::view::overlay::{OverlayHandle, OverlayNamespace};
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
+use std::sync::Arc;
 
 /// Unique identifier for a cursor
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -214,6 +216,27 @@ pub enum Event {
         events: Vec<Event>,
         description: String,
     },
+
+    /// Efficient bulk edit that stores tree snapshots for O(1) undo/redo
+    /// Used for multi-cursor operations, toggle comment, indent/dedent, etc.
+    /// This avoids O(n²) complexity by applying all edits in a single tree pass.
+    ///
+    /// Key insight: PieceTree uses Arc<PieceTreeNode> (persistent data structure),
+    /// so storing trees for undo/redo is O(1) (Arc clone), not O(n) (content copy).
+    BulkEdit {
+        /// Tree state before the edit (for undo)
+        #[serde(skip)]
+        old_tree: Option<Arc<PieceTree>>,
+        /// Tree state after the edit (for redo)
+        #[serde(skip)]
+        new_tree: Option<Arc<PieceTree>>,
+        /// Cursor states before the edit
+        old_cursors: Vec<(CursorId, usize, Option<usize>)>,
+        /// Cursor states after the edit
+        new_cursors: Vec<(CursorId, usize, Option<usize>)>,
+        /// Human-readable description
+        description: String,
+    },
 }
 
 /// Overlay face data for events (must be serializable)
@@ -252,6 +275,9 @@ pub enum UnderlineStyle {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PopupData {
     pub title: Option<String>,
+    /// Optional description text shown above the content
+    #[serde(default)]
+    pub description: Option<String>,
     #[serde(default)]
     pub transient: bool,
     pub content: PopupContentData,
@@ -288,6 +314,7 @@ pub enum PopupPositionData {
     AboveCursor,
     Fixed { x: u16, y: u16 },
     Centered,
+    BottomRight,
 }
 
 /// Margin position for events
@@ -410,6 +437,23 @@ impl Event {
                 // Can't invert without knowing old mode
                 None
             }
+            Event::BulkEdit {
+                old_tree,
+                new_tree,
+                old_cursors,
+                new_cursors,
+                description,
+            } => {
+                // Inverse swaps both trees and cursor states
+                // For undo: old becomes new, new becomes old
+                Some(Event::BulkEdit {
+                    old_tree: new_tree.clone(),
+                    new_tree: old_tree.clone(),
+                    old_cursors: new_cursors.clone(),
+                    new_cursors: old_cursors.clone(),
+                    description: format!("Undo: {}", description),
+                })
+            }
             // Other events (popups, margins, splits, etc.) are not automatically invertible
             _ => None,
         }
@@ -418,7 +462,7 @@ impl Event {
     /// Returns true if this event modifies the buffer content
     pub fn modifies_buffer(&self) -> bool {
         match self {
-            Event::Insert { .. } | Event::Delete { .. } => true,
+            Event::Insert { .. } | Event::Delete { .. } | Event::BulkEdit { .. } => true,
             Event::Batch { events, .. } => events.iter().any(|e| e.modifies_buffer()),
             _ => false,
         }
@@ -439,7 +483,7 @@ impl Event {
     pub fn is_write_action(&self) -> bool {
         match self {
             // Buffer modifications are write actions
-            Event::Insert { .. } | Event::Delete { .. } => true,
+            Event::Insert { .. } | Event::Delete { .. } | Event::BulkEdit { .. } => true,
 
             // Adding/removing cursors are write actions (structural changes)
             Event::AddCursor { .. } | Event::RemoveCursor { .. } => true,

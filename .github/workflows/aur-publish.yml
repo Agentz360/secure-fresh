@@ -71,11 +71,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Download source tarball and compute checksum
+      - name: Download stable source tarball from release
         id: checksum
         run: |
-          # Download the source tarball from GitHub
-          curl -sL "https://github.com/noamteyssier/fresh/archive/refs/tags/v${VERSION}.tar.gz" -o source.tar.gz
+          # Download the stable source tarball from the GitHub release (not the auto-generated archive)
+          curl -sL "https://github.com/sinelaw/fresh/releases/download/v${VERSION}/fresh-editor-${VERSION}-source.tar.gz" -o source.tar.gz
           SHA256=$(sha256sum source.tar.gz | cut -d' ' -f1)
           echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
           echo "Computed SHA256: $SHA256"
@@ -86,8 +86,16 @@ jobs:
           cd aur-repo
           sed -i "s/^pkgver=.*/pkgver=${VERSION}/" PKGBUILD
           sed -i "s/^pkgrel=.*/pkgrel=1/" PKGBUILD
-          # Update sha256sums (use double quotes to match PKGBUILD style)
-          sed -i 's/^sha256sums=.*/sha256sums=("${{ steps.checksum.outputs.sha256 }}")/' PKGBUILD
+          # Update source URL to use stable release asset
+          sed -i 's|^source=.*|source=("fresh-editor-${pkgver}-source.tar.gz::https://github.com/sinelaw/fresh/releases/download/v${pkgver}/fresh-editor-${pkgver}-source.tar.gz")|' PKGBUILD
+          # Update sha256sums using awk for reliable replacement
+          awk -v sha="${{ steps.checksum.outputs.sha256 }}" '
+            /^sha256sums=\(.*\)$/ { print "sha256sums=(\"" sha "\")"; next }
+            /^sha256sums=\(/ { in_sha=1; print "sha256sums=(\"" sha "\")"; next }
+            in_sha && /\)[[:space:]]*$/ { in_sha=0; next }
+            in_sha { next }
+            { print }
+          ' PKGBUILD > PKGBUILD.tmp && mv PKGBUILD.tmp PKGBUILD
           echo "Updated PKGBUILD:"
           cat PKGBUILD
 

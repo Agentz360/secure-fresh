@@ -467,6 +467,9 @@ impl Editor {
             Action::SelectKeybindingMap => {
                 self.start_select_keybinding_map_prompt();
             }
+            Action::SelectCursorStyle => {
+                self.start_select_cursor_style_prompt();
+            }
             Action::Search => {
                 // If already in a search-related prompt, Ctrl+F acts like Enter (confirm search)
                 let is_search_prompt = self.prompt.as_ref().is_some_and(|p| {
@@ -856,18 +859,16 @@ impl Editor {
                 // Normal backspace handling
                 if let Some(events) = self.action_to_events(Action::DeleteBackward) {
                     if events.len() > 1 {
-                        let batch = Event::Batch {
-                            events: events.clone(),
-                            description: "Delete backward".to_string(),
-                        };
-                        self.active_event_log_mut().append(batch.clone());
-                        self.apply_event_to_active_buffer(&batch);
-                        // Note: LSP notifications now handled automatically by apply_event_to_active_buffer
+                        // Multi-cursor: use optimized bulk edit (O(n) instead of O(n²))
+                        let description = "Delete backward".to_string();
+                        if let Some(bulk_edit) = self.apply_events_as_bulk_edit(events, description)
+                        {
+                            self.active_event_log_mut().append(bulk_edit);
+                        }
                     } else {
                         for event in events {
                             self.active_event_log_mut().append(event.clone());
                             self.apply_event_to_active_buffer(&event);
-                            // Note: LSP notifications now handled automatically by apply_event_to_active_buffer
                         }
                     }
                 }
@@ -2018,6 +2019,96 @@ impl Editor {
         }
     }
 
+    /// Start the cursor style selection prompt
+    fn start_select_cursor_style_prompt(&mut self) {
+        use crate::config::CursorStyle;
+
+        let current_style = self.config.editor.cursor_style;
+
+        // Build suggestions from available cursor styles
+        let suggestions: Vec<crate::input::commands::Suggestion> = CursorStyle::OPTIONS
+            .iter()
+            .zip(CursorStyle::DESCRIPTIONS.iter())
+            .map(|(style_name, description)| {
+                let is_current = *style_name == current_style.as_str();
+                crate::input::commands::Suggestion {
+                    text: description.to_string(),
+                    description: if is_current {
+                        Some("(current)".to_string())
+                    } else {
+                        None
+                    },
+                    value: Some(style_name.to_string()),
+                    disabled: false,
+                    keybinding: None,
+                    source: None,
+                }
+            })
+            .collect();
+
+        // Find the index of the current cursor style
+        let current_index = CursorStyle::OPTIONS
+            .iter()
+            .position(|s| *s == current_style.as_str())
+            .unwrap_or(0);
+
+        self.prompt = Some(crate::view::prompt::Prompt::with_suggestions(
+            "Select cursor style: ".to_string(),
+            PromptType::SelectCursorStyle,
+            suggestions,
+        ));
+
+        if let Some(prompt) = self.prompt.as_mut() {
+            if !prompt.suggestions.is_empty() {
+                prompt.selected_suggestion = Some(current_index);
+                prompt.input = CursorStyle::DESCRIPTIONS[current_index].to_string();
+                prompt.cursor_pos = prompt.input.len();
+            }
+        }
+    }
+
+    /// Apply a cursor style and persist it to config
+    pub(super) fn apply_cursor_style(&mut self, style_name: &str) {
+        use crate::config::CursorStyle;
+
+        if let Some(style) = CursorStyle::from_str(style_name) {
+            // Update the config in memory
+            self.config.editor.cursor_style = style;
+
+            // Apply the cursor style to the terminal
+            use std::io::stdout;
+            let _ = crossterm::execute!(stdout(), style.to_crossterm_style());
+
+            // Persist to config file
+            self.save_cursor_style_to_config();
+
+            // Find the description for the status message
+            let description = CursorStyle::OPTIONS
+                .iter()
+                .zip(CursorStyle::DESCRIPTIONS.iter())
+                .find(|(name, _)| **name == style_name)
+                .map(|(_, desc)| *desc)
+                .unwrap_or(style_name);
+
+            self.set_status_message(format!("Cursor style changed to {}", description));
+        }
+    }
+
+    /// Save the current cursor style setting to the user's config file
+    fn save_cursor_style_to_config(&mut self) {
+        // Create the directory if it doesn't exist
+        if let Err(e) = std::fs::create_dir_all(&self.dir_context.config_dir) {
+            tracing::warn!("Failed to create config directory: {}", e);
+            return;
+        }
+
+        // Save the config
+        let config_path = self.dir_context.config_path();
+        if let Err(e) = self.config.save_to_file(&config_path) {
+            tracing::warn!("Failed to save cursor style to config: {}", e);
+        }
+    }
+
     /// Switch to the previously active tab in the current split
     fn switch_to_previous_tab(&mut self) {
         let active_split = self.split_manager.active_split();
@@ -2192,16 +2283,15 @@ impl Editor {
         self.cancel_pending_lsp_requests();
 
         if let Some(events) = self.action_to_events(Action::InsertChar(c)) {
-            // Wrap multiple events (multi-cursor) in a Batch for atomic undo
             if events.len() > 1 {
-                let batch = Event::Batch {
-                    events: events.clone(),
-                    description: format!("Insert '{}'", c),
-                };
-                self.active_event_log_mut().append(batch.clone());
-                self.apply_event_to_active_buffer(&batch);
+                // Multi-cursor: use optimized bulk edit (O(n) instead of O(n²))
+                let description = format!("Insert '{}'", c);
+                if let Some(bulk_edit) = self.apply_events_as_bulk_edit(events, description.clone())
+                {
+                    self.active_event_log_mut().append(bulk_edit);
+                }
             } else {
-                // Single cursor - no need for batch
+                // Single cursor - apply normally
                 for event in events {
                     self.active_event_log_mut().append(event.clone());
                     self.apply_event_to_active_buffer(&event);
@@ -2245,21 +2335,35 @@ impl Editor {
         }
 
         if let Some(events) = self.action_to_events(action) {
-            // Wrap multiple events (multi-cursor) in a Batch for atomic undo
             if events.len() > 1 {
-                let batch = Event::Batch {
-                    events: events.clone(),
-                    description: action_description,
-                };
-                self.active_event_log_mut().append(batch.clone());
-                self.apply_event_to_active_buffer(&batch);
+                // Check if this batch contains buffer modifications
+                let has_buffer_mods = events
+                    .iter()
+                    .any(|e| matches!(e, Event::Insert { .. } | Event::Delete { .. }));
 
-                // Track position history for all events in the batch
+                if has_buffer_mods {
+                    // Multi-cursor buffer edit: use optimized bulk edit (O(n) instead of O(n²))
+                    if let Some(bulk_edit) =
+                        self.apply_events_as_bulk_edit(events.clone(), action_description)
+                    {
+                        self.active_event_log_mut().append(bulk_edit);
+                    }
+                } else {
+                    // Multi-cursor non-buffer operation: use Batch for atomic undo
+                    let batch = Event::Batch {
+                        events: events.clone(),
+                        description: action_description,
+                    };
+                    self.active_event_log_mut().append(batch.clone());
+                    self.apply_event_to_active_buffer(&batch);
+                }
+
+                // Track position history for all events
                 for event in &events {
                     self.track_cursor_movement(event);
                 }
             } else {
-                // Single cursor - no need for batch
+                // Single cursor - apply normally
                 for event in events {
                     self.active_event_log_mut().append(event.clone());
                     self.apply_event_to_active_buffer(&event);

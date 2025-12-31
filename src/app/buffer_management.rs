@@ -890,15 +890,29 @@ impl Editor {
     /// Show LSP status - opens the warning log file if there are LSP warnings,
     /// otherwise shows a brief status message.
     pub fn show_lsp_status_popup(&mut self) {
-        // Get the current buffer's language for the hook
-        let language = self
-            .buffer_metadata
-            .get(&self.active_buffer())
-            .and_then(|m| m.file_path())
-            .and_then(|path| detect_language(path, &self.config.languages))
-            .unwrap_or_else(|| "unknown".to_string());
-
         let has_error = self.warning_domains.lsp.level() == crate::app::WarningLevel::Error;
+
+        // Use the language from the LSP error state if available, otherwise detect from buffer.
+        // This ensures clicking the status indicator works regardless of which buffer is focused.
+        let language = self
+            .warning_domains
+            .lsp
+            .language
+            .clone()
+            .unwrap_or_else(|| {
+                self.buffer_metadata
+                    .get(&self.active_buffer())
+                    .and_then(|m| m.file_path())
+                    .and_then(|path| detect_language(path, &self.config.languages))
+                    .unwrap_or_else(|| "unknown".to_string())
+            });
+
+        tracing::info!(
+            "show_lsp_status_popup: language={}, has_error={}, has_warnings={}",
+            language,
+            has_error,
+            self.warning_domains.lsp.has_warnings()
+        );
 
         // Fire the LspStatusClicked hook for plugins
         self.plugin_manager.run_hook(
@@ -908,6 +922,7 @@ impl Editor {
                 has_error,
             },
         );
+        tracing::info!("show_lsp_status_popup: hook fired");
 
         if !self.warning_domains.lsp.has_warnings() {
             if self.lsp_status.is_empty() {
@@ -915,6 +930,16 @@ impl Editor {
             } else {
                 self.status_message = Some(format!("LSP: {}", self.lsp_status));
             }
+            return;
+        }
+
+        // If there's an LSP error AND a plugin is handling the status click, don't open the
+        // warning log which would switch focus and break language detection for subsequent clicks.
+        // Only suppress if a plugin has registered to handle the hook.
+        if has_error && self.plugin_manager.has_hook_handlers("lsp_status_clicked") {
+            tracing::info!(
+                "show_lsp_status_popup: has_error=true and plugin registered, skipping warning log"
+            );
             return;
         }
 
@@ -1165,6 +1190,201 @@ impl Editor {
             self.set_status_message("Tab closed".to_string());
         }
         true
+    }
+
+    /// Close all other tabs in a split, keeping only the specified buffer
+    pub fn close_other_tabs_in_split(&mut self, keep_buffer_id: BufferId, split_id: SplitId) {
+        // Get the split's open buffers
+        let split_tabs = self
+            .split_view_states
+            .get(&split_id)
+            .map(|vs| vs.open_buffers.clone())
+            .unwrap_or_default();
+
+        // Close all tabs except the one we want to keep
+        let tabs_to_close: Vec<_> = split_tabs
+            .iter()
+            .filter(|&&id| id != keep_buffer_id)
+            .copied()
+            .collect();
+
+        let mut closed = 0;
+        let mut skipped_modified = 0;
+        for buffer_id in tabs_to_close {
+            if self.close_tab_in_split_silent(buffer_id, split_id) {
+                closed += 1;
+            } else {
+                skipped_modified += 1;
+            }
+        }
+
+        // Make sure the kept buffer is active
+        let _ = self
+            .split_manager
+            .set_split_buffer(split_id, keep_buffer_id);
+
+        self.set_batch_close_status_message(closed, skipped_modified);
+    }
+
+    /// Close tabs to the right of the specified buffer in a split
+    pub fn close_tabs_to_right_in_split(&mut self, buffer_id: BufferId, split_id: SplitId) {
+        // Get the split's open buffers
+        let split_tabs = self
+            .split_view_states
+            .get(&split_id)
+            .map(|vs| vs.open_buffers.clone())
+            .unwrap_or_default();
+
+        // Find the index of the target buffer
+        let Some(target_idx) = split_tabs.iter().position(|&id| id == buffer_id) else {
+            return;
+        };
+
+        // Close all tabs after the target
+        let tabs_to_close: Vec<_> = split_tabs.iter().skip(target_idx + 1).copied().collect();
+
+        let mut closed = 0;
+        let mut skipped_modified = 0;
+        for buf_id in tabs_to_close {
+            if self.close_tab_in_split_silent(buf_id, split_id) {
+                closed += 1;
+            } else {
+                skipped_modified += 1;
+            }
+        }
+
+        self.set_batch_close_status_message(closed, skipped_modified);
+    }
+
+    /// Close tabs to the left of the specified buffer in a split
+    pub fn close_tabs_to_left_in_split(&mut self, buffer_id: BufferId, split_id: SplitId) {
+        // Get the split's open buffers
+        let split_tabs = self
+            .split_view_states
+            .get(&split_id)
+            .map(|vs| vs.open_buffers.clone())
+            .unwrap_or_default();
+
+        // Find the index of the target buffer
+        let Some(target_idx) = split_tabs.iter().position(|&id| id == buffer_id) else {
+            return;
+        };
+
+        // Close all tabs before the target
+        let tabs_to_close: Vec<_> = split_tabs.iter().take(target_idx).copied().collect();
+
+        let mut closed = 0;
+        let mut skipped_modified = 0;
+        for buf_id in tabs_to_close {
+            if self.close_tab_in_split_silent(buf_id, split_id) {
+                closed += 1;
+            } else {
+                skipped_modified += 1;
+            }
+        }
+
+        self.set_batch_close_status_message(closed, skipped_modified);
+    }
+
+    /// Close all tabs in a split
+    pub fn close_all_tabs_in_split(&mut self, split_id: SplitId) {
+        // Get the split's open buffers
+        let split_tabs = self
+            .split_view_states
+            .get(&split_id)
+            .map(|vs| vs.open_buffers.clone())
+            .unwrap_or_default();
+
+        let mut closed = 0;
+        let mut skipped_modified = 0;
+
+        // Close all tabs (this will eventually close the split when empty)
+        for buffer_id in split_tabs {
+            if self.close_tab_in_split_silent(buffer_id, split_id) {
+                closed += 1;
+            } else {
+                skipped_modified += 1;
+            }
+        }
+
+        self.set_batch_close_status_message(closed, skipped_modified);
+    }
+
+    /// Set status message for batch close operations
+    fn set_batch_close_status_message(&mut self, closed: usize, skipped_modified: usize) {
+        let message = match (closed, skipped_modified) {
+            (0, 0) => "No tabs to close".to_string(),
+            (0, n) => format!("Skipped {} modified tab(s)", n),
+            (n, 0) => format!("Closed {} tab(s)", n),
+            (c, s) => format!("Closed {} tab(s), skipped {} modified", c, s),
+        };
+        self.set_status_message(message);
+    }
+
+    /// Close a tab silently (without setting status message)
+    /// Used internally by batch close operations
+    /// Returns true if the tab was closed, false if it was skipped (e.g., modified buffer)
+    fn close_tab_in_split_silent(&mut self, buffer_id: BufferId, split_id: SplitId) -> bool {
+        // If closing a terminal buffer while in terminal mode, exit terminal mode
+        if self.terminal_mode && self.is_terminal_buffer(buffer_id) {
+            self.terminal_mode = false;
+            self.key_context = crate::input::keybindings::KeyContext::Normal;
+        }
+
+        // Count how many splits have this buffer in their open_buffers
+        let buffer_in_other_splits = self
+            .split_view_states
+            .iter()
+            .filter(|(&sid, view_state)| sid != split_id && view_state.has_buffer(buffer_id))
+            .count();
+
+        // Get the split's open buffers
+        let split_tabs = self
+            .split_view_states
+            .get(&split_id)
+            .map(|vs| vs.open_buffers.clone())
+            .unwrap_or_default();
+
+        let is_last_viewport = buffer_in_other_splits == 0;
+
+        if is_last_viewport {
+            // Last viewport of this buffer - need to close buffer entirely
+            // Skip modified buffers to avoid prompting during batch operations
+            if let Some(state) = self.buffers.get(&buffer_id) {
+                if state.buffer.is_modified() {
+                    // Skip modified buffers - don't close them
+                    return false;
+                }
+            }
+            let _ = self.close_buffer(buffer_id);
+            true
+        } else {
+            // There are other viewports of this buffer - just remove from this split's tabs
+            if split_tabs.len() <= 1 {
+                // This is the only tab in this split - close the split
+                self.handle_close_split(split_id);
+                return true;
+            }
+
+            // Find replacement buffer for this split
+            let current_idx = split_tabs
+                .iter()
+                .position(|&id| id == buffer_id)
+                .unwrap_or(0);
+            let replacement_idx = if current_idx > 0 { current_idx - 1 } else { 1 };
+            let replacement_buffer = split_tabs.get(replacement_idx).copied();
+
+            // Remove buffer from this split's tabs
+            if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
+                view_state.remove_buffer(buffer_id);
+            }
+
+            // Update the split to show the replacement buffer
+            if let Some(replacement) = replacement_buffer {
+                let _ = self.split_manager.set_split_buffer(split_id, replacement);
+            }
+            true
+        }
     }
 
     /// Switch to next buffer in current split's tabs

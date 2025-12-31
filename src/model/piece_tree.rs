@@ -622,6 +622,7 @@ impl PieceTreeNode {
 }
 
 /// The main piece table structure with integrated line tracking
+#[derive(Debug, Clone)]
 pub struct PieceTree {
     root: Arc<PieceTreeNode>,
     total_bytes: usize,
@@ -1767,6 +1768,261 @@ impl PieceTree {
     pub fn iter_pieces_in_range(&self, start: usize, end: usize) -> PieceRangeIter {
         PieceRangeIter::new(&self.root, start, end)
     }
+
+    /// Apply multiple edits in a single tree traversal + rebuild
+    ///
+    /// # Arguments
+    /// * `edits` - Vec of (position, delete_len, insert_text), MUST be sorted descending by position
+    /// * `buffers` - Reference to string buffers (for line feed computation)
+    /// * `add_text_fn` - Function to add text to buffer, returns (BufferLocation, offset, bytes)
+    ///
+    /// # Complexity
+    /// O(pieces + edits) instead of O(pieces × edits)
+    ///
+    /// # Returns
+    /// The net change in total bytes
+    pub fn apply_bulk_edits<F>(
+        &mut self,
+        edits: &[(usize, usize, &str)],
+        buffers: &[StringBuffer],
+        mut add_text_fn: F,
+    ) -> isize
+    where
+        F: FnMut(&str) -> (BufferLocation, usize, usize, Option<usize>),
+    {
+        if edits.is_empty() {
+            return 0;
+        }
+
+        // 1. Collect all split points (both start and end of each edit range)
+        let mut split_points: Vec<usize> = Vec::with_capacity(edits.len() * 2);
+        for (pos, del_len, _) in edits {
+            split_points.push(*pos);
+            if *del_len > 0 {
+                let end = pos.saturating_add(*del_len).min(self.total_bytes);
+                if end > *pos {
+                    split_points.push(end);
+                }
+            }
+        }
+        split_points.sort_unstable();
+        split_points.dedup();
+
+        // 2. Collect all leaves, splitting at all required points
+        let mut leaves = Vec::new();
+        self.collect_leaves_with_multi_split(
+            &self.root.clone(),
+            0,
+            &split_points,
+            &mut leaves,
+            buffers,
+        );
+
+        // 3. Build edit ranges for quick lookup (sorted descending by position)
+        // Each edit: (start, end, insert_leaf)
+        let mut edit_ranges: Vec<(usize, usize, Option<LeafData>)> =
+            Vec::with_capacity(edits.len());
+        for (pos, del_len, text) in edits {
+            let del_end = pos.saturating_add(*del_len).min(self.total_bytes);
+            let insert_leaf = if !text.is_empty() {
+                let (location, offset, bytes, lf_cnt) = add_text_fn(text);
+                Some(LeafData::new(location, offset, bytes, lf_cnt))
+            } else {
+                None
+            };
+            edit_ranges.push((*pos, del_end, insert_leaf));
+        }
+
+        // 4. Apply edits to leaves
+        // Edits are sorted descending by position, so:
+        //   edit_ranges[len-1] has smallest position, edit_ranges[0] has largest
+        // We iterate leaves ascending, and for each leaf we:
+        //   1. First add any inserts that belong BEFORE this leaf
+        //   2. Then add the leaf (if not deleted)
+        let mut new_leaves: Vec<LeafData> = Vec::with_capacity(leaves.len() + edits.len());
+        let mut current_offset = 0;
+        let mut edit_idx = edit_ranges.len(); // Points past the end; we access [edit_idx-1]
+
+        for leaf in leaves {
+            let leaf_start = current_offset;
+            let leaf_end = current_offset + leaf.bytes;
+
+            // First, add any inserts whose position is <= leaf_start
+            // These inserts should appear BEFORE this leaf's content
+            while edit_idx > 0 {
+                let (edit_start, _edit_end, ref insert_leaf) = edit_ranges[edit_idx - 1];
+
+                // If this edit's position is after where we are, stop
+                if edit_start > leaf_start {
+                    break;
+                }
+
+                // Insert belongs at or before leaf_start
+                if let Some(insert) = insert_leaf {
+                    new_leaves.push(insert.clone());
+                }
+                edit_idx -= 1;
+            }
+
+            // Check if this leaf overlaps with ANY edit's delete range
+            // We check ALL edits, not just remaining ones, because edits
+            // processed in the insert loop above may still have deletions
+            let mut keep_leaf = true;
+
+            for (edit_start, edit_end, _) in &edit_ranges {
+                // If edit's delete range is entirely after this leaf, skip
+                if *edit_start >= leaf_end {
+                    continue;
+                }
+
+                // If edit has no deletion (edit_start == edit_end), skip
+                if *edit_start == *edit_end {
+                    continue;
+                }
+
+                // If edit's delete range is entirely before this leaf, skip
+                if *edit_end <= leaf_start {
+                    continue;
+                }
+
+                // Leaf overlaps with this edit's delete range - filter it out
+                if leaf_start >= *edit_start && leaf_end <= *edit_end {
+                    keep_leaf = false;
+                    break;
+                }
+            }
+
+            if keep_leaf {
+                new_leaves.push(leaf.clone());
+            }
+
+            current_offset = leaf_end;
+        }
+
+        // Handle any remaining inserts at the end of document
+        while edit_idx > 0 {
+            if let Some(insert) = &edit_ranges[edit_idx - 1].2 {
+                new_leaves.push(insert.clone());
+            }
+            edit_idx -= 1;
+        }
+
+        // 5. Calculate byte delta
+        let old_bytes = self.total_bytes;
+        let mut new_bytes: usize = 0;
+        for leaf in &new_leaves {
+            new_bytes += leaf.bytes;
+        }
+        let delta = new_bytes as isize - old_bytes as isize;
+
+        // 6. Single balanced tree rebuild
+        self.root = Self::build_balanced(&new_leaves);
+        self.total_bytes = new_bytes;
+
+        delta
+    }
+
+    /// Collect leaves, splitting at multiple points in one traversal
+    fn collect_leaves_with_multi_split(
+        &self,
+        node: &Arc<PieceTreeNode>,
+        current_offset: usize,
+        split_points: &[usize],
+        leaves: &mut Vec<LeafData>,
+        buffers: &[StringBuffer],
+    ) {
+        match node.as_ref() {
+            PieceTreeNode::Internal {
+                left_bytes,
+                left,
+                right,
+                ..
+            } => {
+                // Recurse into both subtrees
+                self.collect_leaves_with_multi_split(
+                    left,
+                    current_offset,
+                    split_points,
+                    leaves,
+                    buffers,
+                );
+                self.collect_leaves_with_multi_split(
+                    right,
+                    current_offset + left_bytes,
+                    split_points,
+                    leaves,
+                    buffers,
+                );
+            }
+            PieceTreeNode::Leaf {
+                location,
+                offset,
+                bytes,
+                line_feed_cnt,
+            } => {
+                if *bytes == 0 {
+                    return;
+                }
+
+                let piece_start = current_offset;
+                let piece_end = current_offset + bytes;
+
+                // Find split points within this piece
+                let mut split_offsets: Vec<usize> = Vec::new();
+                for &sp in split_points {
+                    if sp > piece_start && sp < piece_end {
+                        split_offsets.push(sp - piece_start);
+                    }
+                }
+
+                if split_offsets.is_empty() {
+                    // No splits needed, add entire piece
+                    leaves.push(LeafData::new(*location, *offset, *bytes, *line_feed_cnt));
+                } else {
+                    // Split the piece at each point
+                    split_offsets.sort_unstable();
+                    split_offsets.dedup();
+
+                    let mut prev_offset = 0;
+                    for split_offset in split_offsets {
+                        if split_offset > prev_offset {
+                            let chunk_bytes = split_offset - prev_offset;
+                            let lf_cnt = Self::compute_line_feeds_static(
+                                buffers,
+                                *location,
+                                offset + prev_offset,
+                                chunk_bytes,
+                            );
+                            leaves.push(LeafData::new(
+                                *location,
+                                offset + prev_offset,
+                                chunk_bytes,
+                                lf_cnt,
+                            ));
+                        }
+                        prev_offset = split_offset;
+                    }
+
+                    // Add remaining part after last split
+                    if prev_offset < *bytes {
+                        let remaining = bytes - prev_offset;
+                        let lf_cnt = Self::compute_line_feeds_static(
+                            buffers,
+                            *location,
+                            offset + prev_offset,
+                            remaining,
+                        );
+                        leaves.push(LeafData::new(
+                            *location,
+                            offset + prev_offset,
+                            remaining,
+                            lf_cnt,
+                        ));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A view into a piece's data within the document
@@ -2068,6 +2324,246 @@ mod tests {
         let pos = tree.offset_to_position(21, &buffers);
         assert_eq!(pos, Some((1, 0)), "Position 21 should be line 1, column 0");
     }
+
+    // ============== Tests for apply_bulk_edits ==============
+
+    // Helper to pre-allocate buffers for bulk edit tests
+    fn prepare_bulk_edit_buffers(
+        buffers: &mut Vec<StringBuffer>,
+        texts: &[&str],
+    ) -> Vec<(BufferLocation, usize, usize, Option<usize>)> {
+        let mut infos = Vec::new();
+        for (i, text) in texts.iter().enumerate() {
+            let id = buffers.len();
+            let bytes = text.as_bytes().to_vec();
+            let lf = bytes.iter().filter(|&&b| b == b'\n').count();
+            let len = bytes.len();
+            buffers.push(StringBuffer::new(id, bytes));
+            infos.push((BufferLocation::Added(id), 0, len, Some(lf)));
+            let _ = i; // suppress warning
+        }
+        infos
+    }
+
+    #[test]
+    fn test_bulk_edit_single_insert() {
+        let mut buffers = vec![StringBuffer::new(0, b"hello world".to_vec())];
+        let mut tree = PieceTree::new(BufferLocation::Stored(0), 0, 11, Some(0));
+
+        // Pre-allocate buffer for the insert
+        let infos = prepare_bulk_edit_buffers(&mut buffers, &["!"]);
+
+        // Insert "!" at position 11 (end)
+        let edits: Vec<(usize, usize, &str)> = vec![(11, 0, "!")];
+        let mut idx = 0;
+
+        let delta = tree.apply_bulk_edits(&edits, &buffers, |_text| {
+            let info = infos[idx].clone();
+            idx += 1;
+            info
+        });
+
+        assert_eq!(delta, 1);
+        assert_eq!(tree.total_bytes(), 12);
+    }
+
+    #[test]
+    fn test_bulk_edit_single_delete() {
+        let buffers = vec![StringBuffer::new(0, b"hello world".to_vec())];
+        let mut tree = PieceTree::new(BufferLocation::Stored(0), 0, 11, Some(0));
+
+        // Delete "world" (positions 6-11) - no insert, so no buffer needed
+        let edits: Vec<(usize, usize, &str)> = vec![(6, 5, "")];
+
+        let delta = tree.apply_bulk_edits(&edits, &buffers, |_text| {
+            (BufferLocation::Added(1), 0, 0, Some(0))
+        });
+
+        assert_eq!(delta, -5);
+        assert_eq!(tree.total_bytes(), 6);
+    }
+
+    #[test]
+    fn test_bulk_edit_single_replace() {
+        let mut buffers = vec![StringBuffer::new(0, b"hello world".to_vec())];
+        let mut tree = PieceTree::new(BufferLocation::Stored(0), 0, 11, Some(0));
+
+        // Pre-allocate buffer for the replacement
+        let infos = prepare_bulk_edit_buffers(&mut buffers, &["rust"]);
+
+        // Replace "world" with "rust"
+        let edits: Vec<(usize, usize, &str)> = vec![(6, 5, "rust")];
+        let mut idx = 0;
+
+        let delta = tree.apply_bulk_edits(&edits, &buffers, |_text| {
+            let info = infos[idx].clone();
+            idx += 1;
+            info
+        });
+
+        assert_eq!(delta, -1); // "world" (5) -> "rust" (4)
+        assert_eq!(tree.total_bytes(), 10);
+    }
+
+    #[test]
+    fn test_bulk_edit_multiple_inserts_descending() {
+        // Edits must be sorted descending by position
+        let mut buffers = vec![StringBuffer::new(0, b"abc".to_vec())];
+        let mut tree = PieceTree::new(BufferLocation::Stored(0), 0, 3, Some(0));
+
+        // Pre-allocate buffers for 4 inserts
+        let infos = prepare_bulk_edit_buffers(&mut buffers, &["X", "X", "X", "X"]);
+
+        // Insert "X" at positions 3, 2, 1, 0 (descending order)
+        let edits: Vec<(usize, usize, &str)> = vec![
+            (3, 0, "X"), // Insert at end
+            (2, 0, "X"), // Insert before 'c'
+            (1, 0, "X"), // Insert before 'b'
+            (0, 0, "X"), // Insert at start
+        ];
+        let mut idx = 0;
+
+        let delta = tree.apply_bulk_edits(&edits, &buffers, |_text| {
+            let info = infos[idx].clone();
+            idx += 1;
+            info
+        });
+
+        assert_eq!(delta, 4);
+        assert_eq!(tree.total_bytes(), 7); // "XaXbXcX"
+    }
+
+    #[test]
+    fn test_bulk_edit_multiple_deletes_descending() {
+        let buffers = vec![StringBuffer::new(0, b"abcdefgh".to_vec())];
+        let mut tree = PieceTree::new(BufferLocation::Stored(0), 0, 8, Some(0));
+
+        // Delete chars at positions 6, 4, 2, 0 (descending order) - no inserts
+        let edits: Vec<(usize, usize, &str)> = vec![
+            (6, 1, ""), // Delete 'g'
+            (4, 1, ""), // Delete 'e'
+            (2, 1, ""), // Delete 'c'
+            (0, 1, ""), // Delete 'a'
+        ];
+
+        let delta = tree.apply_bulk_edits(&edits, &buffers, |_| {
+            (BufferLocation::Added(1), 0, 0, Some(0))
+        });
+
+        assert_eq!(delta, -4);
+        assert_eq!(tree.total_bytes(), 4); // "bdfh"
+    }
+
+    #[test]
+    fn test_bulk_edit_empty_edits() {
+        let buffers = vec![StringBuffer::new(0, b"hello".to_vec())];
+        let mut tree = PieceTree::new(BufferLocation::Stored(0), 0, 5, Some(0));
+
+        let edits: Vec<(usize, usize, &str)> = vec![];
+
+        let delta = tree.apply_bulk_edits(&edits, &buffers, |_| {
+            (BufferLocation::Added(1), 0, 0, Some(0))
+        });
+
+        assert_eq!(delta, 0);
+        assert_eq!(tree.total_bytes(), 5);
+    }
+
+    #[test]
+    fn test_bulk_edit_consistency_check() {
+        // Test that piece sum equals total_bytes after bulk edit
+        let mut buffers = vec![StringBuffer::new(0, b"0123456789".to_vec())];
+        let mut tree = PieceTree::new(BufferLocation::Stored(0), 0, 10, Some(0));
+
+        // Pre-allocate buffers for the inserts
+        let infos = prepare_bulk_edit_buffers(&mut buffers, &["XX", "Y", "ZZZ"]);
+
+        // Multiple mixed operations
+        let edits: Vec<(usize, usize, &str)> = vec![
+            (8, 1, "XX"),  // Replace '8' with 'XX'
+            (5, 2, "Y"),   // Replace '56' with 'Y'
+            (2, 0, "ZZZ"), // Insert 'ZZZ' at position 2
+        ];
+        let mut idx = 0;
+
+        tree.apply_bulk_edits(&edits, &buffers, |_text| {
+            let info = infos[idx].clone();
+            idx += 1;
+            info
+        });
+
+        // Verify consistency
+        let leaves = tree.get_leaves();
+        let sum: usize = leaves.iter().map(|l| l.bytes).sum();
+        assert_eq!(
+            sum,
+            tree.total_bytes(),
+            "Piece sum {} != total_bytes {}",
+            sum,
+            tree.total_bytes()
+        );
+    }
+
+    #[test]
+    fn test_bulk_edit_vs_sequential_equivalence() {
+        // Verify that bulk edit produces same result as sequential edits
+        let original_content = b"The quick brown fox";
+
+        // Setup for bulk edit
+        let mut buffers1 = vec![StringBuffer::new(0, original_content.to_vec())];
+        let mut tree1 = PieceTree::new(BufferLocation::Stored(0), 0, 19, Some(0));
+
+        // Pre-allocate buffers for the replacements
+        let infos = prepare_bulk_edit_buffers(&mut buffers1, &["red", "slow"]);
+
+        // Setup for sequential edit
+        let mut buffers2 = vec![StringBuffer::new(0, original_content.to_vec())];
+        let mut tree2 = PieceTree::new(BufferLocation::Stored(0), 0, 19, Some(0));
+        let mut next_id2 = 1;
+
+        // Edits: Replace "quick" with "slow", "brown" with "red"
+        // Positions in original: quick=4-9, brown=10-15
+        // Must be sorted descending
+        let edits: Vec<(usize, usize, &str)> = vec![
+            (10, 5, "red"), // Replace "brown" at 10
+            (4, 5, "slow"), // Replace "quick" at 4
+        ];
+        let mut idx = 0;
+
+        // Apply bulk edit
+        tree1.apply_bulk_edits(&edits, &buffers1, |_text| {
+            let info = infos[idx].clone();
+            idx += 1;
+            info
+        });
+
+        // Apply sequential edits (in descending order to match)
+        // First: replace "brown" at 10
+        tree2.delete(10, 5, &buffers2);
+        buffers2.push(StringBuffer::new(next_id2, b"red".to_vec()));
+        tree2.insert(
+            10,
+            BufferLocation::Added(next_id2),
+            0,
+            3,
+            Some(0),
+            &buffers2,
+        );
+        next_id2 += 1;
+
+        // Second: replace "quick" at 4
+        tree2.delete(4, 5, &buffers2);
+        buffers2.push(StringBuffer::new(next_id2, b"slow".to_vec()));
+        tree2.insert(4, BufferLocation::Added(next_id2), 0, 4, Some(0), &buffers2);
+
+        assert_eq!(
+            tree1.total_bytes(),
+            tree2.total_bytes(),
+            "Bulk edit total_bytes {} != sequential {}",
+            tree1.total_bytes(),
+            tree2.total_bytes()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2278,6 +2774,219 @@ mod property_tests {
         let mut tree = PieceTree::new(BufferLocation::Stored(0), 0, 100, Some(0));
         tree.delete(50, 0, &buffers);
         assert_eq!(tree.total_bytes(), 100);
+    }
+
+    // ============== Property tests for apply_bulk_edits ==============
+
+    // Strategy to generate bulk edit operations
+    #[derive(Debug, Clone)]
+    struct BulkEditOp {
+        position: usize,
+        delete_len: usize,
+        insert_text: String,
+    }
+
+    fn bulk_edit_strategy() -> impl Strategy<Value = Vec<BulkEditOp>> {
+        prop::collection::vec(
+            (0usize..100, 0usize..20, "[a-zA-Z0-9]{0,10}").prop_map(
+                |(position, delete_len, insert_text)| BulkEditOp {
+                    position,
+                    delete_len,
+                    insert_text,
+                },
+            ),
+            1..20,
+        )
+    }
+
+    // Helper to pre-allocate buffers for property tests
+    fn preallocate_buffers(
+        buffers: &mut Vec<StringBuffer>,
+        texts: &[String],
+    ) -> Vec<(BufferLocation, usize, usize, Option<usize>)> {
+        let mut infos = Vec::new();
+        for text in texts {
+            let id = buffers.len();
+            let bytes = text.as_bytes().to_vec();
+            let lf = bytes.iter().filter(|&&b| b == b'\n').count();
+            let len = bytes.len();
+            buffers.push(StringBuffer::new(id, bytes));
+            infos.push((BufferLocation::Added(id), 0, len, Some(lf)));
+        }
+        infos
+    }
+
+    proptest! {
+        /// Property: apply_bulk_edits maintains tree consistency
+        /// Sum of piece lengths must equal total_bytes after bulk edit
+        #[test]
+        fn prop_bulk_edit_tree_consistency(ops in bulk_edit_strategy()) {
+            let mut buffers = vec![StringBuffer::new(0, b"x".repeat(100).to_vec())];
+            let mut tree = PieceTree::new(BufferLocation::Stored(0), 0, 100, Some(0));
+
+            // Sort edits by position descending (required by apply_bulk_edits)
+            let mut ops = ops;
+            ops.sort_by(|a, b| b.position.cmp(&a.position));
+
+            // Pre-allocate all buffers
+            let texts: Vec<String> = ops.iter().map(|op| op.insert_text.clone()).collect();
+            let infos = preallocate_buffers(&mut buffers, &texts);
+
+            // Clamp positions and delete lengths to valid ranges
+            let edits: Vec<(usize, usize, &str)> = ops.iter()
+                .map(|op| {
+                    let pos = op.position.min(tree.total_bytes());
+                    let del = op.delete_len.min(tree.total_bytes().saturating_sub(pos));
+                    (pos, del, op.insert_text.as_str())
+                })
+                .collect();
+
+            let mut idx = 0;
+            tree.apply_bulk_edits(&edits, &buffers, |_text| {
+                let info = infos[idx].clone();
+                idx += 1;
+                info
+            });
+
+            // INVARIANT: Sum of all piece lengths must equal total_bytes
+            let leaves = tree.get_leaves();
+            let sum_of_pieces: usize = leaves.iter().map(|leaf| leaf.bytes).sum();
+            prop_assert_eq!(
+                sum_of_pieces,
+                tree.total_bytes(),
+                "After bulk edit: sum of pieces ({}) != total_bytes ({})",
+                sum_of_pieces,
+                tree.total_bytes()
+            );
+        }
+
+        /// Property: apply_bulk_edits returns correct delta
+        #[test]
+        fn prop_bulk_edit_correct_delta(ops in bulk_edit_strategy()) {
+            let mut buffers = vec![StringBuffer::new(0, b"x".repeat(100).to_vec())];
+            let mut tree = PieceTree::new(BufferLocation::Stored(0), 0, 100, Some(0));
+
+            let original_bytes = tree.total_bytes();
+
+            // Sort edits by position descending
+            let mut ops = ops;
+            ops.sort_by(|a, b| b.position.cmp(&a.position));
+
+            // Pre-allocate all buffers
+            let texts: Vec<String> = ops.iter().map(|op| op.insert_text.clone()).collect();
+            let infos = preallocate_buffers(&mut buffers, &texts);
+
+            let edits: Vec<(usize, usize, &str)> = ops.iter()
+                .map(|op| {
+                    let pos = op.position.min(tree.total_bytes());
+                    let del = op.delete_len.min(tree.total_bytes().saturating_sub(pos));
+                    (pos, del, op.insert_text.as_str())
+                })
+                .collect();
+
+            let mut idx = 0;
+            let delta = tree.apply_bulk_edits(&edits, &buffers, |_text| {
+                let info = infos[idx].clone();
+                idx += 1;
+                info
+            });
+
+            let actual_change = tree.total_bytes() as isize - original_bytes as isize;
+            prop_assert_eq!(
+                delta,
+                actual_change,
+                "Returned delta ({}) != actual change ({})",
+                delta,
+                actual_change
+            );
+        }
+
+        /// Property: bulk edit with only inserts increases size correctly
+        #[test]
+        fn prop_bulk_edit_inserts_only(
+            positions in prop::collection::vec(0usize..50, 1..10),
+            insert_len in 1usize..10
+        ) {
+            let mut buffers = vec![StringBuffer::new(0, b"x".repeat(50).to_vec())];
+            let mut tree = PieceTree::new(BufferLocation::Stored(0), 0, 50, Some(0));
+
+            let insert_text = "a".repeat(insert_len);
+            let original_bytes = tree.total_bytes();
+
+            // Sort positions descending
+            let mut positions = positions;
+            positions.sort_by(|a, b| b.cmp(a));
+            positions.dedup();
+
+            // Pre-allocate all buffers
+            let texts: Vec<String> = positions.iter().map(|_| insert_text.clone()).collect();
+            let infos = preallocate_buffers(&mut buffers, &texts);
+
+            let edits: Vec<(usize, usize, &str)> = positions
+                .iter()
+                .map(|&pos| (pos.min(tree.total_bytes()), 0, insert_text.as_str()))
+                .collect();
+
+            let mut idx = 0;
+            tree.apply_bulk_edits(&edits, &buffers, |_text| {
+                let info = infos[idx].clone();
+                idx += 1;
+                info
+            });
+
+            let expected_bytes = original_bytes + edits.len() * insert_len;
+            prop_assert_eq!(
+                tree.total_bytes(),
+                expected_bytes,
+                "After {} inserts of {} bytes each: expected {} bytes, got {}",
+                edits.len(),
+                insert_len,
+                expected_bytes,
+                tree.total_bytes()
+            );
+        }
+
+        /// Property: bulk edit with only deletes decreases size correctly
+        #[test]
+        fn prop_bulk_edit_deletes_only(
+            ops in prop::collection::vec((0usize..80, 1usize..5), 1..10)
+        ) {
+            let buffers = vec![StringBuffer::new(0, b"x".repeat(100).to_vec())];
+            let mut tree = PieceTree::new(BufferLocation::Stored(0), 0, 100, Some(0));
+
+            // Sort by position descending
+            let mut ops = ops;
+            ops.sort_by(|a, b| b.0.cmp(&a.0));
+
+            // Remove overlapping deletes
+            let mut edits: Vec<(usize, usize, &str)> = Vec::new();
+            let mut last_affected_pos = tree.total_bytes();
+            for (pos, del_len) in ops {
+                if pos < last_affected_pos {
+                    let actual_del = del_len.min(last_affected_pos - pos);
+                    if actual_del > 0 {
+                        edits.push((pos, actual_del, ""));
+                        last_affected_pos = pos;
+                    }
+                }
+            }
+
+            let expected_delete: usize = edits.iter().map(|(_, d, _)| d).sum();
+
+            tree.apply_bulk_edits(&edits, &buffers, |_| {
+                (BufferLocation::Added(1), 0, 0, Some(0))
+            });
+
+            let expected_bytes = 100 - expected_delete;
+            prop_assert_eq!(
+                tree.total_bytes(),
+                expected_bytes,
+                "After deleting {} bytes: expected {} bytes, got {}",
+                expected_delete,
+                expected_bytes,
+                tree.total_bytes()
+            );
+        }
     }
 
     proptest! {

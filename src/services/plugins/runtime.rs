@@ -1702,22 +1702,8 @@ struct TsBufferSavedDiff {
     line_ranges: Option<Vec<(u32, u32)>>,
 }
 
-/// Line diff result for plugins
-#[derive(serde::Serialize)]
-struct TsLineDiff {
-    equal: bool,
-    changed_lines: Vec<(u32, u32)>,
-}
-
-/// Syntax highlighting span for plugins
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct TsHighlightSpan {
-    pub start: u32,
-    pub end: u32,
-    pub color: (u8, u8, u8),
-    pub bold: bool,
-    pub italic: bool,
-}
+// Re-export TsHighlightSpan from api module for backwards compatibility
+pub use crate::services::plugins::api::TsHighlightSpan;
 
 /// Compute syntax highlighting for a buffer range
 #[op2(async)]
@@ -1763,25 +1749,6 @@ async fn op_fresh_get_highlights(
     }
 }
 
-/// Get the byte offset of a line in a buffer
-#[op2(fast)]
-fn op_fresh_get_line_byte_offset(state: &mut OpState, buffer_id: u32, line: u32) -> u32 {
-    let runtime_state = state.borrow::<Rc<RefCell<TsRuntimeState>>>().borrow();
-    if let Ok(snapshot) = runtime_state.state_snapshot.read() {
-        if let Some(state) = snapshot
-            .buffer_cursor_positions
-            .get(&BufferId(buffer_id as usize))
-        {
-            // We don't have direct access to the LineCache here in the snapshot.
-            // But wait, the snapshot has buffer_cursor_positions which is just a single position.
-        }
-    }
-
-    // Fallback: we need to access the actual buffer.
-    // Let's implement this as a command or find a way to access the editor state.
-    0
-}
-
 /// Find a buffer ID by its file path
 #[op2(fast)]
 fn op_fresh_find_buffer_by_path(state: &mut OpState, #[string] path: String) -> u32 {
@@ -1797,21 +1764,6 @@ fn op_fresh_find_buffer_by_path(state: &mut OpState, #[string] path: String) -> 
         }
     }
     0
-}
-
-/// Compute line diff between two strings
-#[op2]
-#[serde]
-fn op_fresh_diff_lines(#[string] original: String, #[string] modified: String) -> TsLineDiff {
-    let diff = crate::model::line_diff::diff_lines(original.as_bytes(), modified.as_bytes());
-    TsLineDiff {
-        equal: diff.equal,
-        changed_lines: diff
-            .changed_lines
-            .iter()
-            .map(|r| (r.start as u32, r.end as u32))
-            .collect(),
-    }
 }
 
 /// Selection range

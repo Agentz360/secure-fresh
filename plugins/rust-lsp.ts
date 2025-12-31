@@ -32,10 +32,12 @@ interface ActionPopupResultData {
 }
 
 // Install commands for Rust LSP server
+// rustup is the official recommended method
+// brew is a good alternative for macOS users
+// See: https://rust-analyzer.github.io/book/installation.html
 const INSTALL_COMMANDS = {
   rustup: "rustup component add rust-analyzer",
   brew: "brew install rust-analyzer",
-  cargo: "cargo install rust-analyzer",
 };
 
 // Track error state for Rust LSP
@@ -79,26 +81,33 @@ editor.on("lsp_server_error", "on_rust_lsp_server_error");
 globalThis.on_rust_lsp_status_clicked = function (
   data: LspStatusClickedData
 ): void {
+  editor.debug(
+    `rust-lsp: lsp_status_clicked hook received - language=${data.language}, has_error=${data.has_error}, rustLspError=${rustLspError ? "SET" : "NULL"}`
+  );
+
   // Only handle Rust language clicks when there's an error
   if (data.language !== "rust" || !rustLspError) {
+    editor.debug(
+      `rust-lsp: Skipping - language check=${data.language !== "rust"}, error check=${!rustLspError}`
+    );
     return;
   }
 
   editor.debug("rust-lsp: Status clicked, showing help popup");
 
   // Show action popup with install options
-  editor.showActionPopup({
+  const result = editor.showActionPopup({
     id: "rust-lsp-help",
-    title: "Rust LSP Error",
-    message: `Server '${rustLspError.serverCommand}' not found.\n\nInstall with one of these commands:`,
+    title: "Rust Language Server Not Found",
+    message: `"${rustLspError.serverCommand}" provides code completion, diagnostics, and navigation for Rust files. Copy a command below to install it, or search online for your platform.`,
     actions: [
       { id: "copy_rustup", label: `Copy: ${INSTALL_COMMANDS.rustup}` },
       { id: "copy_brew", label: `Copy: ${INSTALL_COMMANDS.brew}` },
-      { id: "copy_cargo", label: `Copy: ${INSTALL_COMMANDS.cargo}` },
       { id: "disable", label: "Disable Rust LSP" },
-      { id: "dismiss", label: "Dismiss" },
+      { id: "dismiss", label: "Dismiss (ESC)" },
     ],
   });
+  editor.debug(`rust-lsp: showActionPopup returned ${result}`);
 };
 
 // Register hook for status bar clicks
@@ -110,12 +119,17 @@ editor.on("lsp_status_clicked", "on_rust_lsp_status_clicked");
 globalThis.on_rust_lsp_action_result = function (
   data: ActionPopupResultData
 ): void {
+  editor.debug(
+    `rust-lsp: action_popup_result received - popup_id=${data.popup_id}, action_id=${data.action_id}`
+  );
+
   // Only handle our popup
   if (data.popup_id !== "rust-lsp-help") {
+    editor.debug("rust-lsp: Not our popup, skipping");
     return;
   }
 
-  editor.debug(`rust-lsp: Action selected - ${data.action_id}`);
+  editor.debug(`rust-lsp: Action selected - ${data.action_id}, rustLspError will remain SET`);
 
   switch (data.action_id) {
     case "copy_rustup":
@@ -126,11 +140,6 @@ globalThis.on_rust_lsp_action_result = function (
     case "copy_brew":
       editor.setClipboard(INSTALL_COMMANDS.brew);
       editor.setStatus("Copied: " + INSTALL_COMMANDS.brew);
-      break;
-
-    case "copy_cargo":
-      editor.setClipboard(INSTALL_COMMANDS.cargo);
-      editor.setStatus("Copied: " + INSTALL_COMMANDS.cargo);
       break;
 
     case "disable":

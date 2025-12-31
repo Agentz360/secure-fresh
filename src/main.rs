@@ -136,7 +136,6 @@ fn start_stdin_streaming() -> io::Result<StdinStreamState> {
         // SAFETY: pipe_fd is a valid duplicated file descriptor
         let mut pipe_file = unsafe { File::from_raw_fd(pipe_fd) };
         let mut temp_file = std::fs::OpenOptions::new()
-            .write(true)
             .append(true)
             .open(&temp_path_clone)?;
 
@@ -521,8 +520,8 @@ fn initialize_app(args: &Args) -> io::Result<SetupState> {
     let _ = stdout().execute(EnableBracketedPaste);
     tracing::info!("Enabled bracketed paste mode");
 
-    let _ = stdout().execute(SetCursorStyle::BlinkingBlock);
-    tracing::info!("Enabled blinking block cursor");
+    let _ = stdout().execute(config.editor.cursor_style.to_crossterm_style());
+    tracing::info!("Set cursor style to {:?}", config.editor.cursor_style);
 
     let backend = ratatui::backend::CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)?;

@@ -102,6 +102,23 @@ def get_previous_tag() -> Optional[str]:
         except subprocess.CalledProcessError:
             return None
 
+def tag_exists_at_head(tag_name: str) -> bool:
+    """Check if a tag exists and points to HEAD."""
+    try:
+        # Get the commit that the tag points to
+        tag_result = run_command(["git", "rev-parse", f"{tag_name}^{{commit}}"], capture_output=True, check=False)
+        if tag_result.returncode != 0:
+            return False  # Tag doesn't exist
+        tag_commit = tag_result.stdout.strip()
+
+        # Get HEAD commit
+        head_result = run_command(["git", "rev-parse", "HEAD"], capture_output=True)
+        head_commit = head_result.stdout.strip()
+
+        return tag_commit == head_commit
+    except subprocess.CalledProcessError:
+        return False
+
 def main() -> None:
     """Main function."""
     parser = argparse.ArgumentParser(description="Version bump script for the editor project.")
@@ -112,8 +129,14 @@ def main() -> None:
         choices=["patch", "minor", "major"],
         help="The type of version bump.",
     )
+    parser.add_argument(
+        "--skip-bump",
+        action="store_true",
+        help="Skip version bump, just tag and push current version.",
+    )
     args = parser.parse_args()
     bump_type: BumpType = args.bump_type
+    skip_bump: bool = args.skip_bump
 
     cargo_toml_path = Path("Cargo.toml")
     if not cargo_toml_path.exists():
@@ -127,38 +150,45 @@ def main() -> None:
         print(f"{RED}Error: {e}{NC}")
         sys.exit(1)
 
-    new_version = calculate_new_version(current_version, bump_type)
+    if skip_bump:
+        new_version = current_version
+        print(f"{BLUE}Tag and Push (skipping bump){NC}")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"Current version: {GREEN}{current_version}{NC}")
+        print("")
+    else:
+        new_version = calculate_new_version(current_version, bump_type)
 
-    print(f"{BLUE}Version Bump ({bump_type}){NC}")
-    print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-    print(f"Current version: {YELLOW}{current_version}{NC}")
-    print(f"New version:     {GREEN}{new_version}{NC}")
-    print("")
+        print(f"{BLUE}Version Bump ({bump_type}){NC}")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print(f"Current version: {YELLOW}{current_version}{NC}")
+        print(f"New version:     {GREEN}{new_version}{NC}")
+        print("")
 
-    reply = input(f"Bump {bump_type} version {current_version} -> {new_version}? (y/N) ").lower()
-    if reply != "y":
-        print("Aborted.")
-        sys.exit(0)
+        reply = input(f"Bump {bump_type} version {current_version} -> {new_version}? (y/N) ").lower()
+        if reply != "y":
+            print("Aborted.")
+            sys.exit(0)
 
-    print("")
-    print(f"{BLUE}Step 1:{NC} Updating Cargo.toml...")
-    update_cargo_toml(cargo_toml_path, current_version, new_version)
-    print(f"{GREEN}✓{NC} Updated Cargo.toml")
+        print("")
+        print(f"{BLUE}Step 1:{NC} Updating Cargo.toml...")
+        update_cargo_toml(cargo_toml_path, current_version, new_version)
+        print(f"{GREEN}✓{NC} Updated Cargo.toml")
 
-    print("")
-    print(f"{BLUE}Step 2:{NC} Updating Cargo.lock (running cargo build)...")
-    update_cargo_lock()
-    print(f"{GREEN}✓{NC} Updated Cargo.lock")
+        print("")
+        print(f"{BLUE}Step 2:{NC} Updating Cargo.lock (running cargo build)...")
+        update_cargo_lock()
+        print(f"{GREEN}✓{NC} Updated Cargo.lock")
 
-    print("")
-    print(f"{BLUE}Step 3:{NC} Summary of changes...")
-    print("")
-    try:
-        diff_result = run_command(["git", "diff", "Cargo.toml", "Cargo.lock"], capture_output=True)
-        print("Git diff:")
-        print(diff_result.stdout)
-    except subprocess.CalledProcessError:
-        print("Could not get git diff.")
+        print("")
+        print(f"{BLUE}Step 3:{NC} Summary of changes...")
+        print("")
+        try:
+            diff_result = run_command(["git", "diff", "Cargo.toml", "Cargo.lock"], capture_output=True)
+            print("Git diff:")
+            print(diff_result.stdout)
+        except subprocess.CalledProcessError:
+            print("Could not get git diff.")
 
 
     print("")
@@ -176,18 +206,28 @@ def main() -> None:
     else:
         print(f"{YELLOW}Warning: CHANGELOG.md not found. Tag will not include release notes.{NC}")
 
-    reply = input(f"Commit, tag, and push v{new_version}? (y/N) ").lower()
+    if skip_bump:
+        reply = input(f"Tag and push v{new_version}? (y/N) ").lower()
+    else:
+        reply = input(f"Commit, tag, and push v{new_version}? (y/N) ").lower()
     if reply != "y":
         print("")
-        print(f"{YELLOW}Changes made but not committed.{NC}")
+        if skip_bump:
+            print(f"{YELLOW}Tag not created.{NC}")
+        else:
+            print(f"{YELLOW}Changes made but not committed.{NC}")
         print("")
         print("To complete manually:")
-        print(f"  1. Commit changes: {YELLOW}git add Cargo.toml Cargo.lock && git commit -m 'Bump version to {new_version}'{NC}")
+        step = 1
+        if not skip_bump:
+            print(f"  {step}. Commit changes: {YELLOW}git add Cargo.toml Cargo.lock && git commit -m 'Bump version to {new_version}'{NC}")
+            step += 1
         if release_notes_content:
-            print(f"  2. Create tag:     {YELLOW}git tag -a v{new_version} -F CHANGELOG.md{NC}")
+            print(f"  {step}. Create tag:     {YELLOW}git tag -a v{new_version} -F CHANGELOG.md{NC}")
         else:
-            print(f"  2. Create tag:     {YELLOW}git tag v{new_version}{NC}")
-        print(f"  3. Push:           {YELLOW}git push && git push origin v{new_version}{NC}")
+            print(f"  {step}. Create tag:     {YELLOW}git tag v{new_version}{NC}")
+        step += 1
+        print(f"  {step}. Push:           {YELLOW}git push && git push origin v{new_version}{NC}")
         print("")
         print("GitHub Actions will then automatically publish to all platforms.")
         sys.exit(0)
@@ -195,23 +235,31 @@ def main() -> None:
     try:
         current_branch_result = run_command(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True)
         current_branch = current_branch_result.stdout.strip()
-        
-        print("")
-        print(f"{BLUE}Step 4:{NC} Committing changes...")
-        run_command(["git", "add", "Cargo.toml", "Cargo.lock"])
-        run_command(["git", "commit", "-m", f"Bump version to {new_version}"])
-        print(f"{GREEN}✓{NC} Committed")
+
+        if not skip_bump:
+            print("")
+            print(f"{BLUE}Step 4:{NC} Committing changes...")
+            run_command(["git", "add", "Cargo.toml", "Cargo.lock"])
+            run_command(["git", "commit", "-m", f"Bump version to {new_version}"])
+            print(f"{GREEN}✓{NC} Committed")
 
         print("")
-        print(f"{BLUE}Step 5:{NC} Creating tag v{new_version}...")
-        if release_notes_content:
-            run_command(["git", "tag", "-a", f"v{new_version}", "-F", "CHANGELOG.md"])
+        step_num = "Step 1" if skip_bump else "Step 5"
+        tag_name = f"v{new_version}"
+        if tag_exists_at_head(tag_name):
+            print(f"{BLUE}{step_num}:{NC} Tag {tag_name} already exists at HEAD")
+            print(f"{GREEN}✓{NC} Skipped (already tagged)")
         else:
-            run_command(["git", "tag", f"v{new_version}"])
-        print(f"{GREEN}✓{NC} Tagged")
+            print(f"{BLUE}{step_num}:{NC} Creating tag {tag_name}...")
+            if release_notes_content:
+                run_command(["git", "tag", "-a", tag_name, "-F", "CHANGELOG.md"])
+            else:
+                run_command(["git", "tag", tag_name])
+            print(f"{GREEN}✓{NC} Tagged")
 
         print("")
-        print(f"{BLUE}Step 6:{NC} Pushing to origin...")
+        step_num = "Step 2" if skip_bump else "Step 6"
+        print(f"{BLUE}{step_num}:{NC} Pushing to origin...")
         run_command(["git", "push", "origin", current_branch])
         run_command(["git", "push", "origin", f"v{new_version}"])
         print(f"{GREEN}✓{NC} Pushed")

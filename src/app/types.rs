@@ -341,6 +341,161 @@ pub enum HoverTarget {
     SearchOptionRegex,
     /// Hovering over the search options "Confirm Each" checkbox
     SearchOptionConfirmEach,
+    /// Hovering over a tab context menu item (item_index)
+    TabContextMenuItem(usize),
+}
+
+/// Tab context menu items
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabContextMenuItem {
+    /// Close this tab
+    Close,
+    /// Close all other tabs
+    CloseOthers,
+    /// Close tabs to the right
+    CloseToRight,
+    /// Close tabs to the left
+    CloseToLeft,
+    /// Close all tabs
+    CloseAll,
+}
+
+impl TabContextMenuItem {
+    /// Get all menu items in order
+    pub fn all() -> &'static [TabContextMenuItem] {
+        &[
+            TabContextMenuItem::Close,
+            TabContextMenuItem::CloseOthers,
+            TabContextMenuItem::CloseToRight,
+            TabContextMenuItem::CloseToLeft,
+            TabContextMenuItem::CloseAll,
+        ]
+    }
+
+    /// Get the display label for this menu item
+    pub fn label(&self) -> &'static str {
+        match self {
+            TabContextMenuItem::Close => "Close",
+            TabContextMenuItem::CloseOthers => "Close Others",
+            TabContextMenuItem::CloseToRight => "Close to the Right",
+            TabContextMenuItem::CloseToLeft => "Close to the Left",
+            TabContextMenuItem::CloseAll => "Close All",
+        }
+    }
+}
+
+/// State for tab context menu (right-click popup on tabs)
+#[derive(Debug, Clone)]
+pub struct TabContextMenu {
+    /// The buffer ID this context menu is for
+    pub buffer_id: BufferId,
+    /// The split ID where the tab is located
+    pub split_id: SplitId,
+    /// Screen position where the menu should appear (x, y)
+    pub position: (u16, u16),
+    /// Currently highlighted menu item index
+    pub highlighted: usize,
+}
+
+impl TabContextMenu {
+    /// Create a new tab context menu
+    pub fn new(buffer_id: BufferId, split_id: SplitId, x: u16, y: u16) -> Self {
+        Self {
+            buffer_id,
+            split_id,
+            position: (x, y),
+            highlighted: 0,
+        }
+    }
+
+    /// Get the currently highlighted item
+    pub fn highlighted_item(&self) -> TabContextMenuItem {
+        TabContextMenuItem::all()[self.highlighted]
+    }
+
+    /// Move highlight down
+    pub fn next_item(&mut self) {
+        let items = TabContextMenuItem::all();
+        self.highlighted = (self.highlighted + 1) % items.len();
+    }
+
+    /// Move highlight up
+    pub fn prev_item(&mut self) {
+        let items = TabContextMenuItem::all();
+        self.highlighted = if self.highlighted == 0 {
+            items.len() - 1
+        } else {
+            self.highlighted - 1
+        };
+    }
+}
+
+/// Drop zone for tab drag-and-drop
+/// Indicates where a dragged tab will be placed when released
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TabDropZone {
+    /// Drop into an existing split's tab bar (before tab at index, or at end if None)
+    /// (target_split_id, insert_index)
+    TabBar(SplitId, Option<usize>),
+    /// Create a new split on the left edge of the target split
+    SplitLeft(SplitId),
+    /// Create a new split on the right edge of the target split
+    SplitRight(SplitId),
+    /// Create a new split on the top edge of the target split
+    SplitTop(SplitId),
+    /// Create a new split on the bottom edge of the target split
+    SplitBottom(SplitId),
+    /// Drop into the center of a split (switch to that split's tab bar)
+    SplitCenter(SplitId),
+}
+
+impl TabDropZone {
+    /// Get the split ID this drop zone is associated with
+    pub fn split_id(&self) -> SplitId {
+        match self {
+            TabDropZone::TabBar(id, _) => *id,
+            TabDropZone::SplitLeft(id) => *id,
+            TabDropZone::SplitRight(id) => *id,
+            TabDropZone::SplitTop(id) => *id,
+            TabDropZone::SplitBottom(id) => *id,
+            TabDropZone::SplitCenter(id) => *id,
+        }
+    }
+}
+
+/// State for a tab being dragged
+#[derive(Debug, Clone)]
+pub struct TabDragState {
+    /// The buffer being dragged
+    pub buffer_id: BufferId,
+    /// The split the tab was dragged from
+    pub source_split_id: SplitId,
+    /// Starting mouse position when drag began
+    pub start_position: (u16, u16),
+    /// Current mouse position
+    pub current_position: (u16, u16),
+    /// Currently detected drop zone (if any)
+    pub drop_zone: Option<TabDropZone>,
+}
+
+impl TabDragState {
+    /// Create a new tab drag state
+    pub fn new(buffer_id: BufferId, source_split_id: SplitId, start_position: (u16, u16)) -> Self {
+        Self {
+            buffer_id,
+            source_split_id,
+            start_position,
+            current_position: start_position,
+            drop_zone: None,
+        }
+    }
+
+    /// Check if the drag has moved enough to be considered a real drag (not just a click)
+    pub fn is_dragging(&self) -> bool {
+        let dx = (self.current_position.0 as i32 - self.start_position.0 as i32).abs();
+        let dy = (self.current_position.1 as i32 - self.start_position.1 as i32).abs();
+        dx > 3 || dy > 3 // Threshold of 3 pixels before drag activates
+    }
 }
 
 /// Mouse state tracking
@@ -379,6 +534,8 @@ pub(super) struct MouseState {
     pub drag_selection_split: Option<SplitId>,
     /// The buffer byte position where the selection anchor is
     pub drag_selection_anchor: Option<usize>,
+    /// Tab drag state (for drag-to-split functionality)
+    pub dragging_tab: Option<TabDragState>,
 }
 
 /// Mapping from visual row to buffer positions for mouse click handling

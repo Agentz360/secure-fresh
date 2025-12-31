@@ -632,15 +632,22 @@ impl Editor {
                         let popup_area = popup.calculate_area(size, Some(cursor_screen_pos));
 
                         // Track popup area for mouse hit testing
+                        // Account for description height when calculating the list item area
+                        let desc_height = popup.description_height();
                         let inner_area = if popup.bordered {
                             ratatui::layout::Rect {
                                 x: popup_area.x + 1,
-                                y: popup_area.y + 1,
+                                y: popup_area.y + 1 + desc_height,
                                 width: popup_area.width.saturating_sub(2),
-                                height: popup_area.height.saturating_sub(2),
+                                height: popup_area.height.saturating_sub(2 + desc_height),
                             }
                         } else {
-                            popup_area
+                            ratatui::layout::Rect {
+                                x: popup_area.x,
+                                y: popup_area.y + desc_height,
+                                width: popup_area.width,
+                                height: popup_area.height.saturating_sub(desc_height),
+                            }
                         };
 
                         let num_items = match &popup.content {
@@ -718,6 +725,18 @@ impl Editor {
                 &self.theme,
                 self.mouse_state.hover_target.as_ref(),
             );
+        }
+
+        // Render tab context menu if open
+        if let Some(ref menu) = self.tab_context_menu {
+            self.render_tab_context_menu(frame, menu);
+        }
+
+        // Render tab drag drop zone overlay if dragging a tab
+        if let Some(ref drag_state) = self.mouse_state.dragging_tab {
+            if drag_state.is_dragging() {
+                self.render_tab_drop_zone(frame, drag_state);
+            }
         }
 
         // Render software mouse cursor when GPM is active
@@ -887,6 +906,208 @@ impl Editor {
         }
     }
 
+    /// Render the tab context menu
+    fn render_tab_context_menu(&self, frame: &mut Frame, menu: &TabContextMenu) {
+        use ratatui::style::Style;
+        use ratatui::text::{Line, Span};
+        use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+
+        let items = super::types::TabContextMenuItem::all();
+        let menu_width = 22u16; // "Close to the Right" + padding
+        let menu_height = items.len() as u16 + 2; // items + borders
+
+        // Adjust position to stay within screen bounds
+        let screen_width = frame.area().width;
+        let screen_height = frame.area().height;
+
+        let menu_x = if menu.position.0 + menu_width > screen_width {
+            screen_width.saturating_sub(menu_width)
+        } else {
+            menu.position.0
+        };
+
+        let menu_y = if menu.position.1 + menu_height > screen_height {
+            screen_height.saturating_sub(menu_height)
+        } else {
+            menu.position.1
+        };
+
+        let area = ratatui::layout::Rect::new(menu_x, menu_y, menu_width, menu_height);
+
+        // Clear the area first
+        frame.render_widget(Clear, area);
+
+        // Build the menu lines
+        let mut lines = Vec::new();
+        for (idx, item) in items.iter().enumerate() {
+            let is_highlighted = idx == menu.highlighted;
+
+            let style = if is_highlighted {
+                Style::default()
+                    .fg(self.theme.menu_highlight_fg)
+                    .bg(self.theme.menu_highlight_bg)
+            } else {
+                Style::default()
+                    .fg(self.theme.menu_dropdown_fg)
+                    .bg(self.theme.menu_dropdown_bg)
+            };
+
+            // Pad the label to fill the menu width
+            let label = item.label();
+            let content_width = (menu_width as usize).saturating_sub(2); // -2 for borders
+            let padded_label = format!(" {:<width$}", label, width = content_width - 1);
+
+            lines.push(Line::from(vec![Span::styled(padded_label, style)]));
+        }
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(self.theme.menu_border_fg))
+            .style(Style::default().bg(self.theme.menu_dropdown_bg));
+
+        let paragraph = Paragraph::new(lines).block(block);
+        frame.render_widget(paragraph, area);
+    }
+
+    /// Render the tab drag drop zone overlay
+    fn render_tab_drop_zone(&self, frame: &mut Frame, drag_state: &super::types::TabDragState) {
+        use ratatui::style::Modifier;
+
+        let Some(ref drop_zone) = drag_state.drop_zone else {
+            return;
+        };
+
+        let split_id = drop_zone.split_id();
+
+        // Find the content area for the target split
+        let split_area = self
+            .cached_layout
+            .split_areas
+            .iter()
+            .find(|(sid, _, _, _, _, _)| *sid == split_id)
+            .map(|(_, _, content_rect, _, _, _)| *content_rect);
+
+        let Some(content_rect) = split_area else {
+            return;
+        };
+
+        // Determine the highlight area based on drop zone type
+        use super::types::TabDropZone;
+
+        let highlight_area = match drop_zone {
+            TabDropZone::TabBar(_, _) | TabDropZone::SplitCenter(_) => {
+                // For tab bar and center drops, highlight the entire split area
+                // This indicates the tab will be added to this split's tab bar
+                content_rect
+            }
+            TabDropZone::SplitLeft(_) => {
+                // Left 50% of the split (matches the actual split size created)
+                let width = (content_rect.width / 2).max(3);
+                ratatui::layout::Rect::new(
+                    content_rect.x,
+                    content_rect.y,
+                    width,
+                    content_rect.height,
+                )
+            }
+            TabDropZone::SplitRight(_) => {
+                // Right 50% of the split (matches the actual split size created)
+                let width = (content_rect.width / 2).max(3);
+                let x = content_rect.x + content_rect.width - width;
+                ratatui::layout::Rect::new(x, content_rect.y, width, content_rect.height)
+            }
+            TabDropZone::SplitTop(_) => {
+                // Top 50% of the split (matches the actual split size created)
+                let height = (content_rect.height / 2).max(2);
+                ratatui::layout::Rect::new(
+                    content_rect.x,
+                    content_rect.y,
+                    content_rect.width,
+                    height,
+                )
+            }
+            TabDropZone::SplitBottom(_) => {
+                // Bottom 50% of the split (matches the actual split size created)
+                let height = (content_rect.height / 2).max(2);
+                let y = content_rect.y + content_rect.height - height;
+                ratatui::layout::Rect::new(content_rect.x, y, content_rect.width, height)
+            }
+        };
+
+        // Draw the overlay with the drop zone color
+        // We apply a semi-transparent effect by modifying existing cells
+        let buf = frame.buffer_mut();
+        let drop_zone_bg = self.theme.tab_drop_zone_bg;
+        let drop_zone_border = self.theme.tab_drop_zone_border;
+
+        // Fill the highlight area with a semi-transparent overlay
+        for y in highlight_area.y..highlight_area.y + highlight_area.height {
+            for x in highlight_area.x..highlight_area.x + highlight_area.width {
+                if let Some(cell) = buf.cell_mut((x, y)) {
+                    // Blend the drop zone color with the existing background
+                    // For a simple effect, we just set the background
+                    cell.set_bg(drop_zone_bg);
+
+                    // Draw border on edges
+                    let is_border = x == highlight_area.x
+                        || x == highlight_area.x + highlight_area.width - 1
+                        || y == highlight_area.y
+                        || y == highlight_area.y + highlight_area.height - 1;
+
+                    if is_border {
+                        cell.set_fg(drop_zone_border);
+                        cell.set_style(cell.style().add_modifier(Modifier::BOLD));
+                    }
+                }
+            }
+        }
+
+        // Draw a border indicator based on the zone type
+        match drop_zone {
+            TabDropZone::SplitLeft(_) => {
+                // Draw vertical indicator on left edge
+                for y in highlight_area.y..highlight_area.y + highlight_area.height {
+                    if let Some(cell) = buf.cell_mut((highlight_area.x, y)) {
+                        cell.set_symbol("▌");
+                        cell.set_fg(drop_zone_border);
+                    }
+                }
+            }
+            TabDropZone::SplitRight(_) => {
+                // Draw vertical indicator on right edge
+                let x = highlight_area.x + highlight_area.width - 1;
+                for y in highlight_area.y..highlight_area.y + highlight_area.height {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_symbol("▐");
+                        cell.set_fg(drop_zone_border);
+                    }
+                }
+            }
+            TabDropZone::SplitTop(_) => {
+                // Draw horizontal indicator on top edge
+                for x in highlight_area.x..highlight_area.x + highlight_area.width {
+                    if let Some(cell) = buf.cell_mut((x, highlight_area.y)) {
+                        cell.set_symbol("▀");
+                        cell.set_fg(drop_zone_border);
+                    }
+                }
+            }
+            TabDropZone::SplitBottom(_) => {
+                // Draw horizontal indicator on bottom edge
+                let y = highlight_area.y + highlight_area.height - 1;
+                for x in highlight_area.x..highlight_area.x + highlight_area.width {
+                    if let Some(cell) = buf.cell_mut((x, y)) {
+                        cell.set_symbol("▄");
+                        cell.set_fg(drop_zone_border);
+                    }
+                }
+            }
+            TabDropZone::SplitCenter(_) | TabDropZone::TabBar(_, _) => {
+                // For center and tab bar, the filled background is sufficient
+            }
+        }
+    }
+
     // === Overlay Management (Event-Driven) ===
 
     /// Add an overlay for decorations (underlines, highlights, etc.)
@@ -1045,6 +1266,7 @@ impl Editor {
 
         let popup = PopupData {
             title: Some(format!("Start LSP Server: {}?", server_info)),
+            description: None,
             transient: false,
             content: PopupContentData::List {
                 items: vec![
@@ -2068,6 +2290,9 @@ impl Editor {
 
     /// Perform a replace-all operation
     /// Replaces all occurrences of the search query with the replacement text
+    ///
+    /// OPTIMIZATION: Uses BulkEdit for O(n) tree operations instead of O(n²)
+    /// This directly edits the piece tree without loading the entire buffer into memory
     pub(super) fn perform_replace(&mut self, search: &str, replacement: &str) {
         if search.is_empty() {
             self.set_status_message("Replace: empty search query.".to_string());
@@ -2103,44 +2328,20 @@ impl Editor {
             return;
         }
 
-        // Capture current cursor state for undo
+        // Get cursor info for the event
         let cursor_id = self.active_state().cursors.primary_id();
-        let cursor = self.active_state().cursors.get(cursor_id).unwrap().clone();
-        let old_position = cursor.position;
-        let old_anchor = cursor.anchor;
-        let old_sticky_column = cursor.sticky_column;
 
-        // Create events for all replacements (in reverse order to preserve positions)
-        let mut events = Vec::new();
-
-        // Add MoveCursor at the beginning to save cursor position for undo
-        events.push(Event::MoveCursor {
-            cursor_id,
-            old_position,
-            new_position: old_position, // Keep cursor where it is
-            old_anchor,
-            new_anchor: old_anchor,
-            old_sticky_column,
-            new_sticky_column: old_sticky_column,
-        });
-
-        for match_pos in matches.into_iter().rev() {
-            let end = match_pos + search.len();
-            let range = match_pos..end;
-
-            // Get the text being deleted
-            let deleted_text = self
-                .active_state_mut()
-                .get_text_range(range.start, range.end);
-
-            // Add Delete event
+        // Create Delete+Insert events for each match
+        // Events will be processed in reverse order by apply_events_as_bulk_edit
+        let mut events = Vec::with_capacity(count * 2);
+        for &match_pos in &matches {
+            // Delete the matched text
             events.push(Event::Delete {
-                range: range.clone(),
-                deleted_text,
+                range: match_pos..match_pos + search.len(),
+                deleted_text: search.to_string(), // We know what text is being deleted
                 cursor_id,
             });
-
-            // Add Insert event
+            // Insert the replacement
             events.push(Event::Insert {
                 position: match_pos,
                 text: replacement.to_string(),
@@ -2148,15 +2349,11 @@ impl Editor {
             });
         }
 
-        // Wrap all replacement events in a single Batch for atomic undo
-        let batch = Event::Batch {
-            events,
-            description: format!("Replace all '{}' with '{}'", search, replacement),
-        };
-
-        // Apply through event log for proper undo support
-        self.active_event_log_mut().append(batch.clone());
-        self.apply_event_to_active_buffer(&batch);
+        // Apply all replacements using BulkEdit for O(n) performance
+        let description = format!("Replace all '{}' with '{}'", search, replacement);
+        if let Some(bulk_edit) = self.apply_events_as_bulk_edit(events, description) {
+            self.active_event_log_mut().append(bulk_edit);
+        }
 
         // Clear search state since positions are now invalid
         self.search_state = None;
@@ -2273,21 +2470,22 @@ impl Editor {
             'a' | 'A' | '!' => {
                 // Replace all remaining matches with SINGLE confirmation
                 // Undo behavior: ONE undo step undoes ALL remaining replacements
-                // Uses streaming search (doesn't materialize file), but collects positions for batch
+                //
+                // OPTIMIZATION: Uses BulkEdit for O(n) tree operations instead of O(n²)
+                // This directly edits the piece tree without loading the entire buffer
 
-                // First replace the current match
-                self.replace_current_match(&ir_state)?;
-                ir_state.replacements_made += 1;
-
-                // Find all remaining matches using streaming search
-                // Collecting positions (Vec<usize>) is low memory cost even for huge files
-                let search_pos = ir_state.current_match_pos + ir_state.replacement.len();
-                let remaining_matches = {
+                // Collect ALL match positions including the current match
+                // Start from the current match position
+                let all_matches = {
                     let mut matches = Vec::new();
-                    let mut current_pos = search_pos;
                     let mut temp_state = ir_state.clone();
+                    temp_state.has_wrapped = false; // Reset wrap state to find current match
 
-                    // Find matches lazily one at a time, collect positions
+                    // First, include the current match
+                    matches.push(ir_state.current_match_pos);
+                    let mut current_pos = ir_state.current_match_pos + ir_state.search.len();
+
+                    // Find all remaining matches
                     loop {
                         if let Some((next_match, wrapped)) =
                             self.find_next_match_for_replace(&temp_state, current_pos)
@@ -2304,43 +2502,20 @@ impl Editor {
                     matches
                 };
 
-                let remaining_count = remaining_matches.len();
+                let total_count = all_matches.len();
 
-                if remaining_count > 0 {
-                    // Capture current cursor state for undo
+                if total_count > 0 {
+                    // Get cursor info for the event
                     let cursor_id = self.active_state().cursors.primary_id();
-                    let cursor = self.active_state().cursors.get(cursor_id).unwrap().clone();
-                    let old_position = cursor.position;
-                    let old_anchor = cursor.anchor;
-                    let old_sticky_column = cursor.sticky_column;
 
-                    // Create events for all remaining replacements (reverse order preserves positions)
-                    let mut events = Vec::new();
-
-                    // Add MoveCursor at the beginning to save cursor position for undo
-                    events.push(Event::MoveCursor {
-                        cursor_id,
-                        old_position,
-                        new_position: old_position, // Keep cursor where it is
-                        old_anchor,
-                        new_anchor: old_anchor,
-                        old_sticky_column,
-                        new_sticky_column: old_sticky_column,
-                    });
-
-                    for match_pos in remaining_matches.into_iter().rev() {
-                        let end = match_pos + ir_state.search.len();
-                        let range = match_pos..end;
-                        let deleted_text = self
-                            .active_state_mut()
-                            .get_text_range(range.start, range.end);
-
+                    // Create Delete+Insert events for each match
+                    let mut events = Vec::with_capacity(total_count * 2);
+                    for &match_pos in &all_matches {
                         events.push(Event::Delete {
-                            range: range.clone(),
-                            deleted_text,
+                            range: match_pos..match_pos + ir_state.search.len(),
+                            deleted_text: ir_state.search.clone(),
                             cursor_id,
                         });
-
                         events.push(Event::Insert {
                             position: match_pos,
                             text: ir_state.replacement.clone(),
@@ -2348,19 +2523,16 @@ impl Editor {
                         });
                     }
 
-                    // Single Batch = single undo step for all remaining replacements
-                    let batch = Event::Batch {
-                        events,
-                        description: format!(
-                            "Query replace remaining '{}' with '{}'",
-                            ir_state.search, ir_state.replacement
-                        ),
-                    };
+                    // Apply all replacements using BulkEdit for O(n) performance
+                    let description = format!(
+                        "Replace all {} occurrences of '{}' with '{}'",
+                        total_count, ir_state.search, ir_state.replacement
+                    );
+                    if let Some(bulk_edit) = self.apply_events_as_bulk_edit(events, description) {
+                        self.active_event_log_mut().append(bulk_edit);
+                    }
 
-                    self.active_event_log_mut().append(batch.clone());
-                    self.apply_event_to_active_buffer(&batch);
-
-                    ir_state.replacements_made += remaining_count;
+                    ir_state.replacements_made += total_count;
                 }
 
                 self.finish_interactive_replace(ir_state.replacements_made);
@@ -2714,13 +2886,13 @@ impl Editor {
         } else {
             "Comment"
         };
-        let batch = Event::Batch {
-            events,
-            description: format!("{} lines", action_desc),
-        };
 
-        self.active_event_log_mut().append(batch.clone());
-        self.apply_event_to_active_buffer(&batch);
+        // Use optimized bulk edit for multi-line comment toggle
+        let description = format!("{} lines", action_desc);
+        if let Some(bulk_edit) = self.apply_events_as_bulk_edit(events, description) {
+            self.active_event_log_mut().append(bulk_edit);
+        }
+
         self.set_status_message(format!("{}ed {} line(s)", action_desc, line_starts.len()));
     }
 

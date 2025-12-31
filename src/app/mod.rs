@@ -23,6 +23,7 @@ pub mod session;
 mod settings_actions;
 mod shell_command;
 mod split_actions;
+mod tab_drag;
 mod terminal;
 mod terminal_input;
 mod toggle_actions;
@@ -67,7 +68,8 @@ pub(crate) fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
 
 use self::types::{
     Bookmark, CachedLayout, EventLineInfo, InteractiveReplaceState, LspMessageEntry,
-    LspProgressInfo, MacroRecordingState, MouseState, SearchState, DEFAULT_BACKGROUND_FILE,
+    LspProgressInfo, MacroRecordingState, MouseState, SearchState, TabContextMenu,
+    DEFAULT_BACKGROUND_FILE,
 };
 use crate::config::Config;
 use crate::config_io::DirectoryContext;
@@ -81,7 +83,9 @@ use crate::model::event::{Event, EventLog, SplitDirection, SplitId};
 use crate::services::async_bridge::{AsyncBridge, AsyncMessage};
 use crate::services::fs::{FsBackend, FsManager, LocalFsBackend};
 use crate::services::lsp::manager::{detect_language, LspManager};
-use crate::services::plugins::api::{BufferSavedDiff, PluginCommand};
+#[cfg(feature = "plugins")]
+use crate::services::plugins::api::BufferSavedDiff;
+use crate::services::plugins::api::PluginCommand;
 use crate::services::plugins::PluginManager;
 use crate::services::recovery::{RecoveryConfig, RecoveryService};
 use crate::services::time_source::{RealTimeSource, SharedTimeSource};
@@ -318,6 +322,9 @@ pub struct Editor {
 
     /// Mouse state for scrollbar dragging
     mouse_state: MouseState,
+
+    /// Tab context menu state (right-click on tabs)
+    tab_context_menu: Option<TabContextMenu>,
 
     /// Cached layout areas from last render (for mouse hit testing)
     pub(crate) cached_layout: CachedLayout,
@@ -853,6 +860,7 @@ impl Editor {
             interactive_replace_state: None,
             lsp_status: String::new(),
             mouse_state: MouseState::default(),
+            tab_context_menu: None,
             cached_layout: CachedLayout::default(),
             command_registry,
             plugin_manager,
@@ -1555,7 +1563,7 @@ impl Editor {
         // 1c. Invalidate layouts for all views of this buffer after content changes
         // Note: recovery_pending is set automatically by the buffer on edits
         match event {
-            Event::Insert { .. } | Event::Delete { .. } => {
+            Event::Insert { .. } | Event::Delete { .. } | Event::BulkEdit { .. } => {
                 self.invalidate_layouts_for_buffer(self.active_buffer());
             }
             Event::Batch { events, .. } => {
@@ -1579,7 +1587,7 @@ impl Editor {
 
         if !in_interactive_replace {
             match event {
-                Event::Insert { .. } | Event::Delete { .. } => {
+                Event::Insert { .. } | Event::Delete { .. } | Event::BulkEdit { .. } => {
                     self.clear_search_highlights();
                 }
                 Event::Batch { events, .. } => {
@@ -1600,6 +1608,189 @@ impl Editor {
 
         // 4. Notify LSP of the change using pre-calculated positions
         self.send_lsp_changes_for_buffer(self.active_buffer(), lsp_changes);
+    }
+
+    /// Apply multiple Insert/Delete events efficiently using bulk edit optimization.
+    ///
+    /// This avoids O(n²) complexity by:
+    /// 1. Converting events to (position, delete_len, insert_text) tuples
+    /// 2. Applying all edits in a single tree pass via apply_bulk_edits
+    /// 3. Creating a BulkEdit event for undo (stores tree snapshot via Arc clone = O(1))
+    ///
+    /// # Arguments
+    /// * `events` - Vec of Insert/Delete events (sorted by position descending for correct application)
+    /// * `description` - Description for the undo log
+    ///
+    /// # Returns
+    /// The BulkEdit event that was applied, for tracking purposes
+    pub fn apply_events_as_bulk_edit(
+        &mut self,
+        events: Vec<Event>,
+        description: String,
+    ) -> Option<Event> {
+        use crate::model::event::CursorId;
+
+        // Check if any events modify the buffer
+        let has_buffer_mods = events
+            .iter()
+            .any(|e| matches!(e, Event::Insert { .. } | Event::Delete { .. }));
+
+        if !has_buffer_mods {
+            // No buffer modifications - use regular Batch
+            return None;
+        }
+
+        let state = self.active_state_mut();
+
+        // Capture old cursor states
+        let old_cursors: Vec<(CursorId, usize, Option<usize>)> = state
+            .cursors
+            .iter()
+            .map(|(id, c)| (id, c.position, c.anchor))
+            .collect();
+
+        // Snapshot the tree for undo (O(1) - Arc clone)
+        let old_tree = state.buffer.snapshot_piece_tree();
+
+        // Convert events to edit tuples: (position, delete_len, insert_text)
+        // Events must be sorted by position descending (later positions first)
+        // This ensures earlier edits don't shift positions of later edits
+        let mut edits: Vec<(usize, usize, String)> = Vec::new();
+
+        for event in &events {
+            match event {
+                Event::Insert { position, text, .. } => {
+                    edits.push((*position, 0, text.clone()));
+                }
+                Event::Delete { range, .. } => {
+                    edits.push((range.start, range.len(), String::new()));
+                }
+                _ => {}
+            }
+        }
+
+        // Sort edits by position descending (required by apply_bulk_edits)
+        edits.sort_by(|a, b| b.0.cmp(&a.0));
+
+        // Convert to references for apply_bulk_edits
+        let edit_refs: Vec<(usize, usize, &str)> = edits
+            .iter()
+            .map(|(pos, del, text)| (*pos, *del, text.as_str()))
+            .collect();
+
+        // Apply bulk edits
+        let _delta = state.buffer.apply_bulk_edits(&edit_refs);
+
+        // Snapshot the tree after edits (for redo) - O(1) Arc clone
+        let new_tree = state.buffer.snapshot_piece_tree();
+
+        // Calculate new cursor positions based on events
+        // Process cursor movements from the original events
+        let mut new_cursors: Vec<(CursorId, usize, Option<usize>)> = old_cursors.clone();
+
+        // Calculate position adjustments from edits (sorted ascending by position)
+        // Each entry is (edit_position, delta) where delta = insert_len - delete_len
+        let mut position_deltas: Vec<(usize, isize)> = Vec::new();
+        for (pos, del_len, text) in &edits {
+            let delta = text.len() as isize - *del_len as isize;
+            position_deltas.push((*pos, delta));
+        }
+        position_deltas.sort_by_key(|(pos, _)| *pos);
+
+        // Helper: calculate cumulative shift for a position based on edits at lower positions
+        let calc_shift = |original_pos: usize| -> isize {
+            let mut shift: isize = 0;
+            for (edit_pos, delta) in &position_deltas {
+                if *edit_pos < original_pos {
+                    shift += delta;
+                }
+            }
+            shift
+        };
+
+        // Apply adjustments to cursor positions
+        // First check for explicit MoveCursor events (e.g., from indent operations)
+        // These take precedence over implicit cursor updates from Insert/Delete
+        for (cursor_id, ref mut pos, ref mut anchor) in &mut new_cursors {
+            let mut found_move_cursor = false;
+
+            // First pass: look for explicit MoveCursor events for this cursor
+            for event in &events {
+                if let Event::MoveCursor {
+                    cursor_id: event_cursor,
+                    new_position,
+                    new_anchor,
+                    ..
+                } = event
+                {
+                    if event_cursor == cursor_id {
+                        *pos = *new_position;
+                        *anchor = *new_anchor;
+                        found_move_cursor = true;
+                    }
+                }
+            }
+
+            // If no explicit MoveCursor, derive position from Insert/Delete
+            if !found_move_cursor {
+                for event in &events {
+                    match event {
+                        Event::Insert {
+                            position,
+                            text,
+                            cursor_id: event_cursor,
+                        } if event_cursor == cursor_id => {
+                            // For insert, cursor moves to end of inserted text
+                            // Account for shifts from edits at lower positions
+                            let shift = calc_shift(*position);
+                            let adjusted_pos = (*position as isize + shift) as usize;
+                            *pos = adjusted_pos + text.len();
+                            *anchor = None;
+                        }
+                        Event::Delete {
+                            range,
+                            cursor_id: event_cursor,
+                            ..
+                        } if event_cursor == cursor_id => {
+                            // For delete, cursor moves to start of deleted range
+                            // Account for shifts from edits at lower positions
+                            let shift = calc_shift(range.start);
+                            *pos = (range.start as isize + shift) as usize;
+                            *anchor = None;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // Update cursors in state
+        for (cursor_id, position, anchor) in &new_cursors {
+            if let Some(cursor) = state.cursors.get_mut(*cursor_id) {
+                cursor.position = *position;
+                cursor.anchor = *anchor;
+            }
+        }
+
+        // Invalidate highlighter
+        state.highlighter.invalidate_all();
+
+        // Create BulkEdit event with both tree snapshots
+        let bulk_edit = Event::BulkEdit {
+            old_tree: Some(old_tree),
+            new_tree: Some(new_tree),
+            old_cursors,
+            new_cursors,
+            description,
+        };
+
+        // Post-processing (layout invalidation, split cursor sync, etc.)
+        self.sync_editor_state_to_split_view_state();
+        self.invalidate_layouts_for_buffer(self.active_buffer());
+        self.adjust_other_split_cursors_for_event(&bulk_edit);
+        self.clear_search_highlights();
+
+        Some(bulk_edit)
     }
 
     /// Trigger plugin hooks for an event (if any)
@@ -3766,16 +3957,21 @@ impl Editor {
                 // Create popup with message + action list
                 let popup = crate::model::event::PopupData {
                     title: Some(title),
+                    description: Some(message),
                     transient: false,
                     content: crate::model::event::PopupContentData::List { items, selected: 0 },
-                    position: crate::model::event::PopupPositionData::Centered,
+                    position: crate::model::event::PopupPositionData::BottomRight,
                     width: 60,
                     max_height: 15,
                     bordered: true,
                 };
 
                 self.show_popup(popup);
-                self.status_message = Some(message);
+                tracing::info!(
+                    "Action popup shown: id={}, active_action_popup={:?}",
+                    popup_id,
+                    self.active_action_popup.as_ref().map(|(id, _)| id)
+                );
             }
 
             PluginCommand::DisableLspForLanguage { language } => {
@@ -5120,7 +5316,7 @@ mod tests {
     /// incorrect positions because they're calculated from the already-modified buffer.
     ///
     /// When applying LSP rename edits:
-    /// 1. apply_rename_batch_to_buffer() applies the batch to the buffer
+    /// 1. apply_events_to_buffer_as_bulk_edit() applies the edits to the buffer
     /// 2. Then calls notify_lsp_change() which calls collect_lsp_changes()
     /// 3. collect_lsp_changes() converts byte positions to LSP positions using
     ///    the CURRENT buffer state
@@ -5185,7 +5381,7 @@ mod tests {
         // CORRECT: Calculate LSP positions BEFORE applying batch
         let lsp_changes_before = editor.collect_lsp_changes(&batch);
 
-        // Now apply the batch (this is what apply_rename_batch_to_buffer does)
+        // Now apply the batch (this is what apply_events_to_buffer_as_bulk_edit does)
         editor.active_state_mut().apply(&batch);
 
         // BUG DEMONSTRATION: Calculate LSP positions AFTER applying batch
@@ -5309,37 +5505,34 @@ mod tests {
         let cursor_id = editor.active_state().cursors.primary_id();
         let buffer_id = editor.active_buffer();
 
-        let batch = Event::Batch {
-            events: vec![
-                // Second occurrence first (at position 23, line 1)
-                Event::Delete {
-                    range: 23..26, // "val" on line 1
-                    deleted_text: "val".to_string(),
-                    cursor_id,
-                },
-                Event::Insert {
-                    position: 23,
-                    text: "value".to_string(),
-                    cursor_id,
-                },
-                // First occurrence second (at position 7, line 0)
-                Event::Delete {
-                    range: 7..10, // "val" on line 0
-                    deleted_text: "val".to_string(),
-                    cursor_id,
-                },
-                Event::Insert {
-                    position: 7,
-                    text: "value".to_string(),
-                    cursor_id,
-                },
-            ],
-            description: "LSP Rename".to_string(),
-        };
+        let events = vec![
+            // Second occurrence first (at position 23, line 1)
+            Event::Delete {
+                range: 23..26, // "val" on line 1
+                deleted_text: "val".to_string(),
+                cursor_id,
+            },
+            Event::Insert {
+                position: 23,
+                text: "value".to_string(),
+                cursor_id,
+            },
+            // First occurrence second (at position 7, line 0)
+            Event::Delete {
+                range: 7..10, // "val" on line 0
+                deleted_text: "val".to_string(),
+                cursor_id,
+            },
+            Event::Insert {
+                position: 7,
+                text: "value".to_string(),
+                cursor_id,
+            },
+        ];
 
-        // Apply the rename batch (this should preserve cursor position)
+        // Apply the rename using bulk edit (this should preserve cursor position)
         editor
-            .apply_rename_batch_to_buffer(buffer_id, batch)
+            .apply_events_to_buffer_as_bulk_edit(buffer_id, events, "LSP Rename".to_string())
             .unwrap();
 
         // Verify buffer was correctly modified
@@ -5399,32 +5592,35 @@ mod tests {
         let buffer_id = editor.active_buffer();
 
         // === FIRST RENAME: "val" -> "value" ===
-        // Create batch for first rename (applied in reverse order)
+        // Create events for first rename (applied in reverse order)
+        let events1 = vec![
+            // Second occurrence first (at position 23, line 1, char 4)
+            Event::Delete {
+                range: 23..26,
+                deleted_text: "val".to_string(),
+                cursor_id,
+            },
+            Event::Insert {
+                position: 23,
+                text: "value".to_string(),
+                cursor_id,
+            },
+            // First occurrence (at position 7, line 0, char 7)
+            Event::Delete {
+                range: 7..10,
+                deleted_text: "val".to_string(),
+                cursor_id,
+            },
+            Event::Insert {
+                position: 7,
+                text: "value".to_string(),
+                cursor_id,
+            },
+        ];
+
+        // Create batch for LSP change verification
         let batch1 = Event::Batch {
-            events: vec![
-                // Second occurrence first (at position 23, line 1, char 4)
-                Event::Delete {
-                    range: 23..26,
-                    deleted_text: "val".to_string(),
-                    cursor_id,
-                },
-                Event::Insert {
-                    position: 23,
-                    text: "value".to_string(),
-                    cursor_id,
-                },
-                // First occurrence (at position 7, line 0, char 7)
-                Event::Delete {
-                    range: 7..10,
-                    deleted_text: "val".to_string(),
-                    cursor_id,
-                },
-                Event::Insert {
-                    position: 7,
-                    text: "value".to_string(),
-                    cursor_id,
-                },
-            ],
+            events: events1.clone(),
             description: "LSP Rename 1".to_string(),
         };
 
@@ -5448,9 +5644,9 @@ mod tests {
         );
         assert_eq!(first_del_range.end.character, 7, "First delete end char");
 
-        // Apply first rename
+        // Apply first rename using bulk edit
         editor
-            .apply_rename_batch_to_buffer(buffer_id, batch1)
+            .apply_events_to_buffer_as_bulk_edit(buffer_id, events1, "LSP Rename 1".to_string())
             .unwrap();
 
         // Verify buffer after first rename
@@ -5468,32 +5664,35 @@ mod tests {
         // Buffer: "fn foo(value: i32) {\n    value + 1\n}\n"
         //          0123456789...
 
-        // Create batch for second rename
+        // Create events for second rename
+        let events2 = vec![
+            // Second occurrence first (at position 25, line 1, char 4)
+            Event::Delete {
+                range: 25..30,
+                deleted_text: "value".to_string(),
+                cursor_id,
+            },
+            Event::Insert {
+                position: 25,
+                text: "x".to_string(),
+                cursor_id,
+            },
+            // First occurrence (at position 7, line 0, char 7)
+            Event::Delete {
+                range: 7..12,
+                deleted_text: "value".to_string(),
+                cursor_id,
+            },
+            Event::Insert {
+                position: 7,
+                text: "x".to_string(),
+                cursor_id,
+            },
+        ];
+
+        // Create batch for LSP change verification
         let batch2 = Event::Batch {
-            events: vec![
-                // Second occurrence first (at position 25, line 1, char 4)
-                Event::Delete {
-                    range: 25..30,
-                    deleted_text: "value".to_string(),
-                    cursor_id,
-                },
-                Event::Insert {
-                    position: 25,
-                    text: "x".to_string(),
-                    cursor_id,
-                },
-                // First occurrence (at position 7, line 0, char 7)
-                Event::Delete {
-                    range: 7..12,
-                    deleted_text: "value".to_string(),
-                    cursor_id,
-                },
-                Event::Insert {
-                    position: 7,
-                    text: "x".to_string(),
-                    cursor_id,
-                },
-            ],
+            events: events2.clone(),
             description: "LSP Rename 2".to_string(),
         };
 
@@ -5541,9 +5740,9 @@ mod tests {
             "Second rename third delete end should be at char 12 (7 + 5 for 'value')"
         );
 
-        // Apply second rename
+        // Apply second rename using bulk edit
         editor
-            .apply_rename_batch_to_buffer(buffer_id, batch2)
+            .apply_events_to_buffer_as_bulk_edit(buffer_id, events2, "LSP Rename 2".to_string())
             .unwrap();
 
         // Verify buffer after second rename

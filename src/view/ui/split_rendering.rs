@@ -1695,7 +1695,7 @@ impl SplitRenderer {
         content_width: usize,
         gutter_width: usize,
     ) -> Vec<crate::services::plugins::api::ViewTokenWire> {
-        use crate::primitives::ansi::visible_char_count;
+        use crate::primitives::visual_layout::visual_width;
         use crate::services::plugins::api::{ViewTokenWire, ViewTokenWireKind};
 
         let mut wrapped = Vec::new();
@@ -1712,12 +1712,13 @@ impl SplitRenderer {
                     current_line_width = 0;
                 }
                 ViewTokenWireKind::Text(text) => {
-                    // Use visible character count (excludes ANSI escape sequences)
-                    // so line width calculation is based on actual visual width
-                    let text_len = visible_char_count(text);
+                    // Use visual_width which properly handles tabs and ANSI codes
+                    let text_visual_width = visual_width(text, current_line_width);
 
                     // If this token would exceed line width, insert Break before it
-                    if current_line_width > 0 && current_line_width + text_len > available_width {
+                    if current_line_width > 0
+                        && current_line_width + text_visual_width > available_width
+                    {
                         wrapped.push(ViewTokenWire {
                             source_offset: None,
                             kind: ViewTokenWireKind::Break,
@@ -1726,21 +1727,28 @@ impl SplitRenderer {
                         current_line_width = 0;
                     }
 
+                    // Recalculate visual width after potential line break (tabs depend on column)
+                    let text_visual_width = visual_width(text, current_line_width);
+
                     // If visible text is longer than line width, we need to split
                     // However, we don't split tokens containing ANSI codes to avoid
                     // breaking escape sequences. ANSI-heavy content may exceed line width.
-                    if text_len > available_width
+                    if text_visual_width > available_width
                         && !crate::primitives::ansi::contains_ansi_codes(text)
                     {
-                        let chars: Vec<char> = text.chars().collect();
-                        let mut char_idx = 0;
+                        use unicode_segmentation::UnicodeSegmentation;
+
+                        // Collect graphemes with their byte offsets for proper Unicode handling
+                        let graphemes: Vec<(usize, &str)> = text.grapheme_indices(true).collect();
+                        let mut grapheme_idx = 0;
                         let source_base = token.source_offset;
 
-                        while char_idx < chars.len() {
-                            let remaining = chars.len() - char_idx;
-                            let chunk_size = remaining.min(available_width - current_line_width);
-
-                            if chunk_size == 0 {
+                        while grapheme_idx < graphemes.len() {
+                            // Calculate how many graphemes fit in remaining space
+                            // by summing visual widths until we exceed available width
+                            let remaining_width =
+                                available_width.saturating_sub(current_line_width);
+                            if remaining_width == 0 {
                                 // Need to break to next line
                                 wrapped.push(ViewTokenWire {
                                     source_offset: None,
@@ -1751,9 +1759,51 @@ impl SplitRenderer {
                                 continue;
                             }
 
-                            let chunk: String =
-                                chars[char_idx..char_idx + chunk_size].iter().collect();
-                            let chunk_source = source_base.map(|b| b + char_idx);
+                            let mut chunk_visual_width = 0;
+                            let mut chunk_grapheme_count = 0;
+                            let mut col = current_line_width;
+
+                            for &(_byte_offset, grapheme) in &graphemes[grapheme_idx..] {
+                                let g_width = if grapheme == "\t" {
+                                    crate::primitives::visual_layout::tab_expansion_width(col)
+                                } else {
+                                    crate::primitives::display_width::str_width(grapheme)
+                                };
+
+                                if chunk_visual_width + g_width > remaining_width
+                                    && chunk_grapheme_count > 0
+                                {
+                                    break;
+                                }
+
+                                chunk_visual_width += g_width;
+                                chunk_grapheme_count += 1;
+                                col += g_width;
+                            }
+
+                            if chunk_grapheme_count == 0 {
+                                // Single grapheme is wider than available width, force it
+                                chunk_grapheme_count = 1;
+                                let grapheme = graphemes[grapheme_idx].1;
+                                chunk_visual_width = if grapheme == "\t" {
+                                    crate::primitives::visual_layout::tab_expansion_width(
+                                        current_line_width,
+                                    )
+                                } else {
+                                    crate::primitives::display_width::str_width(grapheme)
+                                };
+                            }
+
+                            // Build chunk from graphemes and calculate source offset
+                            let chunk_start_byte = graphemes[grapheme_idx].0;
+                            let chunk_end_byte =
+                                if grapheme_idx + chunk_grapheme_count < graphemes.len() {
+                                    graphemes[grapheme_idx + chunk_grapheme_count].0
+                                } else {
+                                    text.len()
+                                };
+                            let chunk = text[chunk_start_byte..chunk_end_byte].to_string();
+                            let chunk_source = source_base.map(|b| b + chunk_start_byte);
 
                             wrapped.push(ViewTokenWire {
                                 source_offset: chunk_source,
@@ -1761,8 +1811,8 @@ impl SplitRenderer {
                                 style: token.style.clone(),
                             });
 
-                            current_line_width += chunk_size;
-                            char_idx += chunk_size;
+                            current_line_width += chunk_visual_width;
+                            grapheme_idx += chunk_grapheme_count;
 
                             // If we filled the line, break
                             if current_line_width >= available_width {
@@ -1776,7 +1826,7 @@ impl SplitRenderer {
                         }
                     } else {
                         wrapped.push(token);
-                        current_line_width += text_len;
+                        current_line_width += text_visual_width;
                     }
                 }
                 ViewTokenWireKind::Space => {
@@ -2934,25 +2984,53 @@ impl SplitRenderer {
             highlight_context_bytes,
         );
 
-        // Apply top_view_line_offset to skip virtual lines when scrolling through them
-        let view_line_offset = viewport.top_view_line_offset;
-        let view_lines_to_render =
-            if view_line_offset > 0 && view_line_offset < view_data.lines.len() {
-                &view_data.lines[view_line_offset..]
+        // Use top_view_line_offset to handle scrolling through virtual lines.
+        // The viewport code (ensure_visible_in_layout) updates this when scrolling
+        // to keep the cursor visible, including special handling for virtual lines.
+        //
+        // We recalculate starting_line_num below to ensure line numbers stay in sync
+        // even if view_data was rebuilt from a different starting position.
+        let calculated_offset = viewport.top_view_line_offset;
+
+        tracing::trace!(
+            top_byte = viewport.top_byte,
+            top_view_line_offset = viewport.top_view_line_offset,
+            calculated_offset,
+            view_data_lines = view_data.lines.len(),
+            "view line offset calculation"
+        );
+        let (view_lines_to_render, adjusted_starting_line_num, adjusted_view_anchor) =
+            if calculated_offset > 0 && calculated_offset < view_data.lines.len() {
+                let sliced = &view_data.lines[calculated_offset..];
+
+                // Count how many source lines were in the skipped portion
+                // A view line is a "source line" if it shows a line number (not a continuation)
+                let skipped_lines = &view_data.lines[..calculated_offset];
+                let skipped_source_lines = skipped_lines
+                    .iter()
+                    .filter(|vl| should_show_line_number(vl))
+                    .count();
+
+                let adjusted_line_num = starting_line_num + skipped_source_lines;
+
+                // Recalculate view_anchor on the sliced array
+                let adjusted_anchor = Self::calculate_view_anchor(sliced, viewport.top_byte);
+
+                (sliced, adjusted_line_num, adjusted_anchor)
             } else {
-                &view_data.lines
+                (&view_data.lines[..], starting_line_num, view_anchor)
             };
 
         let render_output = Self::render_view_lines(LineRenderInput {
             state,
             theme,
             view_lines: view_lines_to_render,
-            view_anchor,
+            view_anchor: adjusted_view_anchor,
             render_area,
             gutter_width,
             selection: &selection,
             decorations: &decorations,
-            starting_line_num,
+            starting_line_num: adjusted_starting_line_num,
             visible_line_count: visible_count,
             lsp_waiting,
             is_active,
@@ -3074,20 +3152,38 @@ impl SplitRenderer {
         view_lines
             .iter()
             .map(|vl| {
-                // line_end_byte should be the position AFTER the last character
-                // char_source_bytes stores START positions of characters, so we need to
-                // add the byte length of the last character
-                let line_end_byte = if let Some(&Some(last_byte_start)) =
-                    vl.char_source_bytes.iter().rev().find(|m| m.is_some())
-                {
-                    // Get the last char from text to find its byte length
-                    if let Some(last_char) = vl.text.chars().last() {
-                        last_byte_start + last_char.len_utf8()
-                    } else {
-                        last_byte_start
-                    }
+                // Calculate line_end_byte: where the cursor should go when clicking past end of line
+                //
+                // For lines ending with newline: position ON the newline (so clicking past
+                // "hello\n" positions at byte 5, not byte 6 which would be next line)
+                //
+                // For lines NOT ending with newline (e.g., last line of file, or wrapped segments):
+                // position AFTER the last character (so clicking past "你好" positions at byte 6)
+                let line_end_byte = if vl.ends_with_newline {
+                    // Position ON the newline - find the last source byte (the newline's position)
+                    vl.char_source_bytes
+                        .iter()
+                        .rev()
+                        .find_map(|m| *m)
+                        .unwrap_or(0)
                 } else {
-                    0
+                    // Position AFTER the last character - find last source byte and add char length
+                    if let Some((char_idx, &Some(last_byte_start))) = vl
+                        .char_source_bytes
+                        .iter()
+                        .enumerate()
+                        .rev()
+                        .find(|(_, m)| m.is_some())
+                    {
+                        // Get the character at this index to find its UTF-8 byte length
+                        if let Some(last_char) = vl.text.chars().nth(char_idx) {
+                            last_byte_start + last_char.len_utf8()
+                        } else {
+                            last_byte_start
+                        }
+                    } else {
+                        0
+                    }
                 };
 
                 ViewLineMapping {
