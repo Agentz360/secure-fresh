@@ -60,6 +60,10 @@ struct Args {
     /// Print the effective configuration as JSON and exit
     #[arg(long)]
     dump_config: bool,
+
+    /// Print the directories used by Fresh and exit
+    #[arg(long)]
+    show_paths: bool,
 }
 
 /// Parsed file location from CLI argument in file:line:col format
@@ -393,8 +397,11 @@ fn initialize_app(args: &Args) -> io::Result<SetupState> {
     let log_file = args
         .log_file
         .clone()
-        .unwrap_or_else(|| std::env::temp_dir().join("fresh.log"));
+        .unwrap_or_else(fresh::services::log_dirs::main_log_path);
     let warning_log_handle = tracing_setup::init_global(&log_file);
+
+    // Clean up stale log files from dead processes on startup
+    fresh::services::log_dirs::cleanup_stale_logs();
 
     tracing::info!("Editor starting");
 
@@ -576,6 +583,12 @@ fn run_editor_iteration(
 fn main() -> io::Result<()> {
     // Parse command-line arguments
     let args = Args::parse();
+
+    // Handle --show-paths early (no terminal setup needed)
+    if args.show_paths {
+        fresh::services::log_dirs::print_all_paths();
+        return Ok(());
+    }
 
     // Handle --dump-config early (no terminal setup needed)
     if args.dump_config {
@@ -810,6 +823,11 @@ where
 
         // Check mouse hover timer for LSP hover requests
         if editor.check_mouse_hover_timer() {
+            needs_render = true;
+        }
+
+        // Check semantic highlight debounce timer
+        if editor.check_semantic_highlight_timer() {
             needs_render = true;
         }
 

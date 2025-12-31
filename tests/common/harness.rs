@@ -937,6 +937,41 @@ impl EditorTestHarness {
         buffer.content.get(pos).map(|cell| cell.style())
     }
 
+    /// Check if a cell at the given position is a scrollbar thumb.
+    ///
+    /// Since the scrollbar is rendered using background colors (not characters),
+    /// this checks if the cell has a background color matching scrollbar thumb colors.
+    pub fn is_scrollbar_thumb_at(&self, x: u16, y: u16) -> bool {
+        self.get_cell_style(x, y)
+            .map(|style| crate::common::scrollbar::is_scrollbar_thumb_style(style))
+            .unwrap_or(false)
+    }
+
+    /// Check if a cell at the given position is a scrollbar track.
+    ///
+    /// Since the scrollbar is rendered using background colors (not characters),
+    /// this checks if the cell has a background color matching scrollbar track colors.
+    pub fn is_scrollbar_track_at(&self, x: u16, y: u16) -> bool {
+        self.get_cell_style(x, y)
+            .map(|style| crate::common::scrollbar::is_scrollbar_track_style(style))
+            .unwrap_or(false)
+    }
+
+    /// Check if any scrollbar (thumb or track) is visible at the given column.
+    ///
+    /// Scans the content area rows at the specified column for scrollbar cells.
+    pub fn has_scrollbar_at_column(&self, col: u16) -> bool {
+        let (first_row, last_row) = self.content_area_rows();
+        for row in first_row..=last_row {
+            if self.is_scrollbar_thumb_at(col, row as u16)
+                || self.is_scrollbar_track_at(col, row as u16)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Get the text content of a specific screen row
     pub fn get_row_text(&self, y: u16) -> String {
         let buffer = self.buffer();
@@ -1229,6 +1264,9 @@ impl EditorTestHarness {
             .height
             .saturating_sub(layout::BOTTOM_RESERVED_ROWS as u16);
 
+        // Scrollbar is in the rightmost column - exclude from cursor detection
+        let scrollbar_col = buffer.area.width.saturating_sub(1);
+
         // Add primary cursor at hardware position
         if hw_y >= content_start && hw_y < content_end {
             if let Some(cell) = buffer.content.get(buffer.index_of(hw_x, hw_y)) {
@@ -1248,6 +1286,12 @@ impl EditorTestHarness {
             for x in 0..buffer.area.width {
                 // Skip if this is the hardware cursor position
                 if x == hw_x && y == hw_y {
+                    continue;
+                }
+
+                // Skip scrollbar column - scrollbar uses background colors that overlap
+                // with inactive cursor colors (DarkGray, Rgb(180,180,180))
+                if x == scrollbar_col {
                     continue;
                 }
 

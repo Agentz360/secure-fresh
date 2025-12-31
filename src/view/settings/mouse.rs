@@ -233,6 +233,11 @@ impl Editor {
                     self.settings_activate_current();
                 }
             }
+            SettingsHit::LayerButton => {
+                if let Some(ref mut state) = self.settings_state {
+                    state.cycle_target_layer();
+                }
+            }
             SettingsHit::SaveButton => self.save_settings(),
             SettingsHit::CancelButton => {
                 if let Some(ref mut state) = self.settings_state {
@@ -242,6 +247,13 @@ impl Editor {
             SettingsHit::ResetButton => {
                 if let Some(ref mut state) = self.settings_state {
                     state.reset_current_to_default();
+                }
+            }
+            SettingsHit::EditButton => {
+                // Open config file for the selected layer
+                if let Some(ref state) = self.settings_state {
+                    let layer = state.target_layer;
+                    let _ = self.open_config_file(layer);
                 }
             }
             SettingsHit::Scrollbar => self.settings_scrollbar_click(row),

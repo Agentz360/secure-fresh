@@ -7,28 +7,32 @@ use crate::common::harness::EditorTestHarness;
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::fs;
 
-/// Test issue #562: Delete folder crash when scroll_offset is greater than
-/// the new number of display nodes after deletion.
+/// Test issue #562: Crash when scroll_offset becomes larger than display_nodes.len()
 ///
-/// The crash occurs in file_explorer.rs:55:
+/// The crash occurs in file_explorer.rs when rendering after the tree shrinks:
 /// `let visible_items = &display_nodes[scroll_offset..visible_end];`
 ///
-/// When a folder is deleted, if the scroll_offset was pointing to a position
-/// beyond the new (smaller) list of display nodes, this causes a panic with:
-/// "range start index X out of range for slice of length Y"
+/// This can happen when:
+/// - A folder with many children is collapsed while scrolled down viewing those children
+/// - A folder with many children is deleted while scrolled down
+///
+/// The fix clamps scroll_offset to display_nodes.len() before slicing.
+///
+/// This test uses collapse (Enter key) to trigger the condition because:
+/// - It's a reliable, standard keybinding
+/// - It immediately shrinks the tree without needing confirmation dialogs
 #[test]
 fn test_issue_562_delete_folder_crash_scroll_offset() {
     // Create harness with a small viewport to force scrolling
-    let mut harness = EditorTestHarness::with_temp_project(80, 10).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(80, 12).unwrap();
     let project_root = harness.project_dir().unwrap();
 
-    // Create many folders to ensure we need to scroll
-    // We need more items than the viewport can display
-    for i in 0..30 {
-        fs::create_dir(project_root.join(format!("folder_{:02}", i))).unwrap();
-        // Add a file in each folder
+    // Create a folder with many files - when collapsed, display_nodes shrinks dramatically
+    let big_folder = project_root.join("big_folder");
+    fs::create_dir(&big_folder).unwrap();
+    for i in 0..100 {
         fs::write(
-            project_root.join(format!("folder_{:02}/file.txt", i)),
+            big_folder.join(format!("file_{:03}.txt", i)),
             format!("content {}", i),
         )
         .unwrap();
@@ -38,39 +42,75 @@ fn test_issue_562_delete_folder_crash_scroll_offset() {
     harness.editor_mut().focus_file_explorer();
     harness.wait_for_file_explorer().unwrap();
 
-    // Wait for folders to appear
+    // Wait for big_folder to appear
     harness
-        .wait_until(|h| h.screen_to_string().contains("folder_00"))
+        .wait_until(|h| h.screen_to_string().contains("big_folder"))
         .unwrap();
 
-    // Expand the root directory and scroll down to the bottom
-    // Navigate down many times to get to the bottom of the list
-    for _ in 0..30 {
+    // Navigate to big_folder
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+
+    // Expand big_folder by pressing Enter (this shows 100 files)
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness
+        .wait_until(|h| h.screen_to_string().contains("file_000"))
+        .unwrap();
+
+    // Scroll down deep into the folder (80+ items down)
+    // This increases scroll_offset significantly
+    for _ in 0..80 {
         harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        harness.render().unwrap();
     }
+    harness.render().unwrap();
 
     let screen_after_scroll = harness.screen_to_string();
     println!("Screen after scrolling down:\n{}", screen_after_scroll);
 
-    // Now we're at the bottom. The scroll_offset should be > 0.
-    // Delete the selected folder (which is near the end of the list)
-    harness
-        .send_key(KeyCode::Delete, KeyModifiers::NONE)
-        .unwrap();
-    harness.sleep(std::time::Duration::from_millis(100));
+    // Verify we're deep in the folder (should see files in 70-80 range)
+    assert!(
+        screen_after_scroll.contains("file_07"),
+        "Should be scrolled to files in the 70s range"
+    );
 
-    // This render should NOT panic even if scroll_offset is now > display_nodes.len()
-    // If the bug exists, this will panic with:
-    // "range start index X out of range for slice of length Y"
+    // Now navigate back to big_folder and collapse it
+    // This will shrink display_nodes from ~102 to ~2 items
+    // But scroll_offset might still be around 70+
+    for _ in 0..80 {
+        harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+    }
+    harness.render().unwrap();
+
+    // Collapse big_folder by pressing Enter
+    // Before the fix: This would panic with "range start index X out of range for slice of length Y"
+    // After the fix: scroll_offset is clamped, no panic
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // This render should NOT panic even if scroll_offset was > display_nodes.len()
     let render_result = harness.render();
     assert!(
         render_result.is_ok(),
-        "Rendering should not panic after deleting a folder while scrolled down"
+        "Rendering should not panic after collapsing a folder while scrolled down"
     );
 
-    let screen_after_delete = harness.screen_to_string();
-    println!("Screen after delete:\n{}", screen_after_delete);
+    let screen_after_collapse = harness.screen_to_string();
+    println!("Screen after collapse:\n{}", screen_after_collapse);
+
+    // Verify the folder is now collapsed (should not show file_000 anymore)
+    assert!(
+        !screen_after_collapse.contains("file_000"),
+        "Folder should be collapsed, file_000 should not be visible"
+    );
+
+    // Verify big_folder is still visible (just collapsed)
+    assert!(
+        screen_after_collapse.contains("big_folder"),
+        "big_folder should still be visible after collapse"
+    );
 
     // Continue rendering to ensure stability
     for _ in 0..5 {
@@ -428,4 +468,91 @@ fn test_issue_564_query_replace_all_hang_large_file() {
             );
         }
     }
+}
+
+/// Test issue #580: Panic when changing tab arrow visibility in settings
+///
+/// The crash occurs in view_pipeline.rs:159:
+/// `self.tab_size - (col % self.tab_size)`
+///
+/// When tab_size is 0, this causes a division by zero panic with:
+/// "attempt to calculate the remainder with a divisor of zero"
+///
+/// This can happen when:
+/// 1. A language config has tab_size: 0 (schema allows minimum: 0)
+/// 2. The settings UI displays null tab_size as 0 and saves it
+/// 3. ViewLineIterator::new is called with tab_size = 0 during rendering
+#[test]
+fn test_issue_580_tab_size_zero_causes_panic() {
+    use fresh::config::Config;
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.cpp");
+
+    // Create a C++ file with tab characters - this will trigger ViewLineIterator
+    fs::write(&file_path, "\tint main() {\n\t\treturn 0;\n\t}").unwrap();
+
+    // Create a config with tab_size = 0 for cpp language (simulating the bug)
+    let mut config = Config::default();
+    if let Some(cpp_config) = config.languages.get_mut("cpp") {
+        // This simulates what happens when the settings UI saves tab_size: 0
+        cpp_config.tab_size = Some(0);
+    }
+
+    // Create harness with this config
+    let mut harness =
+        EditorTestHarness::with_config(80, 24, config).expect("Should create harness");
+
+    // Open the file
+    harness.open_file(&file_path).expect("Should open cpp file");
+
+    // This render should NOT panic even with tab_size = 0
+    // If the bug exists, this will panic with:
+    // "attempt to calculate the remainder with a divisor of zero"
+    let render_result = harness.render();
+    assert!(
+        render_result.is_ok(),
+        "Rendering should not panic with tab_size = 0. The editor should handle this gracefully."
+    );
+
+    // Verify the file is displayed (content should still be visible)
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("int main"),
+        "File content should be visible even with tab_size = 0"
+    );
+}
+
+/// Test issue #580: Global editor.tab_size = 0 should not cause panic
+///
+/// Similar to the language-specific case, but tests the global editor.tab_size setting.
+#[test]
+fn test_issue_580_global_tab_size_zero_causes_panic() {
+    use fresh::config::Config;
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+
+    // Create a file with tab characters
+    fs::write(&file_path, "\thello\n\t\tworld").unwrap();
+
+    // Create a config with global tab_size = 0
+    let mut config = Config::default();
+    config.editor.tab_size = 0;
+
+    // Create harness with this config
+    let mut harness =
+        EditorTestHarness::with_config(80, 24, config).expect("Should create harness");
+
+    // Open the file
+    harness
+        .open_file(&file_path)
+        .expect("Should open text file");
+
+    // This render should NOT panic even with tab_size = 0
+    let render_result = harness.render();
+    assert!(
+        render_result.is_ok(),
+        "Rendering should not panic with global tab_size = 0"
+    );
 }

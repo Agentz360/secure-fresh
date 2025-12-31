@@ -573,29 +573,46 @@ impl SettingsState {
     }
 
     /// Handle input when Footer is focused
+    /// Footer buttons: [Layer] [Reset] [Save] [Cancel] + [Edit] on left for advanced users
+    /// Tab cycles between buttons; after last button, moves to Categories panel
     fn handle_footer_input(&mut self, event: &KeyEvent, ctx: &mut InputContext) -> InputResult {
+        const FOOTER_BUTTON_COUNT: usize = 5;
+
         match event.code {
-            KeyCode::Left => {
+            KeyCode::Left | KeyCode::BackTab => {
+                // Move to previous button, or wrap to Categories panel
                 if self.footer_button_index > 0 {
                     self.footer_button_index -= 1;
+                } else {
+                    self.focus_panel = FocusPanel::Settings;
                 }
                 InputResult::Consumed
             }
             KeyCode::Right => {
-                if self.footer_button_index < 2 {
+                // Move to next button
+                if self.footer_button_index < FOOTER_BUTTON_COUNT - 1 {
                     self.footer_button_index += 1;
                 }
                 InputResult::Consumed
             }
             KeyCode::Tab => {
-                self.toggle_focus();
+                // Move to next button, or wrap to Categories panel
+                if self.footer_button_index < FOOTER_BUTTON_COUNT - 1 {
+                    self.footer_button_index += 1;
+                } else {
+                    self.focus_panel = FocusPanel::Categories;
+                }
                 InputResult::Consumed
             }
             KeyCode::Enter => {
                 match self.footer_button_index {
-                    0 => self.reset_current_to_default(),
-                    1 => ctx.defer(DeferredAction::CloseSettings { save: true }),
-                    2 => self.request_close(ctx),
+                    0 => self.cycle_target_layer(), // Layer button
+                    1 => self.reset_current_to_default(),
+                    2 => ctx.defer(DeferredAction::CloseSettings { save: true }),
+                    3 => self.request_close(ctx),
+                    4 => ctx.defer(DeferredAction::OpenConfigFile {
+                        layer: self.target_layer,
+                    }), // Edit config file
                     _ => {}
                 }
                 InputResult::Consumed
@@ -962,11 +979,16 @@ mod tests {
         state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
         assert_eq!(state.focus_panel, FocusPanel::Settings);
 
-        // Tab -> Footer
+        // Tab -> Footer (defaults to Save button, index 2)
         state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
         assert_eq!(state.focus_panel, FocusPanel::Footer);
+        assert_eq!(state.footer_button_index, 2);
 
-        // Tab -> Categories (wrap around)
+        // Tab through footer buttons: 2 -> 3 -> 4 -> wrap to Categories
+        state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
+        assert_eq!(state.footer_button_index, 3);
+        state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
+        assert_eq!(state.footer_button_index, 4); // Edit button
         state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
         assert_eq!(state.focus_panel, FocusPanel::Categories);
     }
@@ -1070,7 +1092,7 @@ mod tests {
         let mut state = SettingsState::new(schema, &config).unwrap();
         state.visible = true;
         state.focus_panel = FocusPanel::Footer;
-        state.footer_button_index = 1; // Save button
+        state.footer_button_index = 2; // Save button (0=Layer, 1=Reset, 2=Save, 3=Cancel)
 
         let mut ctx = InputContext::new();
 

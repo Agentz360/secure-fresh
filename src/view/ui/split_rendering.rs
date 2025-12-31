@@ -1169,19 +1169,19 @@ impl SplitRenderer {
             Color::DarkGray
         };
 
-        // Render scrollbar track and thumb
+        // Render as background fills to avoid glyph gaps in terminals like Apple Terminal.
         for row in 0..height {
             let cell_area = Rect::new(scrollbar_rect.x, scrollbar_rect.y + row as u16, 1, 1);
 
-            let (char, color) = if row >= thumb_start && row < thumb_end {
+            let style = if row >= thumb_start && row < thumb_end {
                 // Thumb
-                ("█", thumb_color)
+                Style::default().bg(thumb_color)
             } else {
                 // Track
-                ("│", track_color)
+                Style::default().bg(track_color)
             };
 
-            let paragraph = Paragraph::new(char).style(Style::default().fg(color));
+            let paragraph = Paragraph::new(" ").style(style);
             frame.render_widget(paragraph, cell_area);
         }
 
@@ -2074,16 +2074,19 @@ impl SplitRenderer {
             highlight_context_bytes,
         );
 
-        // Update semantic highlighter color from theme
-        state.semantic_highlighter.highlight_color = theme.semantic_highlight_bg;
-
-        let semantic_spans = state.semantic_highlighter.highlight_occurrences(
-            &state.buffer,
-            primary_cursor_position,
-            viewport_start,
-            viewport_end,
-            highlight_context_bytes,
-        );
+        // Get semantic highlights through debounced cache
+        let semantic_spans = state
+            .semantic_highlight_cache
+            .get_highlights(
+                &mut state.semantic_highlighter,
+                &state.buffer,
+                primary_cursor_position,
+                viewport_start,
+                viewport_end,
+                highlight_context_bytes,
+                theme.semantic_highlight_bg,
+            )
+            .to_vec();
 
         let viewport_overlays = state
             .overlays
