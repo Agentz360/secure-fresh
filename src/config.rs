@@ -170,7 +170,7 @@ pub struct KeybindingMapName(pub String);
 
 impl KeybindingMapName {
     /// Built-in keybinding map options shown in the settings dropdown
-    pub const BUILTIN_OPTIONS: &'static [&'static str] = &["default", "emacs", "vscode"];
+    pub const BUILTIN_OPTIONS: &'static [&'static str] = &["default", "emacs", "vscode", "macos"];
 }
 
 impl Deref for KeybindingMapName {
@@ -325,7 +325,13 @@ pub struct Config {
 }
 
 fn default_keybinding_map_name() -> KeybindingMapName {
-    KeybindingMapName("default".to_string())
+    // On macOS, default to the macOS keymap which has Mac-specific bindings
+    // (Ctrl+A/E for Home/End, Ctrl+Shift+Z for redo, etc.)
+    if cfg!(target_os = "macos") {
+        KeybindingMapName("macos".to_string())
+    } else {
+        KeybindingMapName("default".to_string())
+    }
 }
 
 fn default_theme_name() -> ThemeName {
@@ -1123,10 +1129,17 @@ impl Config {
             "default" => include_str!("../keymaps/default.json"),
             "emacs" => include_str!("../keymaps/emacs.json"),
             "vscode" => include_str!("../keymaps/vscode.json"),
+            "macos" => include_str!("../keymaps/macos.json"),
             _ => return None,
         };
 
-        serde_json::from_str(json_content).ok()
+        match serde_json::from_str(json_content) {
+            Ok(config) => Some(config),
+            Err(e) => {
+                eprintln!("Failed to parse builtin keymap '{}': {}", name, e);
+                None
+            }
+        }
     }
 
     /// Resolve a keymap with inheritance
@@ -2424,12 +2437,39 @@ mod tests {
     }
 
     #[test]
+    fn test_all_builtin_keymaps_loadable() {
+        for name in KeybindingMapName::BUILTIN_OPTIONS {
+            let keymap = Config::load_builtin_keymap(name);
+            assert!(keymap.is_some(), "Failed to load builtin keymap '{}'", name);
+        }
+    }
+
+    #[test]
     fn test_config_validation() {
         let mut config = Config::default();
         assert!(config.validate().is_ok());
 
         config.editor.tab_size = 0;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_macos_keymap_inherits_enter_bindings() {
+        let config = Config::default();
+        let bindings = config.resolve_keymap("macos");
+
+        let enter_bindings: Vec<_> = bindings.iter().filter(|b| b.key == "Enter").collect();
+        assert!(
+            !enter_bindings.is_empty(),
+            "macos keymap should inherit Enter bindings from default, got {} Enter bindings",
+            enter_bindings.len()
+        );
+        // Should have at least insert_newline for normal mode
+        let has_insert_newline = enter_bindings.iter().any(|b| b.action == "insert_newline");
+        assert!(
+            has_insert_newline,
+            "macos keymap should have insert_newline action for Enter key"
+        );
     }
 
     #[test]
