@@ -38,6 +38,11 @@ impl CommandRegistry {
         }
     }
 
+    /// Refresh built-in commands (e.g. after locale change)
+    pub fn refresh_builtin_commands(&mut self) {
+        self.builtin_commands = get_all_commands();
+    }
+
     /// Record that a command was used (for history/sorting)
     ///
     /// This moves the command to the front of the history list.
@@ -135,33 +140,69 @@ impl CommandRegistry {
             builtin_ok && custom_ok
         };
 
-        // Filter and convert to suggestions with history position and fuzzy score
-        let mut suggestions: Vec<(Suggestion, Option<usize>, i32)> = commands
-            .into_iter()
-            .filter_map(|cmd| {
-                // Use fuzzy matching
-                let fuzzy_result = fuzzy_match(query, &cmd.name);
-                if !fuzzy_result.matched {
-                    return None;
-                }
-
-                let mut available = is_available(&cmd);
+        // Helper to create a suggestion from a command
+        let make_suggestion =
+            |cmd: &Command, score: i32, localized_name: String, localized_desc: String| {
+                let mut available = is_available(cmd);
                 if cmd.action == Action::FindInSelection && !selection_active {
                     available = false;
                 }
                 let keybinding =
                     keybinding_resolver.get_keybinding_for_action(&cmd.action, current_context);
                 let history_pos = self.history_position(&cmd.name);
+
                 let suggestion = Suggestion::with_source(
-                    cmd.name.clone(),
-                    Some(cmd.description),
+                    localized_name,
+                    Some(localized_desc),
                     !available,
                     keybinding,
-                    Some(cmd.source),
+                    Some(cmd.source.clone()),
                 );
-                Some((suggestion, history_pos, fuzzy_result.score))
+                (suggestion, history_pos, score)
+            };
+
+        // First, try to match by name only
+        let mut suggestions: Vec<(Suggestion, Option<usize>, i32)> = commands
+            .iter()
+            .filter_map(|cmd| {
+                let localized_name = cmd.get_localized_name();
+                let name_result = fuzzy_match(query, &localized_name);
+                if name_result.matched {
+                    let localized_desc = cmd.get_localized_description();
+                    Some(make_suggestion(
+                        cmd,
+                        name_result.score,
+                        localized_name,
+                        localized_desc,
+                    ))
+                } else {
+                    None
+                }
             })
             .collect();
+
+        // If no name matches found, try description matching as a fallback
+        if suggestions.is_empty() && !query.is_empty() {
+            suggestions = commands
+                .iter()
+                .filter_map(|cmd| {
+                    let localized_desc = cmd.get_localized_description();
+                    let desc_result = fuzzy_match(query, &localized_desc);
+                    if desc_result.matched {
+                        let localized_name = cmd.get_localized_name();
+                        // Description matches get reduced score
+                        Some(make_suggestion(
+                            cmd,
+                            desc_result.score.saturating_sub(50),
+                            localized_name,
+                            localized_desc,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+        }
 
         // Sort by:
         // 1. Disabled status (enabled first)
@@ -612,6 +653,7 @@ mod tests {
     fn test_required_commands_exist() {
         // This test ensures that all required command palette entries exist.
         // If this test fails, it means a command was removed or renamed.
+        crate::i18n::set_locale("en");
         let registry = CommandRegistry::new();
 
         let required_commands = [

@@ -81,6 +81,22 @@ impl DropdownState {
                     None
                 }
             }
+            MouseEventKind::ScrollUp => {
+                if self.open {
+                    self.scroll_by(-3);
+                    Some(DropdownEvent::SelectionChanged(self.selected))
+                } else {
+                    None
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if self.open {
+                    self.scroll_by(3);
+                    Some(DropdownEvent::SelectionChanged(self.selected))
+                } else {
+                    None
+                }
+            }
             _ => None,
         }
     }
@@ -129,6 +145,7 @@ impl DropdownState {
             KeyCode::Home => {
                 if !self.options.is_empty() {
                     self.selected = 0;
+                    self.ensure_visible();
                     Some(DropdownEvent::SelectionChanged(0))
                 } else {
                     None
@@ -137,6 +154,7 @@ impl DropdownState {
             KeyCode::End => {
                 if !self.options.is_empty() {
                     self.selected = self.options.len() - 1;
+                    self.ensure_visible();
                     Some(DropdownEvent::SelectionChanged(self.selected))
                 } else {
                     None
@@ -158,6 +176,7 @@ mod tests {
             button_area: Rect::new(10, 0, 15, 1),
             option_areas: Vec::new(),
             full_area: Rect::new(0, 0, 25, 1),
+            scroll_offset: 0,
         };
         if open {
             layout.option_areas = vec![

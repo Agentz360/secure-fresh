@@ -262,9 +262,39 @@ fn op_fresh_get_user_config(state: &mut OpState) -> serde_json::Value {
     serde_json::Value::Object(serde_json::Map::new())
 }
 
-/// Log a debug message to the editor's trace output
+/// Log an error message from a plugin
 ///
-/// Messages appear in stderr when running with RUST_LOG=debug.
+/// Messages appear in log file when running with RUST_LOG=error.
+/// Use for critical errors that need attention.
+/// @param message - Error message
+#[op2(fast)]
+fn op_fresh_error(#[string] message: String) {
+    tracing::error!("TypeScript plugin: {}", message);
+}
+
+/// Log a warning message from a plugin
+///
+/// Messages appear in log file when running with RUST_LOG=warn.
+/// Use for warnings that don't prevent operation but indicate issues.
+/// @param message - Warning message
+#[op2(fast)]
+fn op_fresh_warn(#[string] message: String) {
+    tracing::warn!("TypeScript plugin: {}", message);
+}
+
+/// Log an info message from a plugin
+///
+/// Messages appear in log file when running with RUST_LOG=info.
+/// Use for important operational messages.
+/// @param message - Info message
+#[op2(fast)]
+fn op_fresh_info(#[string] message: String) {
+    tracing::info!("TypeScript plugin: {}", message);
+}
+
+/// Log a debug message from a plugin
+///
+/// Messages appear in log file when running with RUST_LOG=debug.
 /// Useful for plugin development and troubleshooting.
 /// @param message - Debug message; include context like function name and relevant values
 #[op2(fast)]
@@ -960,14 +990,25 @@ fn op_fresh_insert_at_cursor(state: &mut OpState, #[string] text: String) -> boo
     false
 }
 
+/// Get the currently active locale
+#[op2]
+#[string]
+fn op_fresh_get_current_locale() -> String {
+    crate::i18n::current_locale()
+}
+
+/// Translate a string for a plugin using the current locale
+#[op2]
+#[string]
+fn op_fresh_plugin_translate(
+    #[string] plugin_name: String,
+    #[string] key: String,
+    #[serde] args: std::collections::HashMap<String, String>,
+) -> String {
+    crate::i18n::translate_plugin_string(&plugin_name, &key, &args)
+}
+
 /// Register a custom command that can be triggered by keybindings or the command palette
-/// @param name - Unique command name (e.g., "my_plugin_action")
-/// @param description - Human-readable description
-/// @param action - JavaScript function name to call when command is triggered
-/// @param contexts - Comma-separated list of contexts, including both built-in (normal, prompt, popup,
-///                   fileexplorer, menu) and custom plugin-defined contexts (e.g., "normal,config-editor")
-/// @param source - Plugin source name (empty string for builtin)
-/// @returns true if command was registered
 #[op2(fast)]
 fn op_fresh_register_command(
     state: &mut OpState,
@@ -1011,7 +1052,7 @@ fn op_fresh_register_command(
         let command_source = if source.is_empty() {
             crate::input::commands::CommandSource::Builtin
         } else {
-            crate::input::commands::CommandSource::Plugin(source)
+            crate::input::commands::CommandSource::Plugin(source.clone())
         };
 
         let command = crate::input::commands::Command {
@@ -3360,6 +3401,11 @@ extension!(
         op_fresh_reload_config,
         op_fresh_get_config,
         op_fresh_get_user_config,
+        op_fresh_get_current_locale,
+        op_fresh_plugin_translate,
+        op_fresh_error,
+        op_fresh_warn,
+        op_fresh_info,
         op_fresh_debug,
         op_fresh_set_clipboard,
         op_fresh_get_active_buffer_id,
@@ -3544,14 +3590,12 @@ impl TypeScriptRuntime {
                 r#"
                 const core = Deno.core;
 
-                // Create the editor API object
-                const editor = {
-                    // Status and logging
+                // Core editor operations (plugin-agnostic)
+                // These are shared by all plugin-scoped editor objects
+                const _editorCore = {
+                    // Status
                     setStatus(message) {
                         core.ops.op_fresh_set_status(message);
-                    },
-                    debug(message) {
-                        core.ops.op_fresh_debug(message);
                     },
 
                     // Theme operations
@@ -3607,10 +3651,6 @@ impl TypeScriptRuntime {
                     },
 
                     // Overlays
-                    // namespace: group overlays together for efficient batch removal
-                    // Use empty string for no namespace
-                    // bg_r, bg_g, bg_b: background color (-1 for no background)
-                    // extend_to_line_end: extend background to end of visual line
                     addOverlay(bufferId, namespace, start, end, r, g, b, underline, bold = false, italic = false, bg_r = -1, bg_g = -1, bg_b = -1, extend_to_line_end = false) {
                         return core.ops.op_fresh_add_overlay(bufferId, namespace, start, end, r, g, b, bg_r, bg_g, bg_b, underline, bold, italic, extend_to_line_end);
                     },
@@ -3632,7 +3672,7 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_set_line_numbers(bufferId, enabled);
                     },
 
-                    // Virtual text (inline text that doesn't exist in buffer)
+                    // Virtual text
                     addVirtualText(bufferId, virtualTextId, position, text, r, g, b, before, useBg = false) {
                         return core.ops.op_fresh_add_virtual_text(bufferId, virtualTextId, position, text, r, g, b, before, useBg);
                     },
@@ -3646,7 +3686,7 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_clear_virtual_texts(bufferId);
                     },
 
-                    // Virtual lines (full lines above/below source lines - persistent state model)
+                    // Virtual lines
                     addVirtualLine(bufferId, position, text, fgR, fgG, fgB, bgR, bgG, bgB, above, namespace, priority = 0) {
                         return core.ops.op_fresh_add_virtual_line(bufferId, position, text, fgR, fgG, fgB, bgR, bgG, bgB, above, namespace, priority);
                     },
@@ -3654,7 +3694,7 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_clear_virtual_text_namespace(bufferId, namespace);
                     },
 
-                    // View transforms (for compose mode)
+                    // View transforms
                     submitViewTransform(bufferId, splitId, start, end, tokens, layoutHints) {
                         return core.ops.op_fresh_submit_view_transform(bufferId, splitId, start, end, tokens, layoutHints);
                     },
@@ -3666,7 +3706,7 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_refresh_lines(bufferId);
                     },
 
-                    // Line indicators (gutter column)
+                    // Line indicators
                     setLineIndicator(bufferId, line, namespace, symbol, r, g, b, priority) {
                         return core.ops.op_fresh_set_line_indicator(bufferId, line, namespace, symbol, r, g, b, priority);
                     },
@@ -3674,33 +3714,22 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_clear_line_indicators(bufferId, namespace);
                     },
 
-                    // Convenience
                     insertAtCursor(text) {
                         return core.ops.op_fresh_insert_at_cursor(text);
-                    },
-
-                    // Command registration
-                    registerCommand(name, description, action, contexts = "") {
-                        // Pass the current plugin source (set by load_module_with_source)
-                        const source = globalThis.__PLUGIN_SOURCE__ || "";
-                        return core.ops.op_fresh_register_command(name, description, action, contexts, source);
                     },
 
                     unregisterCommand(name) {
                         return core.ops.op_fresh_unregister_command(name);
                     },
 
-                    // Context management
                     setContext(name, active) {
                         return core.ops.op_fresh_set_context(name, active);
                     },
 
-                    // File operations
                     openFile(path, line = 0, column = 0) {
                         return core.ops.op_fresh_open_file(path, line, column);
                     },
 
-                    // Split operations
                     getActiveSplitId() {
                         return core.ops.op_fresh_get_active_split_id();
                     },
@@ -3708,7 +3737,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_open_file_in_split(splitId, path, line, column);
                     },
 
-                    // Cursor operations
                     getCursorLine() {
                         return core.ops.op_fresh_get_cursor_line();
                     },
@@ -3716,7 +3744,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_get_all_cursor_positions();
                     },
 
-                    // Buffer info queries
                     getBufferInfo(bufferId) {
                         return core.ops.op_fresh_get_buffer_info(bufferId);
                     },
@@ -3736,7 +3763,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_get_viewport();
                     },
 
-                    // Prompt operations
                     startPrompt(label, promptType) {
                         return core.ops.op_fresh_start_prompt(label, promptType);
                     },
@@ -3747,9 +3773,7 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_set_prompt_suggestions(suggestions);
                     },
 
-                    // Async operations
                     spawnProcess(command, args = [], cwd = null) {
-                        // Use editor's working directory if cwd not specified
                         const effectiveCwd = cwd ?? core.ops.op_fresh_get_cwd();
                         const processId = core.ops.op_fresh_spawn_process_start(command, args, effectiveCwd);
                         const resultPromise = processId.then(id => core.ops.op_fresh_spawn_process_wait(id));
@@ -3760,7 +3784,6 @@ impl TypeScriptRuntime {
                                 const id = await processId;
                                 return core.ops.op_fresh_kill_process(id);
                             },
-                            // Make it thenable for backward compatibility (await spawnProcess(...))
                             then(onFulfilled, onRejected) {
                                 return resultPromise.then(onFulfilled, onRejected);
                             },
@@ -3773,7 +3796,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_delay(ms);
                     },
                     spawnBackgroundProcess(command, args = [], cwd = null) {
-                        // Use editor's working directory if cwd not specified
                         const effectiveCwd = cwd ?? core.ops.op_fresh_get_cwd();
                         return core.ops.op_fresh_spawn_background_process(command, args, effectiveCwd);
                     },
@@ -3787,7 +3809,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_send_lsp_request(language, method, params);
                     },
 
-                    // File system operations
                     readFile(path) {
                         return core.ops.op_fresh_read_file(path);
                     },
@@ -3801,7 +3822,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_file_stat(path);
                     },
 
-                    // Environment operations
                     getEnv(name) {
                         return core.ops.op_fresh_get_env(name);
                     },
@@ -3809,7 +3829,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_get_cwd();
                     },
 
-                    // Path operations
                     pathJoin(...parts) {
                         return core.ops.op_fresh_path_join(parts);
                     },
@@ -3829,7 +3848,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_read_dir(path);
                     },
 
-                    // Event/Hook operations
                     on(eventName, handlerName) {
                         return core.ops.op_fresh_on(eventName, handlerName);
                     },
@@ -3840,7 +3858,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_get_handlers(eventName);
                     },
 
-                    // Virtual buffer operations
                     createVirtualBufferInSplit(options) {
                         return core.ops.op_fresh_create_virtual_buffer_in_split(options);
                     },
@@ -3851,7 +3868,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_create_virtual_buffer(options);
                     },
                     defineMode(name, parent, bindings, readOnly = false) {
-                        // Convert null/undefined to empty string for Rust Option<String> handling
                         const parentStr = parent != null ? parent : "";
                         return core.ops.op_fresh_define_mode(name, parentStr, bindings, readOnly);
                     },
@@ -3889,7 +3905,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_set_virtual_buffer_content(bufferId, entries);
                     },
 
-                    // Vi mode support
                     executeAction(actionName) {
                         return core.ops.op_fresh_execute_action(actionName);
                     },
@@ -3906,7 +3921,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_get_editor_mode();
                     },
 
-                    // LSP helper functions
                     showActionPopup(options) {
                         return core.ops.op_fresh_show_action_popup(options);
                     },
@@ -3914,7 +3928,6 @@ impl TypeScriptRuntime {
                         return core.ops.op_fresh_disable_lsp_for_language(language);
                     },
 
-                    // Scroll sync for side-by-side diff views
                     createScrollSyncGroup(groupId, leftSplit, rightSplit) {
                         return core.ops.op_fresh_create_scroll_sync_group(groupId, leftSplit, rightSplit);
                     },
@@ -3924,22 +3937,86 @@ impl TypeScriptRuntime {
                     removeScrollSyncGroup(groupId) {
                         return core.ops.op_fresh_remove_scroll_sync_group(groupId);
                     },
+
+                    getCurrentLocale() {
+                        return core.ops.op_fresh_get_current_locale();
+                    },
                 };
 
-                // Make editor globally available
-                globalThis.editor = editor;
+                // Create a plugin-scoped editor object
+                // Each plugin gets its own editor with bound plugin name for i18n and logging
+                globalThis._createPluginEditor = function(pluginName) {
+                    const pluginEditor = {
+                        // Include all core methods
+                        ..._editorCore,
+
+                        // Plugin name for reference
+                        _pluginName: pluginName,
+
+                        // Plugin-specific logging (prefixed with plugin name)
+                        error(message) {
+                            core.ops.op_fresh_error(`[${pluginName}] ${message}`);
+                        },
+                        warn(message) {
+                            core.ops.op_fresh_warn(`[${pluginName}] ${message}`);
+                        },
+                        info(message) {
+                            core.ops.op_fresh_info(`[${pluginName}] ${message}`);
+                        },
+                        debug(message) {
+                            core.ops.op_fresh_debug(`[${pluginName}] ${message}`);
+                        },
+
+                        // Plugin-specific command registration
+                        registerCommand(name, description, action, contexts = "") {
+                            return core.ops.op_fresh_register_command(name, description, action, contexts, pluginName);
+                        },
+
+                        // Plugin-specific translation
+                        t(key, args = {}) {
+                            return core.ops.op_fresh_plugin_translate(pluginName, key, args);
+                        },
+
+                        // For compatibility - returns self since t() is already bound
+                        getL10n() {
+                            return { t: (key, args = {}) => this.t(key, args) };
+                        },
+                    };
+                    return pluginEditor;
+                };
+
+                // Plugins MUST call getEditor() at the top of their file to get their scoped editor.
+                // This captures the editor instance during plugin initialization.
+                // The editor is stored in __pendingEditor during plugin load and cleared after getEditor() is called.
+                globalThis.__pendingEditor = null;
+                globalThis.getEditor = function() {
+                    const editor = globalThis.__pendingEditor;
+                    if (!editor) {
+                        throw new Error('getEditor() must be called at the top of the plugin file during initialization');
+                    }
+                    globalThis.__pendingEditor = null; // Clear after use
+                    return editor;
+                };
+
+                // Default editor for system use (console logging)
+                const defaultEditor = globalThis._createPluginEditor('system');
+                globalThis.console = {
+                    log: (...args) => defaultEditor.info(args.map(a => String(a)).join(' ')),
+                    warn: (...args) => defaultEditor.warn(args.map(a => String(a)).join(' ')),
+                    error: (...args) => defaultEditor.error(args.map(a => String(a)).join(' ')),
+                    info: (...args) => defaultEditor.info(args.map(a => String(a)).join(' ')),
+                    debug: (...args) => defaultEditor.debug(args.map(a => String(a)).join(' ')),
+                };
 
                 // Pre-compiled event dispatcher for performance
-                // This avoids recompiling JavaScript code for each event emission
                 globalThis.__eventDispatcher = async function(handlerName, eventData) {
                     const handler = globalThis[handlerName];
                     if (typeof handler === 'function') {
                         const result = handler(eventData);
                         const finalResult = (result instanceof Promise) ? await result : result;
-                        // Return true by default if handler doesn't return anything
                         return finalResult !== false;
                     } else {
-                        console.warn('Event handler "' + handlerName + '" is not defined');
+                        defaultEditor.debug('Event handler "' + handlerName + '" is not defined');
                         return true;
                     }
                 };
@@ -4021,19 +4098,16 @@ impl TypeScriptRuntime {
 
     /// Load and execute a TypeScript/JavaScript module file with explicit plugin source
     pub async fn load_module_with_source(&mut self, path: &str, plugin_source: &str) -> Result<()> {
-        // Set the plugin source as a global so registerCommand can use it
-        let set_source: FastString = format!(
-            "globalThis.__PLUGIN_SOURCE__ = {};",
-            if plugin_source.is_empty() {
-                "null".to_string()
-            } else {
-                format!("\"{}\"", plugin_source)
-            }
+        // Create a plugin-scoped editor and store it in __pendingEditor.
+        // Plugins must call getEditor() at the top of their file to retrieve it.
+        let set_editor: FastString = format!(
+            "globalThis.__pendingEditor = globalThis._createPluginEditor(\"{}\");",
+            plugin_source
         )
         .into();
         self.js_runtime
-            .execute_script("<set_plugin_source>", set_source)
-            .map_err(|e| anyhow!("Failed to set plugin source: {}", e))?;
+            .execute_script("<set_pending_editor>", set_editor)
+            .map_err(|e| anyhow!("Failed to set pending editor: {}", e))?;
 
         let module_specifier = deno_core::resolve_path(
             path,
@@ -4059,17 +4133,25 @@ impl TypeScriptRuntime {
             .await
             .map_err(|e| anyhow!("Module evaluation error: {}", e))?;
 
-        // Clear the plugin source after loading
-        let clear_source: FastString = "globalThis.__PLUGIN_SOURCE__ = null;".to_string().into();
+        // Check if the plugin forgot to call getEditor()
+        let check_editor: FastString = r#"
+            if (globalThis.__pendingEditor !== null) {
+                const pluginName = globalThis.__pendingEditor._pluginName;
+                globalThis.__pendingEditor = null;
+                throw new Error(`Plugin '${pluginName}' must call getEditor() at the top of the file`);
+            }
+        "#.to_string().into();
         self.js_runtime
-            .execute_script("<clear_plugin_source>", clear_source)
-            .map_err(|e| anyhow!("Failed to clear plugin source: {}", e))?;
+            .execute_script("<check_pending_editor>", check_editor)
+            .map_err(|e| anyhow!("Plugin initialization error: {}", e))?;
 
         Ok(())
     }
 
     /// Execute a global function by name (for plugin actions)
     pub async fn execute_action(&mut self, action_name: &str) -> Result<()> {
+        // Action functions are defined by plugins and have captured their scoped
+        // editor reference in closures, so no context setup is needed here.
         let code = format!(
             r#"
             (async () => {{
@@ -4627,6 +4709,7 @@ mod tests {
             .execute_script(
                 "<test_state>",
                 r#"
+                var editor = globalThis._createPluginEditor('test');
                 // Test buffer queries
                 const bufferId = editor.getActiveBufferId();
                 if (bufferId !== 42) {
@@ -4664,6 +4747,7 @@ mod tests {
             .execute_script(
                 "<test_commands>",
                 r#"
+                var editor = globalThis._createPluginEditor('test');
                 // Test status command
                 editor.setStatus("Test status from TypeScript");
 
@@ -4774,6 +4858,7 @@ mod tests {
             .execute_script(
                 "<test_api>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 // Verify all API methods exist
                 const methods = [
                     'setStatus', 'debug', 'getActiveBufferId', 'getCursorPosition',
@@ -4821,6 +4906,7 @@ mod tests {
             .execute_script(
                 "<test_new_ops>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 // Test getActiveSplitId
                 const splitId = editor.getActiveSplitId();
                 if (splitId !== 5) {
@@ -4914,6 +5000,7 @@ mod tests {
             .execute_script(
                 "<test_empty_contexts>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 editor.registerCommand("Global Command", "Available everywhere", "global_action", "");
                 "#,
             )
@@ -4946,6 +5033,7 @@ mod tests {
             .execute_script(
                 "<test_all_contexts>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 editor.registerCommand(
                     "All Contexts",
                     "Test all context types",
@@ -4995,6 +5083,7 @@ mod tests {
             .execute_script(
                 "<test_invalid_contexts>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 editor.registerCommand(
                     "Partial Contexts",
                     "Some invalid",
@@ -5033,6 +5122,7 @@ mod tests {
             .execute_script(
                 "<test_zero_values>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 editor.openFile("/test/file.txt", 0, 0);
                 "#,
             )
@@ -5061,6 +5151,7 @@ mod tests {
             .execute_script(
                 "<test_default_params>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 // Call with just path (line and column default to 0)
                 editor.openFile("/test/file.txt");
                 "#,
@@ -5090,6 +5181,7 @@ mod tests {
             .execute_script(
                 "<test_line_only>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 editor.openFile("/test/file.txt", 50);
                 "#,
             )
@@ -5117,6 +5209,7 @@ mod tests {
             .execute_script(
                 "<test_case_insensitive>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 editor.registerCommand(
                     "Case Test",
                     "Test case insensitivity",
@@ -5155,6 +5248,7 @@ mod tests {
             .execute_script(
                 "<test_spawn>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 (async () => {
                     const result = await editor.spawnProcess("echo", ["hello", "world"]);
                     if (!result.stdout.includes("hello world")) {
@@ -5180,6 +5274,7 @@ mod tests {
             .execute_script(
                 "<test_spawn_stderr>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 (async () => {
                     const result = await editor.spawnProcess("sh", ["-c", "echo error >&2"]);
                     if (!result.stderr.includes("error")) {
@@ -5202,6 +5297,7 @@ mod tests {
             .execute_script(
                 "<test_spawn_exit>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 (async () => {
                     const result = await editor.spawnProcess("sh", ["-c", "exit 42"]);
                     if (result.exit_code !== 42) {
@@ -5224,6 +5320,7 @@ mod tests {
             .execute_script(
                 "<test_git>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 (async () => {
                     const result = await editor.spawnProcess("git", ["--version"]);
                     if (!result.stdout.includes("git version")) {
@@ -5246,6 +5343,7 @@ mod tests {
             .execute_script(
                 "<test_file_exists>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 // Test existing file
                 const cargoExists = editor.fileExists("Cargo.toml");
                 if (!cargoExists) {
@@ -5273,6 +5371,7 @@ mod tests {
             .execute_script(
                 "<test_file_stat>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 // Test stat on existing file
                 const stat = editor.fileStat("Cargo.toml");
                 if (!stat.exists) {
@@ -5309,6 +5408,7 @@ mod tests {
             .execute_script(
                 "<test_read_file>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 (async () => {
                     // Read Cargo.toml which should exist
                     const content = await editor.readFile("Cargo.toml");
@@ -5334,6 +5434,7 @@ mod tests {
             .execute_script(
                 "<test_path_ops>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 // Test pathJoin
                 const joined = editor.pathJoin("src", "ts_runtime.rs");
                 if (!joined.includes("src") || !joined.includes("ts_runtime.rs")) {
@@ -5379,6 +5480,7 @@ mod tests {
             .execute_script(
                 "<test_get_env>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 // PATH should always be set
                 const path = editor.getEnv("PATH");
                 if (path === null || path === undefined) {
@@ -5409,6 +5511,7 @@ mod tests {
             .execute_script(
                 "<test_get_cwd>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 const cwd = editor.getCwd();
                 if (!cwd || cwd.length === 0) {
                     throw new Error("getCwd should return non-empty string");
@@ -5433,6 +5536,7 @@ mod tests {
                 "<test_write_file>",
                 &format!(
                     r#"
+                const editor = globalThis._createPluginEditor('test');
                 (async () => {{
                     const testFile = "{temp_file_str}";
                     const testContent = "Hello from TypeScript plugin!\nLine 2\n";
@@ -5478,6 +5582,7 @@ mod tests {
             .execute_script(
                 "<test_read_dir>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 // Read current directory (should have Cargo.toml, src/, etc.)
                 const entries = editor.readDir(".");
 
@@ -5525,6 +5630,7 @@ mod tests {
             .execute_script(
                 "<test_path_is_absolute>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 // Test absolute paths (Unix)
                 if (!editor.pathIsAbsolute("/home/user")) {
                     throw new Error("/home/user should be absolute");
@@ -5560,6 +5666,7 @@ mod tests {
             .execute_script(
                 "<test_path_is_absolute>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 // Test absolute paths (Windows)
                 if (!editor.pathIsAbsolute("C:\\Users\\test")) {
                     throw new Error("C:\\Users\\test should be absolute");
@@ -5600,6 +5707,7 @@ mod tests {
             .execute_script(
                 "<test_hook_registration>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 // Register a handler
                 const registered = editor.on("buffer_save", "onBufferSave");
                 if (!registered) {
@@ -5659,6 +5767,7 @@ mod tests {
             .execute_script(
                 "<test_hook_emit_setup>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 globalThis.eventCounter = 0;
                 globalThis.lastEventData = null;
 
@@ -5711,6 +5820,7 @@ mod tests {
             .execute_script(
                 "<test_hook_cancel_setup>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 globalThis.cancelWasCalled = false;
                 globalThis.onCancelEvent = function(data) {
                     globalThis.cancelWasCalled = true;
@@ -5753,6 +5863,7 @@ mod tests {
             .execute_script(
                 "<test_hook_multi_setup>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 globalThis.handler1Called = false;
                 globalThis.handler2Called = false;
 
@@ -5903,6 +6014,7 @@ mod tests {
         writeln!(
             temp_file,
             r#"
+            const editor = getEditor();
             // Simple test plugin
             editor.setStatus("Test plugin loaded");
 
@@ -5957,6 +6069,7 @@ mod tests {
         writeln!(
             temp_file,
             r#"
+            const editor = getEditor();
             globalThis.myAction = function() {{
                 editor.setStatus("Action executed!");
             }};
@@ -5994,6 +6107,7 @@ mod tests {
             .execute_script(
                 "<test_hook_setup>",
                 r#"
+            const editor = globalThis._createPluginEditor('test');
             globalThis.onBufferActivated = function(data) {
                 editor.setStatus("Buffer " + data.buffer_id + " activated");
             };
@@ -6033,7 +6147,7 @@ mod tests {
 
         // Create and load a plugin
         let mut temp_file = NamedTempFile::with_suffix(".js").unwrap();
-        writeln!(temp_file, r#"// Test plugin"#).unwrap();
+        writeln!(temp_file, r#"const editor = getEditor(); // Test plugin"#).unwrap();
         temp_file.flush().unwrap();
 
         manager.load_plugin(temp_file.path()).await.unwrap();
@@ -6065,6 +6179,7 @@ mod tests {
             .execute_script(
                 "<setup_handler>",
                 r#"
+                const editor = globalThis._createPluginEditor('test');
                 globalThis.onRenderLine = function(data) {
                     // Simulate TODO highlighter: check if line contains keyword
                     if (data.content && data.content.includes("TODO")) {
@@ -6143,6 +6258,7 @@ mod tests {
         std::fs::write(
             &plugin_path,
             r#"
+            const editor = getEditor();
             // Import from the actual lib folder
             import { PanelManager } from "./lib/index.ts";
 
@@ -6208,6 +6324,7 @@ mod tests {
         std::fs::write(
             &plugin_path,
             r#"
+            const editor = getEditor();
             import { MESSAGE, greet } from "./lib.ts";
 
             editor.setStatus(MESSAGE);
@@ -6255,6 +6372,7 @@ mod tests {
         std::fs::write(
             &plugin_path,
             r#"
+            const editor = getEditor();
             // Import from the actual lib folder
             import { PanelManager } from "./lib/index.ts";
 
@@ -6489,6 +6607,7 @@ mod tests {
         std::fs::write(
             &plugin_path,
             r#"
+            const editor = getEditor();
             globalThis.test_spawn = async function(): Promise<void> {
                 editor.setStatus("About to spawn echo...");
 
@@ -6571,6 +6690,7 @@ mod tests {
         std::fs::write(
             &plugin_path,
             r#"
+            const editor = getEditor();
             globalThis.test_git = async function(): Promise<void> {
                 editor.setStatus("About to run git log...");
 
@@ -6657,6 +6777,7 @@ mod tests {
         std::fs::write(
             &plugin_path,
             r#"
+            const editor = getEditor();
             globalThis.test_vbuf = async function(): Promise<void> {
                 editor.debug("Step 1: About to spawn process...");
 

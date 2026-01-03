@@ -44,7 +44,7 @@ fn test_file_browser_popup_appears() {
     let screen = harness.screen_to_string();
 
     // Should show the prompt
-    assert!(screen.contains("Open:"), "Prompt should be visible");
+    assert!(screen.contains("Open file:"), "Prompt should be visible");
 
     // Should show navigation shortcuts
     assert!(
@@ -320,7 +320,7 @@ fn test_file_browser_cancel() {
 
     // File browser should be closed
     harness.assert_screen_not_contains("Navigation:");
-    harness.assert_screen_contains("Canceled");
+    harness.assert_screen_contains("cancelled");
 }
 
 /// Test that column headers are shown (Name, Size, Modified)
@@ -796,9 +796,9 @@ fn test_file_browser_click_updates_prompt() {
         .wait_until(|h| h.screen_to_string().contains("selected_file.txt"))
         .expect("File should be listed");
 
-    // The prompt line should show "Open:" initially
+    // The prompt line should show "Open file:" initially
     let screen = harness.screen_to_string();
-    assert!(screen.contains("Open:"), "Prompt should be visible");
+    assert!(screen.contains("Open file:"), "Prompt should be visible");
 
     // Click on the file entry (it should be in the file list area)
     // The file list starts after navigation (2 rows) and header (1 row), plus border
@@ -869,6 +869,12 @@ fn test_file_browser_prompt_shows_buffer_directory() {
         .wait_until(|h| h.screen_to_string().contains("Navigation:"))
         .expect("File browser should appear again");
 
+    // Wait for the file list to load - use semantic waiting for file list content
+    // The sibling file "input.rs" should appear when the directory listing completes
+    harness
+        .wait_until(|h| h.screen_to_string().contains("input.rs"))
+        .expect("File list should load and show sibling files");
+
     // The prompt should show the directory path of the open file
     // It will be an absolute path since the file was opened via direct path resolution
     let expected_suffix = "src/components/";
@@ -877,10 +883,10 @@ fn test_file_browser_prompt_shows_buffer_directory() {
     let prompt_line = harness.get_prompt_line();
     let prompt_line = prompt_line.trim();
 
-    // Check that prompt starts with "Open: " and ends with the expected directory
+    // Check that prompt starts with "Open file: " and ends with the expected directory
     assert!(
-        prompt_line.starts_with("Open: "),
-        "Prompt should start with 'Open: '\nActual: '{}'",
+        prompt_line.starts_with("Open file: "),
+        "Prompt should start with 'Open file: '\nActual: '{}'",
         prompt_line,
     );
     assert!(
@@ -890,12 +896,8 @@ fn test_file_browser_prompt_shows_buffer_directory() {
         prompt_line,
     );
 
-    // The sibling file should be visible in the file list
+    // Verify all expected files are in the list (already waited for input.rs above)
     let screen = harness.screen_to_string();
-    assert!(
-        screen.contains("input.rs"),
-        "Should show sibling files in the same directory"
-    );
     assert!(
         screen.contains("button.rs"),
         "Should show the current file in the list"

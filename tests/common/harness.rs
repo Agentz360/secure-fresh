@@ -68,10 +68,58 @@ use fresh::services::fs::{BackendMetrics, FsBackend, LocalFsBackend, SlowFsBacke
 use fresh::services::time_source::{SharedTimeSource, TestTimeSource};
 use fresh::{app::Editor, config::Config};
 use ratatui::{backend::TestBackend, Terminal};
+use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::TempDir;
+
+/// Copy a plugin and its i18n file (if exists) from the main plugins directory to a test plugins directory.
+///
+/// # Arguments
+/// * `plugins_dir` - The destination plugins directory in the test project
+/// * `plugin_name` - The plugin name without extension (e.g., "vi_mode", "todo_highlighter")
+///
+/// # Example
+/// ```ignore
+/// let plugins_dir = project_root.join("plugins");
+/// fs::create_dir_all(&plugins_dir).unwrap();
+/// copy_plugin(&plugins_dir, "vi_mode");
+/// copy_plugin(&plugins_dir, "todo_highlighter");
+/// ```
+pub fn copy_plugin(plugins_dir: &Path, plugin_name: &str) {
+    // Use CARGO_MANIFEST_DIR to find plugins regardless of current working directory
+    let source_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins");
+
+    // Copy the .ts file
+    let ts_src = source_dir.join(format!("{}.ts", plugin_name));
+    let ts_dest = plugins_dir.join(format!("{}.ts", plugin_name));
+    fs::copy(&ts_src, &ts_dest)
+        .unwrap_or_else(|e| panic!("Failed to copy {}.ts: {}", plugin_name, e));
+
+    // Copy the .i18n.json file if it exists
+    let i18n_src = source_dir.join(format!("{}.i18n.json", plugin_name));
+    if i18n_src.exists() {
+        let i18n_dest = plugins_dir.join(format!("{}.i18n.json", plugin_name));
+        fs::copy(&i18n_src, &i18n_dest)
+            .unwrap_or_else(|e| panic!("Failed to copy {}.i18n.json: {}", plugin_name, e));
+    }
+}
+
+/// Copy the plugins/lib directory (contains TypeScript declarations like fresh.d.ts)
+pub fn copy_plugin_lib(plugins_dir: &Path) {
+    // Use CARGO_MANIFEST_DIR to find plugins regardless of current working directory
+    let lib_src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("plugins/lib");
+    let lib_dest = plugins_dir.join("lib");
+    if lib_src.exists() {
+        fs::create_dir_all(&lib_dest).unwrap();
+        for entry in fs::read_dir(&lib_src).unwrap() {
+            let entry = entry.unwrap();
+            let dest_path = lib_dest.join(entry.file_name());
+            fs::copy(entry.path(), dest_path).unwrap();
+        }
+    }
+}
 
 /// Configuration options for creating an EditorTestHarness.
 ///
@@ -326,6 +374,10 @@ impl EditorTestHarness {
             config.active_keybinding_map = fresh::config::KeybindingMapName("default".to_string());
         }
         config.check_for_updates = false; // Disable update checking in tests
+
+        // Initialize i18n with the config's locale before creating the editor
+        // This ensures menu defaults are created with the correct translations
+        fresh::i18n::init_with_config(config.locale.as_option());
         config.editor.double_click_time_ms = 10; // Fast double-click for faster tests
 
         // Create filesystem backend (slow or default)
@@ -1488,7 +1540,6 @@ impl EditorTestHarness {
             self.advance_time(WAIT_SLEEP);
         }
     }
-
     // ===== File Explorer Wait Helpers =====
 
     /// Wait for file explorer to be initialized (has a view)

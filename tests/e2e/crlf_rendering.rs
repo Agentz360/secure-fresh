@@ -382,6 +382,8 @@ fn test_crlf_cut_paste() {
     std::fs::write(&file_path, content).unwrap();
 
     let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    // Use test clipboard to avoid system clipboard issues
+    harness.editor_mut().set_clipboard_for_test("".to_string());
     harness.open_file(&file_path).unwrap();
 
     // Enable internal-only clipboard to avoid system clipboard interference in parallel tests

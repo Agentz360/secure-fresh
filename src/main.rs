@@ -497,6 +497,10 @@ fn initialize_app(args: &Args) -> io::Result<SetupState> {
         config::Config::load_for_working_dir(&effective_working_dir)
     };
 
+    // Initialize i18n with the config's locale before creating the editor
+    // This ensures menu defaults are created with the correct translations
+    fresh::i18n::init_with_config(config.locale.as_option());
+
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
 
@@ -696,13 +700,11 @@ fn main() -> io::Result<()> {
             }
 
             editor.show_file_explorer();
-            editor.set_status_message(format!(
-                "Switched to project: {}",
-                current_working_dir
-                    .as_ref()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| ".".to_string())
-            ));
+            let path = current_working_dir
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| ".".to_string());
+            editor.set_status_message(fresh::i18n::switched_to_project_message(&path));
         }
 
         if let Err(e) = editor.start_recovery_session() {

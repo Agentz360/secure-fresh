@@ -10,6 +10,7 @@ use std::process::{Command, Stdio};
 use super::Editor;
 use crate::model::event::Event;
 use crate::view::prompt::PromptType;
+use rust_i18n::t;
 
 impl Editor {
     /// Start a shell command prompt.
@@ -17,9 +18,9 @@ impl Editor {
     /// If `replace` is false, the output goes to a new buffer.
     pub fn start_shell_command_prompt(&mut self, replace: bool) {
         let prompt_msg = if replace {
-            "Shell command (replace): ".to_string()
+            t!("shell.command_replace_prompt").to_string()
         } else {
-            "Shell command: ".to_string()
+            t!("shell.command_prompt").to_string()
         };
         self.start_prompt(prompt_msg, PromptType::ShellCommand { replace });
     }
@@ -216,7 +217,7 @@ impl Editor {
             self.apply_event_to_active_buffer(&batch);
         }
 
-        self.set_status_message("Shell command completed".to_string());
+        self.set_status_message(t!("status.shell_command_completed").to_string());
     }
 
     /// Create a new buffer with the shell command output.
@@ -242,7 +243,7 @@ impl Editor {
             metadata.display_name = buffer_name.clone();
         }
 
-        self.set_status_message(format!("Shell output in {}", buffer_name));
+        self.set_status_message(t!("shell.output_in", buffer = buffer_name).to_string());
     }
 }
 

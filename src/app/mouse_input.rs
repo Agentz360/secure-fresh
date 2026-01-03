@@ -12,6 +12,7 @@ use crate::input::keybindings::Action;
 use crate::model::event::{SplitDirection, SplitId};
 use crate::services::plugins::hooks::HookArgs;
 use crate::view::prompt::PromptType;
+use rust_i18n::t;
 
 impl Editor {
     /// Handle a mouse event.
@@ -242,8 +243,7 @@ impl Editor {
             // If hovering over a menu dropdown item, check if it's a submenu and open it
             if let Some(HoverTarget::MenuDropdownItem(_, item_idx)) = new_target.clone() {
                 let all_menus: Vec<crate::config::Menu> = self
-                    .config
-                    .menu
+                    .menus
                     .menus
                     .iter()
                     .chain(self.menu_state.plugin_menus.iter())
@@ -322,8 +322,7 @@ impl Editor {
                 }
 
                 let all_menus: Vec<crate::config::Menu> = self
-                    .config
-                    .menu
+                    .menus
                     .menus
                     .iter()
                     .chain(self.menu_state.plugin_menus.iter())
@@ -582,8 +581,7 @@ impl Editor {
         // Check menu bar (row 0)
         if row == 0 {
             let all_menus: Vec<crate::config::Menu> = self
-                .config
-                .menu
+                .menus
                 .menus
                 .iter()
                 .chain(self.menu_state.plugin_menus.iter())
@@ -598,8 +596,7 @@ impl Editor {
         // Check menu dropdown items if a menu is open (including submenus)
         if let Some(active_idx) = self.menu_state.active_menu {
             let all_menus: Vec<crate::config::Menu> = self
-                .config
-                .menu
+                .menus
                 .menus
                 .iter()
                 .chain(self.menu_state.plugin_menus.iter())
@@ -925,8 +922,7 @@ impl Editor {
         // Check if click is on menu bar (row 0)
         if row == 0 {
             let all_menus: Vec<crate::config::Menu> = self
-                .config
-                .menu
+                .menus
                 .menus
                 .iter()
                 .chain(self.menu_state.plugin_menus.iter())
@@ -952,8 +948,7 @@ impl Editor {
         // Check if click is on an open menu dropdown
         if let Some(active_idx) = self.menu_state.active_menu {
             let all_menus: Vec<crate::config::Menu> = self
-                .config
-                .menu
+                .menus
                 .menus
                 .iter()
                 .chain(self.menu_state.plugin_menus.iter())
@@ -1127,14 +1122,16 @@ impl Editor {
 
         if let Some(split_id) = close_split_click {
             if let Err(e) = self.split_manager.close_split(split_id) {
-                self.set_status_message(format!("Cannot close split: {}", e));
+                self.set_status_message(
+                    t!("error.cannot_close_split", error = e.to_string()).to_string(),
+                );
             } else {
                 // Update active buffer to match the new active split
                 let new_active_split = self.split_manager.active_split();
                 if let Some(buffer_id) = self.split_manager.buffer_for_split(new_active_split) {
                     self.set_active_buffer(buffer_id);
                 }
-                self.set_status_message("Split closed".to_string());
+                self.set_status_message(t!("split.closed").to_string());
             }
             return Ok(());
         }
@@ -1154,9 +1151,9 @@ impl Editor {
             match self.split_manager.toggle_maximize() {
                 Ok(maximized) => {
                     if maximized {
-                        self.set_status_message("Maximized split".to_string());
+                        self.set_status_message(t!("split.maximized").to_string());
                     } else {
-                        self.set_status_message("Restored all splits".to_string());
+                        self.set_status_message(t!("split.restored").to_string());
                     }
                 }
                 Err(e) => self.set_status_message(e),

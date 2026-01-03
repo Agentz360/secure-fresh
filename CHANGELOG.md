@@ -1,5 +1,63 @@
 # Release Notes
 
+## 0.1.69
+
+> **macOS Users**: This release includes significant improvements for macOS terminal compatibility. See the new [macOS Terminal Tips](docs/USER_GUIDE.md#macos-terminal-tips) guide for recommended terminal emulators and keyboard configuration. The macOS keymap ([`keymaps/macos.json`](keymaps/macos.json)) is a work in progress—please submit patches based on your experience with different terminals and keyboard layouts!
+
+### Features
+
+* **macOS Keymap**: Terminal-friendly keybindings that avoid broken Ctrl+Shift combinations, ASCII control char collisions (Ctrl+J=LF), and international keyboard conflicts (Ctrl+Alt+L=@ on German). Key bindings: Ctrl+R (redo), Ctrl+G (find next), Ctrl+L (go to line), Ctrl+T (go to symbol), Alt+B/F (word movement). See [macOS Terminal Tips](docs/USER_GUIDE.md#macos-terminal-tips) (#219).
+
+* **4-Level Config System**: Configuration now merges user, platform, project, and session layers. Settings UI shows layer indicators and allows editing specific config files.
+
+* **Tab Context Menu**: Right-click tabs for Close, Close Others, Close All, Close to Right options.
+
+* **Drag-to-Split Tabs**: Drag tabs to screen edges to create new splits.
+
+* **Plugin Logging**: New `editor.error()`, `editor.warn()`, `editor.info()`, `editor.debug()` methods route plugin output through the editor's logging system.
+
+* **Log Management**: Logs moved to XDG state directory with automatic 24-hour cleanup. Use `--show-paths` to see log locations.
+
+### Experimental
+
+*These features are work-in-progress. Expect rough edges and breaking changes.*
+
+* **Internationalization (i18n)**: Full i18n support with 11 languages (German, French, Spanish, Japanese, Korean, Chinese, Russian, Ukrainian, Czech, Portuguese, Thai). Select locale via command palette or Settings UI. Plugins support translation via `editor.t()` and `.i18n.json` files. *Note*: Keybinding shortcuts do not take the active layout into account, which is why this feature is still experimental. Also I need you to provide feedback on the translations since they were all machine-generated and I don't speak any of the languages added.
+
+* **Vi Mode Plugin**: Added `.` repeat command, visual block mode, and colon command mode with comprehensive vim commands (`:w`, `:q`, `:wq`, `:e`, `:split`, etc.).
+
+* **Review Diff Plugin**: Side-by-side diff view with synchronized scrolling, line alignment, and word-level highlighting. Access via "Side-by-Side Diff" command.
+
+### Bug Fixes
+
+* **Tab Size Zero Panic**: Fixed division by zero when tab_size is 0 (#580).
+
+* **Hidden Cursor Panic**: Fixed crash when rendering buffers with hidden cursors (#607, yoooughtul).
+
+* **Settings Paste**: Fixed clipboard paste not working in Settings UI edit dialogs (#605, Tyooughtul).
+
+* **Show Hidden Truncation**: Fixed "Show Hidden" checkbox label truncated in file dialog (#558).
+
+* **Syntax Highlighting Config**: User-configured filename patterns now work for syntax highlighting (#565).
+
+* **Replace All Performance**: Fixed O(n²) performance issue causing hangs on large files (#564).
+
+* **Plugin Thread Hang**: Fixed plugin thread hanging on shutdown.
+
+* **File Explorer Crash**: Fixed crash when scroll_offset exceeds tree size (#562).
+
+* **Background Revert Jump**: Fixed viewport jumping when auto-reverting background files.
+
+* **Scrollbar Gaps**: Render scrollbars with background fills to avoid glyph gaps in some terminals (Oleksii Smotrov).
+
+### Performance
+
+* **BulkEdit Operations**: Multi-cursor and replace-all now use O(n) algorithm instead of O(n²).
+
+* **Semantic Highlighting**: Debounced to reduce CPU usage during rapid cursor movement.
+
+---
+
 ## 0.1.67
 
 ### Features

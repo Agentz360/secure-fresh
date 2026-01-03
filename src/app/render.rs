@@ -1,4 +1,5 @@
 use super::*;
+use rust_i18n::t;
 
 impl Editor {
     /// Render the editor to the terminal
@@ -752,7 +753,7 @@ impl Editor {
             crate::view::ui::MenuRenderer::render(
                 frame,
                 menu_bar_area,
-                &self.config.menu,
+                &self.menus,
                 &self.menu_state,
                 &self.keybindings,
                 &self.theme,
@@ -1354,12 +1355,13 @@ impl Editor {
                     lsp.allow_language(&language);
                     if lsp.get_or_spawn(&language).is_some() {
                         tracing::info!("LSP server for {} started (allowed once)", language);
-                        self.set_status_message(format!("LSP server for {} started", language));
+                        self.set_status_message(
+                            t!("lsp.server_started", language = language).to_string(),
+                        );
                     } else {
-                        self.set_status_message(format!(
-                            "Failed to start LSP server for {}",
-                            language
-                        ));
+                        self.set_status_message(
+                            t!("lsp.failed_to_start", language = language).to_string(),
+                        );
                     }
                 }
                 // Notify LSP about the current file
@@ -1371,15 +1373,13 @@ impl Editor {
                     lsp.allow_language(&language);
                     if lsp.get_or_spawn(&language).is_some() {
                         tracing::info!("LSP server for {} started (always allowed)", language);
-                        self.set_status_message(format!(
-                            "LSP server for {} started (will auto-start in future)",
-                            language
-                        ));
+                        self.set_status_message(
+                            t!("lsp.server_started_auto", language = language).to_string(),
+                        );
                     } else {
-                        self.set_status_message(format!(
-                            "Failed to start LSP server for {}",
-                            language
-                        ));
+                        self.set_status_message(
+                            t!("lsp.failed_to_start", language = language).to_string(),
+                        );
                     }
                 }
                 // Notify LSP about the current file
@@ -1388,7 +1388,9 @@ impl Editor {
             "deny" | _ => {
                 // User declined - don't start the server
                 tracing::info!("LSP server for {} startup declined by user", language);
-                self.set_status_message(format!("LSP server for {} startup cancelled", language));
+                self.set_status_message(
+                    t!("lsp.startup_cancelled", language = language).to_string(),
+                );
             }
         }
 
@@ -1952,7 +1954,7 @@ impl Editor {
 
         if query.is_empty() {
             self.search_state = None;
-            self.set_status_message("Search cancelled.".to_string());
+            self.set_status_message(t!("search.cancelled").to_string());
             return;
         }
 
@@ -1963,7 +1965,7 @@ impl Editor {
             match state.buffer.to_string() {
                 Some(t) => t,
                 None => {
-                    self.set_status_message("Buffer not fully loaded".to_string());
+                    self.set_status_message(t!("error.buffer_not_loaded").to_string());
                     return;
                 }
             }
@@ -2005,7 +2007,9 @@ impl Editor {
             Ok(r) => r,
             Err(e) => {
                 self.search_state = None;
-                self.set_status_message(format!("Invalid regex: {}", e));
+                self.set_status_message(
+                    t!("error.invalid_regex", error = e.to_string()).to_string(),
+                );
                 return;
             }
         };
@@ -2097,7 +2101,7 @@ impl Editor {
             } else if search_state.wrap_search {
                 0 // Wrap to beginning
             } else {
-                self.set_status_message("No more matches.".to_string());
+                self.set_status_message(t!("search.no_matches").to_string());
                 return;
             };
 
@@ -2120,9 +2124,16 @@ impl Editor {
                 }
             }
 
-            self.set_status_message(format!("Match {} of {}", next_index + 1, matches_len));
+            self.set_status_message(
+                t!(
+                    "search.match_of",
+                    current = next_index + 1,
+                    total = matches_len
+                )
+                .to_string(),
+            );
         } else {
-            self.set_status_message("No active search. Press Ctrl+F to search.".to_string());
+            self.set_status_message(t!("search.no_active").to_string());
         }
     }
 
@@ -2139,7 +2150,7 @@ impl Editor {
             } else if search_state.wrap_search {
                 search_state.matches.len() - 1 // Wrap to end
             } else {
-                self.set_status_message("No more matches.".to_string());
+                self.set_status_message(t!("search.no_matches").to_string());
                 return;
             };
 
@@ -2162,9 +2173,16 @@ impl Editor {
                 }
             }
 
-            self.set_status_message(format!("Match {} of {}", prev_index + 1, matches_len));
+            self.set_status_message(
+                t!(
+                    "search.match_of",
+                    current = prev_index + 1,
+                    total = matches_len
+                )
+                .to_string(),
+            );
         } else {
-            self.set_status_message("No active search. Press Ctrl+F to search.".to_string());
+            self.set_status_message(t!("search.no_active").to_string());
         }
     }
 
@@ -2218,7 +2236,7 @@ impl Editor {
                 }
             }
             _ => {
-                self.set_status_message("No text to search".to_string());
+                self.set_status_message(t!("search.no_text").to_string());
             }
         }
     }
@@ -2277,7 +2295,7 @@ impl Editor {
                 }
             }
             _ => {
-                self.set_status_message("No text to search".to_string());
+                self.set_status_message(t!("search.no_text").to_string());
             }
         }
     }
@@ -2329,7 +2347,7 @@ impl Editor {
     /// This directly edits the piece tree without loading the entire buffer into memory
     pub(super) fn perform_replace(&mut self, search: &str, replacement: &str) {
         if search.is_empty() {
-            self.set_status_message("Replace: empty search query.".to_string());
+            self.set_status_message(t!("replace.empty_query").to_string());
             return;
         }
 
@@ -2358,7 +2376,7 @@ impl Editor {
         let count = matches.len();
 
         if count == 0 {
-            self.set_status_message(format!("No occurrences of '{}' found.", search));
+            self.set_status_message(t!("search.no_occurrences", search = search).to_string());
             return;
         }
 
@@ -2398,19 +2416,21 @@ impl Editor {
         state.overlays.clear_namespace(&ns, &mut state.marker_list);
 
         // Set status message
-        self.set_status_message(format!(
-            "Replaced {} occurrence{} of '{}' with '{}'",
-            count,
-            if count == 1 { "" } else { "s" },
-            search,
-            replacement
-        ));
+        self.set_status_message(
+            t!(
+                "search.replaced",
+                count = count,
+                search = search,
+                replace = replacement
+            )
+            .to_string(),
+        );
     }
 
     /// Start interactive replace mode (query-replace)
     pub(super) fn start_interactive_replace(&mut self, search: &str, replacement: &str) {
         if search.is_empty() {
-            self.set_status_message("Query replace: empty search query.".to_string());
+            self.set_status_message(t!("replace.query_empty").to_string());
             return;
         }
 
@@ -2420,7 +2440,7 @@ impl Editor {
         let first_match = state.buffer.find_next(search, start_pos);
 
         let Some(first_match_pos) = first_match else {
-            self.set_status_message(format!("No occurrences of '{}' found.", search));
+            self.set_status_message(t!("search.no_occurrences", search = search).to_string());
             return;
         };
 
@@ -2735,11 +2755,7 @@ impl Editor {
         let state = self.active_state_mut();
         state.overlays.clear_namespace(&ns, &mut state.marker_list);
 
-        self.set_status_message(format!(
-            "Replaced {} occurrence{}",
-            replacements_made,
-            if replacements_made == 1 { "" } else { "s" }
-        ));
+        self.set_status_message(t!("search.replaced_count", count = replacements_made).to_string());
     }
 
     /// Smart home: toggle between line start and first non-whitespace character
@@ -2927,7 +2943,14 @@ impl Editor {
             self.active_event_log_mut().append(bulk_edit);
         }
 
-        self.set_status_message(format!("{}ed {} line(s)", action_desc, line_starts.len()));
+        self.set_status_message(
+            t!(
+                "lines.action",
+                action = action_desc,
+                count = line_starts.len()
+            )
+            .to_string(),
+        );
     }
 
     /// Go to matching bracket
@@ -2938,13 +2961,13 @@ impl Editor {
 
         let pos = cursor.position;
         if pos >= state.buffer.len() {
-            self.set_status_message("No bracket at cursor".to_string());
+            self.set_status_message(t!("diagnostics.bracket_none").to_string());
             return;
         }
 
         let bytes = state.buffer.slice_bytes(pos..pos + 1);
         if bytes.is_empty() {
-            self.set_status_message("No bracket at cursor".to_string());
+            self.set_status_message(t!("diagnostics.bracket_none").to_string());
             return;
         }
 
@@ -2959,7 +2982,7 @@ impl Editor {
             '<' => ('<', '>', true),
             '>' => ('<', '>', false),
             _ => {
-                self.set_status_message("No bracket at cursor".to_string());
+                self.set_status_message(t!("diagnostics.bracket_none").to_string());
                 return;
             }
         };
@@ -3024,7 +3047,7 @@ impl Editor {
             self.active_event_log_mut().append(event.clone());
             self.apply_event_to_active_buffer(&event);
         } else {
-            self.set_status_message("No matching bracket found".to_string());
+            self.set_status_message(t!("diagnostics.bracket_no_match").to_string());
         }
     }
 
@@ -3052,7 +3075,7 @@ impl Editor {
             .collect();
 
         if diagnostic_positions.is_empty() {
-            self.set_status_message("No diagnostics in current buffer".to_string());
+            self.set_status_message(t!("diagnostics.none").to_string());
             return;
         }
 
@@ -3119,7 +3142,7 @@ impl Editor {
             .collect();
 
         if diagnostic_positions.is_empty() {
-            self.set_status_message("No diagnostics in current buffer".to_string());
+            self.set_status_message(t!("diagnostics.none").to_string());
             return;
         }
 
@@ -3186,10 +3209,7 @@ impl Editor {
             key,
             actions: Vec::new(),
         });
-        self.set_status_message(format!(
-            "Recording macro '{}' (press Ctrl+Shift+R {} to stop)",
-            key, key
-        ));
+        self.set_status_message(t!("macro.recording_with_hint", key = key).to_string());
     }
 
     /// Stop recording and save the macro
@@ -3199,9 +3219,9 @@ impl Editor {
             let key = state.key;
             self.macros.insert(key, state.actions);
             self.last_macro_register = Some(key);
-            self.set_status_message(format!("Macro '{}' saved ({} actions)", key, action_count));
+            self.set_status_message(t!("macro.saved", key = key, count = action_count).to_string());
         } else {
-            self.set_status_message("Not recording a macro".to_string());
+            self.set_status_message(t!("macro.not_recording").to_string());
         }
     }
 
@@ -3209,7 +3229,7 @@ impl Editor {
     pub(super) fn play_macro(&mut self, key: char) {
         if let Some(actions) = self.macros.get(&key).cloned() {
             if actions.is_empty() {
-                self.set_status_message(format!("Macro '{}' is empty", key));
+                self.set_status_message(t!("macro.empty", key = key).to_string());
                 return;
             }
 
@@ -3224,9 +3244,11 @@ impl Editor {
             // Restore recording state
             self.macro_recording = was_recording;
 
-            self.set_status_message(format!("Played macro '{}' ({} actions)", key, action_count));
+            self.set_status_message(
+                t!("macro.played", key = key, count = action_count).to_string(),
+            );
         } else {
-            self.set_status_message(format!("No macro recorded for '{}'", key));
+            self.set_status_message(t!("macro.not_found", key = key).to_string());
         }
     }
 
@@ -3259,14 +3281,16 @@ impl Editor {
                 let json = match serde_json::to_string_pretty(actions) {
                     Ok(json) => json,
                     Err(e) => {
-                        self.set_status_message(format!("Failed to serialize macro: {}", e));
+                        self.set_status_message(
+                            t!("macro.serialize_failed", error = e.to_string()).to_string(),
+                        );
                         return;
                     }
                 };
                 (json, actions.len())
             }
             None => {
-                self.set_status_message(format!("No macro recorded for '{}'", key));
+                self.set_status_message(t!("macro.not_found", key = key).to_string());
                 return;
             }
         };
@@ -3319,16 +3343,15 @@ impl Editor {
 
         // Switch to the new buffer
         self.set_active_buffer(buffer_id);
-        self.set_status_message(format!(
-            "Macro '{}' shown in buffer ({} actions) - save as .json for persistence",
-            key, actions_len
-        ));
+        self.set_status_message(
+            t!("macro.shown_buffer", key = key, count = actions_len).to_string(),
+        );
     }
 
     /// List all recorded macros in a buffer
     pub(super) fn list_macros_in_buffer(&mut self) {
         if self.macros.is_empty() {
-            self.set_status_message("No macros recorded".to_string());
+            self.set_status_message(t!("macro.none_recorded").to_string());
             return;
         }
 
@@ -3394,7 +3417,7 @@ impl Editor {
 
         // Switch to the new buffer
         self.set_active_buffer(buffer_id);
-        self.set_status_message(format!("Showing {} recorded macro(s)", self.macros.len()));
+        self.set_status_message(t!("macro.showing", count = self.macros.len()).to_string());
     }
 
     /// Set a bookmark at the current position
@@ -3408,7 +3431,7 @@ impl Editor {
                 position,
             },
         );
-        self.set_status_message(format!("Bookmark '{}' set", key));
+        self.set_status_message(t!("bookmark.set", key = key).to_string());
     }
 
     /// Jump to a bookmark
@@ -3419,7 +3442,7 @@ impl Editor {
                 if self.buffers.contains_key(&bookmark.buffer_id) {
                     self.set_active_buffer(bookmark.buffer_id);
                 } else {
-                    self.set_status_message(format!("Bookmark '{}': buffer no longer exists", key));
+                    self.set_status_message(t!("bookmark.buffer_gone", key = key).to_string());
                     self.bookmarks.remove(&key);
                     return;
                 }
@@ -3443,25 +3466,25 @@ impl Editor {
 
             self.active_event_log_mut().append(event.clone());
             self.apply_event_to_active_buffer(&event);
-            self.set_status_message(format!("Jumped to bookmark '{}'", key));
+            self.set_status_message(t!("bookmark.jumped", key = key).to_string());
         } else {
-            self.set_status_message(format!("Bookmark '{}' not set", key));
+            self.set_status_message(t!("bookmark.not_set", key = key).to_string());
         }
     }
 
     /// Clear a bookmark
     pub(super) fn clear_bookmark(&mut self, key: char) {
         if self.bookmarks.remove(&key).is_some() {
-            self.set_status_message(format!("Bookmark '{}' cleared", key));
+            self.set_status_message(t!("bookmark.cleared", key = key).to_string());
         } else {
-            self.set_status_message(format!("Bookmark '{}' not set", key));
+            self.set_status_message(t!("bookmark.not_set", key = key).to_string());
         }
     }
 
     /// List all bookmarks
     pub(super) fn list_bookmarks(&mut self) {
         if self.bookmarks.is_empty() {
-            self.set_status_message("No bookmarks set".to_string());
+            self.set_status_message(t!("bookmark.none_set").to_string());
             return;
         }
 
@@ -3481,7 +3504,7 @@ impl Editor {
             .collect::<Vec<_>>()
             .join(", ");
 
-        self.set_status_message(format!("Bookmarks: {}", list_str));
+        self.set_status_message(t!("bookmark.list", list = list_str).to_string());
     }
 
     /// Clear the search history

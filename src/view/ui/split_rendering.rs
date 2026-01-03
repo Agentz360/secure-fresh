@@ -2432,11 +2432,19 @@ impl SplitRenderer {
                         },
                     );
 
-                    let is_selected = !is_cursor
+                    // For primary cursor in active split, terminal hardware cursor provides
+                    // visual indication, so we can still show selection background.
+                    // Only exclude secondary cursors from selection (they use REVERSED styling).
+                    // Bug #614: Previously excluded all cursor positions, causing first char
+                    // of selection to display with wrong background for bar/underline cursors.
+                    let is_primary_cursor = is_cursor && byte_pos == Some(primary_cursor_position);
+                    let exclude_from_selection = is_cursor && !(is_active && is_primary_cursor);
+
+                    let is_selected = !exclude_from_selection
                         && byte_pos.map_or(false, |bp| {
                             selection_ranges.iter().any(|range| range.contains(&bp))
                         })
-                        || (!is_cursor && is_in_block_selection);
+                        || (!exclude_from_selection && is_in_block_selection);
 
                     // Compute character style using helper function
                     // char_styles is indexed by character position, not visual column
@@ -3023,9 +3031,10 @@ impl SplitRenderer {
             state.buffer.len()
         );
 
-        if !selection
-            .cursor_positions
-            .contains(&selection.primary_cursor_position)
+        if !selection.cursor_positions.is_empty()
+            && !selection
+                .cursor_positions
+                .contains(&selection.primary_cursor_position)
         {
             tracing::warn!(
                 "Primary cursor position {} not found in cursor_positions list: {:?}",

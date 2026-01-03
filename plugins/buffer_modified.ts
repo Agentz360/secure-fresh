@@ -1,4 +1,6 @@
 /// <reference path="../types/fresh.d.ts" />
+const editor = getEditor();
+
 
 /**
  * Buffer Modified Plugin
@@ -145,7 +147,7 @@ globalThis.onBufferModifiedAfterFileOpen = function (args: {
 
   // Initialize tracking - file just loaded, no modifications yet
   initBufferState(bufferId);
-  editor.debug(`Buffer Modified: initialized for ${args.path}`);
+  editor.debug(editor.t("status.initialized", { path: args.path }));
 
   return true;
 };
@@ -180,7 +182,7 @@ globalThis.onBufferModifiedAfterSave = function (args: {
 
   // Clear all modified markers - buffer now matches disk
   clearModifiedState(bufferId);
-  editor.debug("Buffer Modified: cleared on save");
+  editor.debug(editor.t("status.cleared_on_save"));
 
   return true;
 };
@@ -276,4 +278,4 @@ if (initPath && initPath !== "") {
   initBufferState(initBufferId);
 }
 
-editor.debug("Buffer Modified plugin loaded");
+editor.debug(editor.t("status.loaded"));

@@ -1,5 +1,6 @@
 use super::*;
 use crate::services::plugins::hooks::HookArgs;
+use rust_i18n::t;
 impl Editor {
     /// Determine the current keybinding context based on UI state
     pub fn get_key_context(&self) -> crate::input::keybindings::KeyContext {
@@ -221,14 +222,14 @@ impl Editor {
                 // Check if buffer has a file path - if not, redirect to SaveAs
                 if self.active_state().buffer.file_path().is_none() {
                     self.start_prompt_with_initial_text(
-                        "Save as: ".to_string(),
+                        t!("file.save_as_prompt").to_string(),
                         PromptType::SaveFileAs,
                         String::new(),
                     );
                 } else if self.check_save_conflict().is_some() {
                     // Check if file was modified externally since we opened/saved it
                     self.start_prompt(
-                        "File changed on disk. (o)verwrite, (C)ancel? ".to_string(),
+                        t!("file.file_changed_prompt").to_string(),
                         PromptType::ConfirmSaveConflict,
                     );
                 } else {
@@ -250,21 +251,27 @@ impl Editor {
                     })
                     .unwrap_or_default();
                 self.start_prompt_with_initial_text(
-                    "Save as: ".to_string(),
+                    t!("file.save_as_prompt").to_string(),
                     PromptType::SaveFileAs,
                     current_path,
                 );
             }
             Action::Open => {
-                self.start_prompt("Open file: ".to_string(), PromptType::OpenFile);
+                self.start_prompt(t!("file.open_prompt").to_string(), PromptType::OpenFile);
                 self.prefill_open_file_prompt();
                 self.init_file_open_state();
             }
             Action::SwitchProject => {
-                self.start_prompt("Switch project: ".to_string(), PromptType::SwitchProject);
+                self.start_prompt(
+                    t!("file.switch_project_prompt").to_string(),
+                    PromptType::SwitchProject,
+                );
                 self.init_folder_open_state();
             }
-            Action::GotoLine => self.start_prompt("Go to line: ".to_string(), PromptType::GotoLine),
+            Action::GotoLine => self.start_prompt(
+                t!("file.goto_line_prompt").to_string(),
+                PromptType::GotoLine,
+            ),
             Action::New => {
                 self.new_buffer();
             }
@@ -273,14 +280,26 @@ impl Editor {
                 if self.active_state().buffer.is_modified() {
                     // Buffer has unsaved changes - prompt for confirmation
                     let name = self.get_buffer_display_name(buffer_id);
+                    let save_key = t!("prompt.key.save").to_string();
+                    let discard_key = t!("prompt.key.discard").to_string();
+                    let cancel_key = t!("prompt.key.cancel").to_string();
                     self.start_prompt(
-                        format!("'{}' modified. (s)ave, (d)iscard, (C)ancel? ", name),
+                        t!(
+                            "prompt.buffer_modified",
+                            name = name,
+                            save_key = save_key,
+                            discard_key = discard_key,
+                            cancel_key = cancel_key
+                        )
+                        .to_string(),
                         PromptType::ConfirmCloseBuffer { buffer_id },
                     );
                 } else if let Err(e) = self.close_buffer(buffer_id) {
-                    self.set_status_message(format!("Cannot close buffer: {}", e));
+                    self.set_status_message(
+                        t!("error.cannot_close_buffer", error = e.to_string()).to_string(),
+                    );
                 } else {
-                    self.set_status_message("Buffer closed".to_string());
+                    self.set_status_message(t!("buffer.closed").to_string());
                 }
             }
             Action::CloseTab => {
@@ -289,14 +308,23 @@ impl Editor {
             Action::Revert => {
                 // Check if buffer has unsaved changes - prompt for confirmation
                 if self.active_state().buffer.is_modified() {
+                    let revert_key = t!("prompt.key.revert").to_string();
+                    let cancel_key = t!("prompt.key.cancel").to_string();
                     self.start_prompt(
-                        "Buffer has unsaved changes. (r)evert, (C)ancel? ".to_string(),
+                        t!(
+                            "prompt.revert_confirm",
+                            revert_key = revert_key,
+                            cancel_key = cancel_key
+                        )
+                        .to_string(),
                         PromptType::ConfirmRevert,
                     );
                 } else {
                     // No local changes, just revert
                     if let Err(e) = self.revert_file() {
-                        self.set_status_message(format!("Failed to revert: {}", e));
+                        self.set_status_message(
+                            t!("error.failed_to_revert", error = e.to_string()).to_string(),
+                        );
                     }
                 }
             }
@@ -305,21 +333,23 @@ impl Editor {
             }
             Action::FormatBuffer => {
                 if let Err(e) = self.format_buffer() {
-                    self.set_status_message(format!("Format failed: {}", e));
+                    self.set_status_message(
+                        t!("error.format_failed", error = e.to_string()).to_string(),
+                    );
                 }
             }
             Action::Copy => self.copy_selection(),
             Action::CopyWithTheme(theme) => self.copy_selection_with_theme(&theme),
             Action::Cut => {
                 if self.is_editing_disabled() {
-                    self.set_status_message("Editing disabled in this buffer".to_string());
+                    self.set_status_message(t!("buffer.editing_disabled").to_string());
                     return Ok(());
                 }
                 self.cut_selection()
             }
             Action::Paste => {
                 if self.is_editing_disabled() {
-                    self.set_status_message("Editing disabled in this buffer".to_string());
+                    self.set_status_message(t!("buffer.editing_disabled").to_string());
                     return Ok(());
                 }
                 self.paste()
@@ -367,7 +397,7 @@ impl Editor {
                     &self.active_custom_contexts,
                 );
                 self.start_prompt_with_suggestions(
-                    "Command: ".to_string(),
+                    t!("file.command_prompt").to_string(),
                     PromptType::Command,
                     suggestions,
                 );
@@ -381,11 +411,11 @@ impl Editor {
                 }
 
                 let state = if self.config.editor.line_wrap {
-                    "enabled"
+                    t!("view.state_enabled").to_string()
                 } else {
-                    "disabled"
+                    t!("view.state_disabled").to_string()
                 };
-                self.set_status_message(format!("Line wrap {}", state));
+                self.set_status_message(t!("view.line_wrap_state", state = state).to_string());
             }
             Action::ToggleComposeMode => {
                 self.handle_toggle_compose_mode();
@@ -470,6 +500,9 @@ impl Editor {
             Action::SelectCursorStyle => {
                 self.start_select_cursor_style_prompt();
             }
+            Action::SelectLocale => {
+                self.start_select_locale_prompt();
+            }
             Action::Search => {
                 // If already in a search-related prompt, Ctrl+F acts like Enter (confirm search)
                 let is_search_prompt = self.prompt.as_ref().is_some_and(|p| {
@@ -484,12 +517,20 @@ impl Editor {
                 if is_search_prompt {
                     self.confirm_prompt();
                 } else {
-                    self.start_search_prompt("Search: ".to_string(), PromptType::Search, false);
+                    self.start_search_prompt(
+                        t!("file.search_prompt").to_string(),
+                        PromptType::Search,
+                        false,
+                    );
                 }
             }
             Action::Replace => {
                 // Use same flow as query-replace, just with confirm_each defaulting to false
-                self.start_search_prompt("Replace: ".to_string(), PromptType::ReplaceSearch, false);
+                self.start_search_prompt(
+                    t!("file.replace_prompt").to_string(),
+                    PromptType::ReplaceSearch,
+                    false,
+                );
             }
             Action::QueryReplace => {
                 // Enable confirm mode by default for query-replace
@@ -501,7 +542,11 @@ impl Editor {
                 );
             }
             Action::FindInSelection => {
-                self.start_search_prompt("Search: ".to_string(), PromptType::Search, true);
+                self.start_search_prompt(
+                    t!("file.search_prompt").to_string(),
+                    PromptType::Search,
+                    true,
+                );
             }
             Action::FindNext => {
                 self.find_next();
@@ -534,7 +579,7 @@ impl Editor {
                         self.active_buffer(),
                         self.terminal_width,
                     );
-                    self.set_status_message("Scrolled tabs left".to_string());
+                    self.set_status_message(t!("status.scrolled_tabs_left").to_string());
                 }
             }
             Action::ScrollTabsRight => {
@@ -547,7 +592,7 @@ impl Editor {
                         self.active_buffer(),
                         self.terminal_width,
                     );
-                    self.set_status_message("Scrolled tabs right".to_string());
+                    self.set_status_message(t!("status.scrolled_tabs_right").to_string());
                 }
             }
             Action::NavigateBack => self.navigate_back(),
@@ -687,9 +732,13 @@ impl Editor {
                     self.keybindings =
                         crate::input::keybindings::KeybindingResolver::new(&self.config);
 
-                    self.set_status_message(format!("Switched to '{}' keybindings", map_name));
+                    self.set_status_message(
+                        t!("view.keybindings_switched", map = map_name).to_string(),
+                    );
                 } else {
-                    self.set_status_message(format!("Unknown keybinding map: '{}'", map_name));
+                    self.set_status_message(
+                        t!("view.keybindings_unknown", map = map_name).to_string(),
+                    );
                 }
             }
 
@@ -727,7 +776,9 @@ impl Editor {
                 } else {
                     "disabled"
                 };
-                self.set_status_message(format!("Case-sensitive search {}", state));
+                self.set_status_message(
+                    t!("search.case_sensitive_state", state = state).to_string(),
+                );
                 // Update incremental highlights if in search prompt, otherwise re-run completed search
                 // Check prompt FIRST since we want to use current prompt input, not stale search_state
                 if let Some(prompt) = &self.prompt {
@@ -752,7 +803,7 @@ impl Editor {
                 } else {
                     "disabled"
                 };
-                self.set_status_message(format!("Whole word search {}", state));
+                self.set_status_message(t!("search.whole_word_state", state = state).to_string());
                 // Update incremental highlights if in search prompt, otherwise re-run completed search
                 // Check prompt FIRST since we want to use current prompt input, not stale search_state
                 if let Some(prompt) = &self.prompt {
@@ -777,7 +828,7 @@ impl Editor {
                 } else {
                     "disabled"
                 };
-                self.set_status_message(format!("Regex search {}", state));
+                self.set_status_message(t!("search.regex_state", state = state).to_string());
                 // Update incremental highlights if in search prompt, otherwise re-run completed search
                 // Check prompt FIRST since we want to use current prompt input, not stale search_state
                 if let Some(prompt) = &self.prompt {
@@ -802,7 +853,7 @@ impl Editor {
                 } else {
                     "disabled"
                 };
-                self.set_status_message(format!("Confirm each replacement {}", state));
+                self.set_status_message(t!("search.confirm_each_state", state = state).to_string());
             }
             Action::FileBrowserToggleHidden => {
                 // Toggle hidden files in file browser (handled via file_open_toggle_hidden)
@@ -839,7 +890,7 @@ impl Editor {
                 if let Some(key) = self.last_macro_register {
                     self.play_macro(key);
                 } else {
-                    self.set_status_message("No macro has been recorded yet".to_string());
+                    self.set_status_message(t!("status.no_macro_recorded").to_string());
                 }
             }
             Action::PromptSetBookmark => {
@@ -854,7 +905,7 @@ impl Editor {
             Action::None => {}
             Action::DeleteBackward => {
                 if self.is_editing_disabled() {
-                    self.set_status_message("Editing disabled in this buffer".to_string());
+                    self.set_status_message(t!("buffer.editing_disabled").to_string());
                     return Ok(());
                 }
                 // Normal backspace handling
@@ -886,12 +937,14 @@ impl Editor {
                                 .push((action_name.clone(), receiver));
                         }
                         Err(e) => {
-                            self.set_status_message(format!("Plugin error: {}", e));
+                            self.set_status_message(
+                                t!("view.plugin_error", error = e.to_string()).to_string(),
+                            );
                             tracing::error!("Plugin action error: {}", e);
                         }
                     }
                 } else {
-                    self.set_status_message("Plugin manager not available".to_string());
+                    self.set_status_message(t!("status.plugin_manager_unavailable").to_string());
                 }
                 #[cfg(not(feature = "plugins"))]
                 {
@@ -912,7 +965,7 @@ impl Editor {
                 if self.is_terminal_buffer(self.active_buffer()) {
                     self.terminal_mode = true;
                     self.key_context = KeyContext::Terminal;
-                    self.set_status_message("Terminal mode enabled".to_string());
+                    self.set_status_message(t!("status.terminal_mode_enabled").to_string());
                 }
             }
             Action::TerminalEscape => {
@@ -920,7 +973,7 @@ impl Editor {
                 if self.terminal_mode {
                     self.terminal_mode = false;
                     self.key_context = KeyContext::Normal;
-                    self.set_status_message("Terminal mode disabled".to_string());
+                    self.set_status_message(t!("status.terminal_mode_disabled").to_string());
                 }
             }
             Action::ToggleKeyboardCapture => {
@@ -1041,7 +1094,7 @@ impl Editor {
                     let text = prompt.selected_text().unwrap_or_else(|| prompt.get_text());
                     if !text.is_empty() {
                         self.clipboard.copy(text);
-                        self.set_status_message("Copied".to_string());
+                        self.set_status_message(t!("clipboard.copied").to_string());
                     }
                 }
             }
@@ -1059,7 +1112,7 @@ impl Editor {
                         prompt.clear();
                     }
                 }
-                self.set_status_message("Cut".to_string());
+                self.set_status_message(t!("clipboard.cut").to_string());
                 self.update_prompt_suggestions();
             }
             Action::PromptPaste => {
@@ -1896,7 +1949,9 @@ impl Editor {
             // Persist to config file
             self.save_theme_to_config();
 
-            self.set_status_message(format!("Theme changed to '{}'", self.theme.name));
+            self.set_status_message(
+                t!("view.theme_changed", theme = self.theme.name.clone()).to_string(),
+            );
         }
     }
 
@@ -1999,9 +2054,9 @@ impl Editor {
             // Persist to config file
             self.save_keybinding_map_to_config();
 
-            self.set_status_message(format!("Switched to '{}' keybindings", map_name));
+            self.set_status_message(t!("view.keybindings_switched", map = map_name).to_string());
         } else {
-            self.set_status_message(format!("Unknown keybinding map: '{}'", map_name));
+            self.set_status_message(t!("view.keybindings_unknown", map = map_name).to_string());
         }
     }
 
@@ -2091,7 +2146,9 @@ impl Editor {
                 .map(|(_, desc)| *desc)
                 .unwrap_or(style_name);
 
-            self.set_status_message(format!("Cursor style changed to {}", description));
+            self.set_status_message(
+                t!("view.cursor_style_changed", style = description).to_string(),
+            );
         }
     }
 
@@ -2107,6 +2164,117 @@ impl Editor {
         let config_path = self.dir_context.config_path();
         if let Err(e) = self.config.save_to_file(&config_path) {
             tracing::warn!("Failed to save cursor style to config: {}", e);
+        }
+    }
+
+    /// Start the locale selection prompt with available locales
+    fn start_select_locale_prompt(&mut self) {
+        let available_locales = crate::i18n::available_locales();
+        let current_locale = crate::i18n::current_locale();
+
+        // Find the index of the current locale
+        let current_index = available_locales
+            .iter()
+            .position(|name| *name == current_locale)
+            .unwrap_or(0);
+
+        let suggestions: Vec<crate::input::commands::Suggestion> = available_locales
+            .iter()
+            .map(|locale_name| {
+                let is_current = *locale_name == current_locale;
+                let description = if let Some((english_name, native_name)) =
+                    crate::i18n::locale_display_name(locale_name)
+                {
+                    if english_name == native_name {
+                        // Same name (e.g., English/English)
+                        if is_current {
+                            format!("{} (current)", english_name)
+                        } else {
+                            english_name.to_string()
+                        }
+                    } else {
+                        // Different names (e.g., German/Deutsch)
+                        if is_current {
+                            format!("{} / {} (current)", english_name, native_name)
+                        } else {
+                            format!("{} / {}", english_name, native_name)
+                        }
+                    }
+                } else {
+                    // Unknown locale
+                    if is_current {
+                        "(current)".to_string()
+                    } else {
+                        String::new()
+                    }
+                };
+                crate::input::commands::Suggestion {
+                    text: locale_name.to_string(),
+                    description: if description.is_empty() {
+                        None
+                    } else {
+                        Some(description)
+                    },
+                    value: Some(locale_name.to_string()),
+                    disabled: false,
+                    keybinding: None,
+                    source: None,
+                }
+            })
+            .collect();
+
+        self.prompt = Some(crate::view::prompt::Prompt::with_suggestions(
+            t!("locale.select_prompt").to_string(),
+            PromptType::SelectLocale,
+            suggestions,
+        ));
+
+        if let Some(prompt) = self.prompt.as_mut() {
+            if !prompt.suggestions.is_empty() {
+                prompt.selected_suggestion = Some(current_index);
+                // Start with empty input to show all options initially
+                prompt.input = String::new();
+                prompt.cursor_pos = 0;
+            }
+        }
+    }
+
+    /// Apply a locale and persist it to config
+    pub(super) fn apply_locale(&mut self, locale_name: &str) {
+        if !locale_name.is_empty() {
+            // Update the locale at runtime
+            crate::i18n::set_locale(locale_name);
+
+            // Update the config in memory
+            self.config.locale = crate::config::LocaleName(Some(locale_name.to_string()));
+
+            // Regenerate menus with the new locale
+            self.menus = crate::config::MenuConfig::translated();
+
+            // Refresh command palette commands with new locale
+            if let Ok(mut registry) = self.command_registry.write() {
+                registry.refresh_builtin_commands();
+            }
+
+            // Persist to config file
+            self.save_locale_to_config();
+
+            self.set_status_message(t!("locale.changed", locale_name = locale_name).to_string());
+        }
+    }
+
+    /// Save the current locale setting to the user's config file
+    fn save_locale_to_config(&mut self) {
+        // Create the directory if it doesn't exist
+        if let Err(e) = std::fs::create_dir_all(&self.dir_context.config_dir) {
+            tracing::warn!("Failed to create config directory: {}", e);
+            return;
+        }
+
+        // Save the config
+        let config_path = self.dir_context.config_path();
+        if let Err(e) = self.config.save_to_file(&config_path) {
+            tracing::warn!("Failed to save locale to config: {}", e);
         }
     }
 
@@ -2138,10 +2306,10 @@ impl Editor {
 
                 self.set_active_buffer(prev_id);
             } else if !is_valid {
-                self.set_status_message("Previous tab is no longer open".to_string());
+                self.set_status_message(t!("status.previous_tab_closed").to_string());
             }
         } else {
-            self.set_status_message("No previous tab".to_string());
+            self.set_status_message(t!("status.no_previous_tab").to_string());
         }
     }
 
@@ -2155,7 +2323,7 @@ impl Editor {
         };
 
         if open_buffers.is_empty() {
-            self.set_status_message("No tabs open in current split".to_string());
+            self.set_status_message(t!("status.no_tabs_in_split").to_string());
             return;
         }
 
@@ -2221,7 +2389,7 @@ impl Editor {
             .is_some_and(|vs| vs.open_buffers.contains(&buffer_id));
 
         if !is_valid {
-            self.set_status_message("Tab not found in current split".to_string());
+            self.set_status_message(t!("status.tab_not_found").to_string());
             return;
         }
 
@@ -2276,7 +2444,7 @@ impl Editor {
     fn handle_insert_char_editor(&mut self, c: char) -> std::io::Result<()> {
         // Check if editing is disabled (show_cursors = false)
         if self.is_editing_disabled() {
-            self.set_status_message("Editing disabled in this buffer".to_string());
+            self.set_status_message(t!("buffer.editing_disabled").to_string());
             return Ok(());
         }
 
@@ -2331,7 +2499,7 @@ impl Editor {
         );
 
         if is_editing_action && self.is_editing_disabled() {
-            self.set_status_message("Editing disabled in this buffer".to_string());
+            self.set_status_message(t!("buffer.editing_disabled").to_string());
             return Ok(());
         }
 

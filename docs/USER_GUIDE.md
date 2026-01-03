@@ -478,6 +478,125 @@ Follow these steps to map **Shift + Up** and **Shift + Down** to specific escape
 | **Shift + Up** | Cursor Up | Shift | Send Text | `\033[1;2A` |
 | **Shift + Down** | Cursor Down | Shift | Send Text | `\033[1;2B` |
 
+### macOS Terminal Tips
+
+Fresh works best on macOS when you understand the interaction between the operating system, your terminal emulator, and the editor. This section covers common issues and recommended configurations.
+
+#### Using the macOS Keymap
+
+Fresh includes a dedicated macOS keymap that addresses terminal-specific challenges. To use it, add to your `~/.config/fresh/config.json`:
+
+```json
+{
+  "keymap": "macos"
+}
+```
+
+The macOS keymap is designed around these constraints:
+
+**Ctrl+Shift combinations don't work.** Most macOS terminals cannot reliably send Ctrl+Shift sequences. For example, Ctrl+Shift+Z produces a caron character (ˇ) instead of being recognized as a key chord. The macOS keymap uses Ctrl+Alt as an alternative modifier.
+
+**Some Ctrl keys are ASCII control characters.** In terminal protocols, Ctrl+J is Line Feed (newline), Ctrl+M is Carriage Return (Enter), and Ctrl+I is Tab. Binding actions to these keys causes erratic behavior. The macOS keymap avoids these collisions.
+
+**International keyboards use Alt for essential characters.** On German, French, and other ISO layouts, Alt (Option) combined with letters produces characters like @, [, ], {, and }. The macOS keymap avoids Alt+letter combinations that would block character input.
+
+**Unix readline conventions are preserved.** Terminal users expect Ctrl+Y to "yank" (paste from the kill ring), Ctrl+K to kill to end of line, and Ctrl+U to kill to start of line. The macOS keymap respects these conventions rather than overriding them with GUI editor shortcuts.
+
+Use the **Command Palette** (Ctrl+P) or **Show Keybindings** (Ctrl+H) to discover the actual key bindings, or view the keymap file directly at `keymaps/macos.json`.
+
+#### Recommended Terminal Emulators
+
+For the best experience with Fresh on macOS, use a terminal that supports the **Kitty Keyboard Protocol (KKP)** or **CSI u** for unambiguous key reporting:
+
+| Terminal | KKP Support | Notes |
+| :--- | :--- | :--- |
+| **Kitty** | Full | Best keyboard handling |
+| **Ghostty** | Full | Modern, fast |
+| **WezTerm** | Full | Highly configurable |
+| **Alacritty** | Full | GPU-accelerated |
+| **iTerm2** | CSI u | Enable in Preferences → Profiles → Keys → "Report modifiers using CSI u" |
+| **Terminal.app** | None | Requires manual key mappings (see above) |
+
+#### Home and End Keys
+
+On macOS, the Home and End keys scroll the terminal buffer by default instead of moving the cursor. Fresh's macOS keymap works around this by binding:
+
+- **Ctrl+A** → Move to line start
+- **Ctrl+E** → Move to line end
+- **Ctrl+Shift+A** → Select to line start
+- **Ctrl+Shift+E** → Select to line end
+
+If you prefer using the actual Home/End keys, configure your terminal to send the proper escape sequences:
+
+**iTerm2:**
+1. Preferences → Profiles → Keys → Key Mappings
+2. Add: Home → Send Escape Sequence → `[H`
+3. Add: End → Send Escape Sequence → `[F`
+
+#### Mission Control Conflicts
+
+macOS uses **Ctrl+Arrow** keys for Mission Control desktop switching by default, which prevents these shortcuts from reaching terminal applications.
+
+To use Ctrl+Arrow in Fresh for word movement or multi-cursor:
+
+1. Open **System Settings** → **Keyboard** → **Keyboard Shortcuts** → **Mission Control**
+2. Disable or rebind:
+   - "Move left a space" (Ctrl+Left)
+   - "Move right a space" (Ctrl+Right)
+   - "Mission Control" (Ctrl+Up)
+   - "Application windows" (Ctrl+Down)
+
+Alternatively, Fresh's macOS keymap provides **Alt+Arrow** as the primary word movement binding, which doesn't conflict with Mission Control.
+
+#### Option Key as Meta
+
+For Alt-based shortcuts to work, your terminal must send the Option key as an escape sequence rather than as a character modifier:
+
+**iTerm2:**
+- Preferences → Profiles → Keys → General
+- Set "Left Option Key" to "Esc+"
+- Keep "Right Option Key" as "Normal" if you need to type special characters
+
+**Terminal.app:**
+- Preferences → Profiles → Keyboard
+- Check "Use Option as Meta Key"
+
+**Note for international keyboards:** If you use Option to type special characters (like @ on German layouts), only set the *Left* Option as Meta and keep the *Right* Option for character input.
+
+#### International Keyboard Layouts
+
+The macOS keymap disables Alt+0-9 bindings because these key combinations are used to type essential characters on many international keyboard layouts:
+
+- **German**: Alt+L = @, Alt+5 = [, Alt+6 = ]
+- **French**: Alt+( = {, Alt+) = }
+- **Spanish**: Alt+2 = @, Alt+3 = #
+
+If you find that certain Alt combinations insert characters instead of triggering editor commands, ensure your terminal's Option key is configured as Meta (see above).
+
+## Internationalization (i18n)
+
+Fresh supports multiple languages for its user interface. The editor automatically detects your system locale, but you can also set your preferred language manually.
+
+### Supported Languages
+
+See the [`locales/`](../locales/) directory for the full list of supported languages. Each `.json` file represents a supported locale (e.g., `en.json` for English, `es.json` for Spanish, `ja.json` for Japanese).
+
+### Setting Your Language
+
+You can configure your preferred language in `~/.config/fresh/config.json`:
+
+```json
+{
+  "locale": "es"
+}
+```
+
+Or use the Settings UI (`Ctrl+,`) and navigate to the **General** section to select your language.
+
+### Plugin Translations
+
+Plugins can provide their own translations. If a plugin supports i18n, it will automatically use your configured locale. Plugin translations are stored in `.i18n.json` files alongside the plugin.
+
 ## Troubleshooting
 
 ### Terminal Color Support
