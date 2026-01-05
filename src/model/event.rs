@@ -340,63 +340,63 @@ pub enum MarginContentData {
 impl Event {
     /// Returns the inverse event for undo functionality
     /// Uses UNDO_SENTINEL cursor_id to avoid moving the cursor during undo
-    pub fn inverse(&self) -> Option<Event> {
+    pub fn inverse(&self) -> Option<Self> {
         match self {
-            Event::Insert { position, text, .. } => {
+            Self::Insert { position, text, .. } => {
                 let range = *position..(position + text.len());
-                Some(Event::Delete {
+                Some(Self::Delete {
                     range,
                     deleted_text: text.clone(),
                     cursor_id: CursorId::UNDO_SENTINEL,
                 })
             }
-            Event::Delete {
+            Self::Delete {
                 range,
                 deleted_text,
                 ..
-            } => Some(Event::Insert {
+            } => Some(Self::Insert {
                 position: range.start,
                 text: deleted_text.clone(),
                 cursor_id: CursorId::UNDO_SENTINEL,
             }),
-            Event::Batch {
+            Self::Batch {
                 events,
                 description,
             } => {
                 // Invert all events in the batch in reverse order
-                let inverted: Option<Vec<Event>> =
+                let inverted: Option<Vec<Self>> =
                     events.iter().rev().map(|e| e.inverse()).collect();
 
-                inverted.map(|inverted_events| Event::Batch {
+                inverted.map(|inverted_events| Self::Batch {
                     events: inverted_events,
                     description: format!("Undo: {}", description),
                 })
             }
-            Event::AddCursor {
+            Self::AddCursor {
                 cursor_id,
                 position,
                 anchor,
             } => {
                 // To undo adding a cursor, we remove it (store its state for redo)
-                Some(Event::RemoveCursor {
+                Some(Self::RemoveCursor {
                     cursor_id: *cursor_id,
                     position: *position,
                     anchor: *anchor,
                 })
             }
-            Event::RemoveCursor {
+            Self::RemoveCursor {
                 cursor_id,
                 position,
                 anchor,
             } => {
                 // To undo removing a cursor, we add it back
-                Some(Event::AddCursor {
+                Some(Self::AddCursor {
                     cursor_id: *cursor_id,
                     position: *position,
                     anchor: *anchor,
                 })
             }
-            Event::MoveCursor {
+            Self::MoveCursor {
                 cursor_id,
                 old_position,
                 new_position,
@@ -406,7 +406,7 @@ impl Event {
                 new_sticky_column,
             } => {
                 // Invert by swapping old and new positions
-                Some(Event::MoveCursor {
+                Some(Self::MoveCursor {
                     cursor_id: *cursor_id,
                     old_position: *new_position,
                     new_position: *old_position,
@@ -416,30 +416,30 @@ impl Event {
                     new_sticky_column: *old_sticky_column,
                 })
             }
-            Event::AddOverlay { .. } => {
+            Self::AddOverlay { .. } => {
                 // Overlays are ephemeral decorations, not undoable
                 None
             }
-            Event::RemoveOverlay { .. } => {
+            Self::RemoveOverlay { .. } => {
                 // Overlays are ephemeral decorations, not undoable
                 None
             }
-            Event::ClearNamespace { .. } => {
+            Self::ClearNamespace { .. } => {
                 // Overlays are ephemeral decorations, not undoable
                 None
             }
-            Event::Scroll { line_offset } => Some(Event::Scroll {
+            Self::Scroll { line_offset } => Some(Self::Scroll {
                 line_offset: -line_offset,
             }),
-            Event::SetViewport { top_line: _ } => {
+            Self::SetViewport { top_line: _ } => {
                 // Can't invert without knowing old top_line
                 None
             }
-            Event::ChangeMode { mode: _ } => {
+            Self::ChangeMode { mode: _ } => {
                 // Can't invert without knowing old mode
                 None
             }
-            Event::BulkEdit {
+            Self::BulkEdit {
                 old_tree,
                 new_tree,
                 old_cursors,
@@ -448,7 +448,7 @@ impl Event {
             } => {
                 // Inverse swaps both trees and cursor states
                 // For undo: old becomes new, new becomes old
-                Some(Event::BulkEdit {
+                Some(Self::BulkEdit {
                     old_tree: new_tree.clone(),
                     new_tree: old_tree.clone(),
                     old_cursors: new_cursors.clone(),
@@ -464,8 +464,8 @@ impl Event {
     /// Returns true if this event modifies the buffer content
     pub fn modifies_buffer(&self) -> bool {
         match self {
-            Event::Insert { .. } | Event::Delete { .. } | Event::BulkEdit { .. } => true,
-            Event::Batch { events, .. } => events.iter().any(|e| e.modifies_buffer()),
+            Self::Insert { .. } | Self::Delete { .. } | Self::BulkEdit { .. } => true,
+            Self::Batch { events, .. } => events.iter().any(|e| e.modifies_buffer()),
             _ => false,
         }
     }
@@ -485,13 +485,13 @@ impl Event {
     pub fn is_write_action(&self) -> bool {
         match self {
             // Buffer modifications are write actions
-            Event::Insert { .. } | Event::Delete { .. } | Event::BulkEdit { .. } => true,
+            Self::Insert { .. } | Self::Delete { .. } | Self::BulkEdit { .. } => true,
 
             // Adding/removing cursors are write actions (structural changes)
-            Event::AddCursor { .. } | Event::RemoveCursor { .. } => true,
+            Self::AddCursor { .. } | Self::RemoveCursor { .. } => true,
 
             // Batches are write actions if they contain any write actions
-            Event::Batch { events, .. } => events.iter().any(|e| e.is_write_action()),
+            Self::Batch { events, .. } => events.iter().any(|e| e.is_write_action()),
 
             // All other events are readonly (movement, scrolling, UI, etc.)
             _ => false,
@@ -501,11 +501,11 @@ impl Event {
     /// Returns the cursor ID associated with this event, if any
     pub fn cursor_id(&self) -> Option<CursorId> {
         match self {
-            Event::Insert { cursor_id, .. }
-            | Event::Delete { cursor_id, .. }
-            | Event::MoveCursor { cursor_id, .. }
-            | Event::AddCursor { cursor_id, .. }
-            | Event::RemoveCursor { cursor_id, .. } => Some(*cursor_id),
+            Self::Insert { cursor_id, .. }
+            | Self::Delete { cursor_id, .. }
+            | Self::MoveCursor { cursor_id, .. }
+            | Self::AddCursor { cursor_id, .. }
+            | Self::RemoveCursor { cursor_id, .. } => Some(*cursor_id),
             _ => None,
         }
     }

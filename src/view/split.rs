@@ -46,9 +46,9 @@ pub enum SplitNode {
         /// Direction of the split
         direction: SplitDirection,
         /// First child (top or left)
-        first: Box<SplitNode>,
+        first: Box<Self>,
         /// Second child (bottom or right)
-        second: Box<SplitNode>,
+        second: Box<Self>,
         /// Size ratio (0.0 to 1.0) - how much space the first child gets
         /// 0.5 = equal split, 0.3 = first gets 30%, etc.
         ratio: f32,
@@ -109,6 +109,12 @@ pub struct SplitViewState {
     /// Sync group ID for synchronized scrolling
     /// Splits with the same sync_group will scroll together
     pub sync_group: Option<u32>,
+
+    /// When set, this split renders a composite view (e.g., side-by-side diff).
+    /// The split's buffer_id is the focused source buffer, but rendering uses
+    /// the composite layout. This makes the source buffer the "active buffer"
+    /// so normal keybindings work directly.
+    pub composite_view: Option<BufferId>,
 }
 
 impl SplitViewState {
@@ -128,6 +134,7 @@ impl SplitViewState {
             layout_dirty: true, // Start dirty so first operation builds layout
             previous_buffer: None,
             sync_group: None,
+            composite_view: None,
         }
     }
 
@@ -147,6 +154,7 @@ impl SplitViewState {
             layout_dirty: true, // Start dirty so first operation builds layout
             previous_buffer: None,
             sync_group: None,
+            composite_view: None,
         }
     }
 
@@ -205,7 +213,7 @@ impl SplitViewState {
 impl SplitNode {
     /// Create a new leaf node
     pub fn leaf(buffer_id: BufferId, split_id: SplitId) -> Self {
-        SplitNode::Leaf {
+        Self::Leaf {
             buffer_id,
             split_id,
         }
@@ -231,42 +239,41 @@ impl SplitNode {
     /// Get the split ID for this node
     pub fn id(&self) -> SplitId {
         match self {
-            SplitNode::Leaf { split_id, .. } => *split_id,
-            SplitNode::Split { split_id, .. } => *split_id,
+            Self::Leaf { split_id, .. } | Self::Split { split_id, .. } => *split_id,
         }
     }
 
     /// Get the buffer ID if this is a leaf node
     pub fn buffer_id(&self) -> Option<BufferId> {
         match self {
-            SplitNode::Leaf { buffer_id, .. } => Some(*buffer_id),
-            SplitNode::Split { .. } => None,
+            Self::Leaf { buffer_id, .. } => Some(*buffer_id),
+            Self::Split { .. } => None,
         }
     }
 
     /// Find a split by ID (returns mutable reference)
-    pub fn find_mut(&mut self, target_id: SplitId) -> Option<&mut SplitNode> {
+    pub fn find_mut(&mut self, target_id: SplitId) -> Option<&mut Self> {
         if self.id() == target_id {
             return Some(self);
         }
 
         match self {
-            SplitNode::Leaf { .. } => None,
-            SplitNode::Split { first, second, .. } => first
+            Self::Leaf { .. } => None,
+            Self::Split { first, second, .. } => first
                 .find_mut(target_id)
                 .or_else(|| second.find_mut(target_id)),
         }
     }
 
     /// Find a split by ID (returns immutable reference)
-    pub fn find(&self, target_id: SplitId) -> Option<&SplitNode> {
+    pub fn find(&self, target_id: SplitId) -> Option<&Self> {
         if self.id() == target_id {
             return Some(self);
         }
 
         match self {
-            SplitNode::Leaf { .. } => None,
-            SplitNode::Split { first, second, .. } => {
+            Self::Leaf { .. } => None,
+            Self::Split { first, second, .. } => {
                 first.find(target_id).or_else(|| second.find(target_id))
             }
         }
@@ -275,13 +282,13 @@ impl SplitNode {
     /// Get all leaf nodes (buffer views) with their rectangles
     pub fn get_leaves_with_rects(&self, rect: Rect) -> Vec<(SplitId, BufferId, Rect)> {
         match self {
-            SplitNode::Leaf {
+            Self::Leaf {
                 buffer_id,
                 split_id,
             } => {
                 vec![(*split_id, *buffer_id, rect)]
             }
-            SplitNode::Split {
+            Self::Split {
                 direction,
                 first,
                 second,
@@ -312,8 +319,8 @@ impl SplitNode {
         rect: Rect,
     ) -> Vec<(SplitId, SplitDirection, u16, u16, u16)> {
         match self {
-            SplitNode::Leaf { .. } => vec![],
-            SplitNode::Split {
+            Self::Leaf { .. } => vec![],
+            Self::Split {
                 direction,
                 first,
                 second,
@@ -361,8 +368,8 @@ impl SplitNode {
     pub fn all_split_ids(&self) -> Vec<SplitId> {
         let mut ids = vec![self.id()];
         match self {
-            SplitNode::Leaf { .. } => ids,
-            SplitNode::Split { first, second, .. } => {
+            Self::Leaf { .. } => ids,
+            Self::Split { first, second, .. } => {
                 ids.extend(first.all_split_ids());
                 ids.extend(second.all_split_ids());
                 ids
@@ -373,8 +380,8 @@ impl SplitNode {
     /// Collect only leaf split IDs (visible buffer splits, not container nodes)
     pub fn leaf_split_ids(&self) -> Vec<SplitId> {
         match self {
-            SplitNode::Leaf { split_id, .. } => vec![*split_id],
-            SplitNode::Split { first, second, .. } => {
+            Self::Leaf { split_id, .. } => vec![*split_id],
+            Self::Split { first, second, .. } => {
                 let mut ids = first.leaf_split_ids();
                 ids.extend(second.leaf_split_ids());
                 ids
@@ -385,8 +392,8 @@ impl SplitNode {
     /// Count the number of leaf nodes (visible buffers)
     pub fn count_leaves(&self) -> usize {
         match self {
-            SplitNode::Leaf { .. } => 1,
-            SplitNode::Split { first, second, .. } => first.count_leaves() + second.count_leaves(),
+            Self::Leaf { .. } => 1,
+            Self::Split { first, second, .. } => first.count_leaves() + second.count_leaves(),
         }
     }
 }
@@ -799,11 +806,7 @@ impl SplitManager {
     pub fn prev_split(&mut self) {
         let leaf_ids = self.root.leaf_split_ids();
         if let Some(pos) = leaf_ids.iter().position(|id| *id == self.active_split) {
-            let prev_pos = if pos == 0 {
-                leaf_ids.len() - 1
-            } else {
-                pos - 1
-            };
+            let prev_pos = if pos == 0 { leaf_ids.len() } else { pos } - 1;
             self.active_split = leaf_ids[prev_pos];
         }
     }

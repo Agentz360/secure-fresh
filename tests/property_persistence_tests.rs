@@ -46,7 +46,7 @@ impl BufferOp {
         let total = buffer.total_bytes();
 
         match self {
-            BufferOp::Insert {
+            Self::Insert {
                 offset_percent,
                 content,
             } => {
@@ -59,7 +59,7 @@ impl BufferOp {
                     buffer.insert_bytes(offset.min(total), content.clone());
                 }
             }
-            BufferOp::Delete {
+            Self::Delete {
                 offset_percent,
                 len_percent,
             } => {
@@ -78,23 +78,23 @@ impl BufferOp {
                     }
                 }
             }
-            BufferOp::InsertAtStart { content } => {
+            Self::InsertAtStart { content } => {
                 if !content.is_empty() {
                     buffer.insert_bytes(0, content.clone());
                 }
             }
-            BufferOp::InsertAtEnd { content } => {
+            Self::InsertAtEnd { content } => {
                 if !content.is_empty() {
                     buffer.insert_bytes(total, content.clone());
                 }
             }
-            BufferOp::DeleteFromStart { len_percent } => {
+            Self::DeleteFromStart { len_percent } => {
                 if total > 0 {
                     let len = ((total * (*len_percent as usize)) / 255).max(1).min(total);
                     buffer.delete_bytes(0, len);
                 }
             }
-            BufferOp::DeleteFromEnd { len_percent } => {
+            Self::DeleteFromEnd { len_percent } => {
                 if total > 0 {
                     let len = ((total * (*len_percent as usize)) / 255).max(1).min(total);
                     buffer.delete_bytes(total - len, len);
@@ -108,7 +108,7 @@ impl BufferOp {
         let total = shadow.len();
 
         match self {
-            BufferOp::Insert {
+            Self::Insert {
                 offset_percent,
                 content,
             } => {
@@ -122,7 +122,7 @@ impl BufferOp {
                     shadow.splice(offset..offset, content.iter().cloned());
                 }
             }
-            BufferOp::Delete {
+            Self::Delete {
                 offset_percent,
                 len_percent,
             } => {
@@ -141,23 +141,23 @@ impl BufferOp {
                     }
                 }
             }
-            BufferOp::InsertAtStart { content } => {
+            Self::InsertAtStart { content } => {
                 if !content.is_empty() {
                     shadow.splice(0..0, content.iter().cloned());
                 }
             }
-            BufferOp::InsertAtEnd { content } => {
+            Self::InsertAtEnd { content } => {
                 if !content.is_empty() {
                     shadow.extend(content.iter().cloned());
                 }
             }
-            BufferOp::DeleteFromStart { len_percent } => {
+            Self::DeleteFromStart { len_percent } => {
                 if total > 0 {
                     let len = ((total * (*len_percent as usize)) / 255).max(1).min(total);
                     shadow.drain(0..len);
                 }
             }
-            BufferOp::DeleteFromEnd { len_percent } => {
+            Self::DeleteFromEnd { len_percent } => {
                 if total > 0 {
                     let len = ((total * (*len_percent as usize)) / 255).max(1).min(total);
                     shadow.drain(total - len..total);

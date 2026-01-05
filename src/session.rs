@@ -96,8 +96,8 @@ pub enum SerializedSplitNode {
     },
     Split {
         direction: SerializedSplitDirection,
-        first: Box<SerializedSplitNode>,
-        second: Box<SerializedSplitNode>,
+        first: Box<Self>,
+        second: Box<Self>,
         ratio: f32,
         split_id: usize,
     },
@@ -544,9 +544,9 @@ pub enum SessionError {
 impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            SessionError::Io(e) => write!(f, "IO error: {}", e),
-            SessionError::Json(e) => write!(f, "JSON error: {}", e),
-            SessionError::WorkdirMismatch { expected, found } => {
+            Self::Io(e) => write!(f, "IO error: {}", e),
+            Self::Json(e) => write!(f, "JSON error: {}", e),
+            Self::WorkdirMismatch { expected, found } => {
                 write!(
                     f,
                     "Working directory mismatch: expected {:?}, found {:?}",
@@ -570,8 +570,8 @@ impl std::fmt::Display for SessionError {
 impl std::error::Error for SessionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            SessionError::Io(e) => Some(e),
-            SessionError::Json(e) => Some(e),
+            Self::Io(e) => Some(e),
+            Self::Json(e) => Some(e),
             _ => None,
         }
     }

@@ -9,6 +9,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     ExecutableCommand,
 };
+use fresh::input::key_translator::KeyTranslator;
 #[cfg(target_os = "linux")]
 use fresh::services::gpm::{gpm_to_crossterm, GpmClient};
 use fresh::services::tracing_setup;
@@ -92,6 +93,8 @@ struct SetupState {
     /// Stdin streaming state (if --stdin flag or "-" file was used)
     /// Contains temp file path and background thread handle
     stdin_stream: Option<StdinStreamState>,
+    /// Key translator for input calibration
+    key_translator: KeyTranslator,
     #[cfg(target_os = "linux")]
     gpm_client: Option<GpmClient>,
     #[cfg(not(target_os = "linux"))]
@@ -413,6 +416,7 @@ fn initialize_app(args: &Args) -> io::Result<SetupState> {
         let _ = crossterm::execute!(stdout(), crossterm::event::DisableMouseCapture);
         let _ = stdout().execute(DisableBracketedPaste);
         let _ = stdout().execute(SetCursorStyle::DefaultUserShape);
+        fresh::view::theme::Theme::reset_terminal_cursor_color();
         let _ = stdout().execute(PopKeyboardEnhancementFlags);
         let _ = disable_raw_mode();
         let _ = stdout().execute(LeaveAlternateScreen);
@@ -475,13 +479,16 @@ fn initialize_app(args: &Args) -> io::Result<SetupState> {
         }
     }
 
-    // Load config - checking working directory first, then system paths
+    // Load config using the layered config system
     let effective_working_dir = working_dir
         .as_ref()
         .cloned()
         .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
+    let dir_context = fresh::config_io::DirectoryContext::from_system()?;
+
     let config = if let Some(config_path) = &args.config {
+        // Explicit config file overrides layered system
         match config::Config::load_from_file(config_path) {
             Ok(cfg) => cfg,
             Err(e) => {
@@ -494,7 +501,7 @@ fn initialize_app(args: &Args) -> io::Result<SetupState> {
             }
         }
     } else {
-        config::Config::load_for_working_dir(&effective_working_dir)
+        config::Config::load_with_layers(&dir_context, &effective_working_dir)
     };
 
     // Initialize i18n with the config's locale before creating the editor
@@ -544,6 +551,15 @@ fn initialize_app(args: &Args) -> io::Result<SetupState> {
     let dir_context = DirectoryContext::from_system()?;
     let current_working_dir = working_dir;
 
+    // Load key translator for input calibration
+    let key_translator = match KeyTranslator::load_default() {
+        Ok(translator) => translator,
+        Err(e) => {
+            tracing::warn!("Failed to load key calibration: {}", e);
+            KeyTranslator::new()
+        }
+    };
+
     Ok(SetupState {
         config,
         warning_log_handle,
@@ -554,6 +570,7 @@ fn initialize_app(args: &Args) -> io::Result<SetupState> {
         dir_context,
         current_working_dir,
         stdin_stream,
+        key_translator,
         gpm_client,
     })
 }
@@ -563,12 +580,19 @@ fn run_editor_iteration(
     editor: &mut Editor,
     session_enabled: bool,
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
+    key_translator: &KeyTranslator,
     #[cfg(target_os = "linux")] gpm_client: &Option<GpmClient>,
 ) -> io::Result<IterationOutcome> {
     #[cfg(target_os = "linux")]
-    let loop_result = run_event_loop(editor, terminal, session_enabled, gpm_client);
+    let loop_result = run_event_loop(
+        editor,
+        terminal,
+        session_enabled,
+        key_translator,
+        gpm_client,
+    );
     #[cfg(not(target_os = "linux"))]
-    let loop_result = run_event_loop(editor, terminal, session_enabled);
+    let loop_result = run_event_loop(editor, terminal, session_enabled, key_translator);
 
     if let Err(e) = editor.end_recovery_session() {
         tracing::warn!("Failed to end recovery session: {}", e);
@@ -596,6 +620,8 @@ fn main() -> io::Result<()> {
 
     // Handle --dump-config early (no terminal setup needed)
     if args.dump_config {
+        let dir_context = fresh::config_io::DirectoryContext::from_system()?;
+        let working_dir = std::env::current_dir().unwrap_or_default();
         let config = if let Some(config_path) = &args.config {
             match config::Config::load_from_file(config_path) {
                 Ok(cfg) => cfg,
@@ -609,7 +635,7 @@ fn main() -> io::Result<()> {
                 }
             }
         } else {
-            config::Config::load_for_working_dir(&std::env::current_dir().unwrap_or_default())
+            config::Config::load_with_layers(&dir_context, &working_dir)
         };
 
         // Pretty-print the config as JSON
@@ -635,6 +661,7 @@ fn main() -> io::Result<()> {
         dir_context,
         current_working_dir: initial_working_dir,
         mut stdin_stream,
+        key_translator,
         #[cfg(target_os = "linux")]
         gpm_client,
         #[cfg(not(target_os = "linux"))]
@@ -715,6 +742,7 @@ fn main() -> io::Result<()> {
             &mut editor,
             session_enabled,
             &mut terminal,
+            &key_translator,
             #[cfg(target_os = "linux")]
             &gpm_client,
         )?;
@@ -744,6 +772,7 @@ fn main() -> io::Result<()> {
     let _ = crossterm::execute!(stdout(), crossterm::event::DisableMouseCapture);
     let _ = stdout().execute(DisableBracketedPaste);
     let _ = stdout().execute(SetCursorStyle::DefaultUserShape);
+    fresh::view::theme::Theme::reset_terminal_cursor_color();
     let _ = stdout().execute(PopKeyboardEnhancementFlags);
     disable_raw_mode()?;
     stdout().execute(LeaveAlternateScreen)?;
@@ -778,11 +807,16 @@ fn run_event_loop(
     editor: &mut Editor,
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
     session_enabled: bool,
+    key_translator: &KeyTranslator,
     gpm_client: &Option<GpmClient>,
 ) -> io::Result<()> {
-    run_event_loop_common(editor, terminal, session_enabled, |timeout| {
-        poll_with_gpm(gpm_client.as_ref(), timeout)
-    })
+    run_event_loop_common(
+        editor,
+        terminal,
+        session_enabled,
+        key_translator,
+        |timeout| poll_with_gpm(gpm_client.as_ref(), timeout),
+    )
 }
 
 /// Main event loop (non-Linux version without GPM)
@@ -791,20 +825,28 @@ fn run_event_loop(
     editor: &mut Editor,
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
     session_enabled: bool,
+    key_translator: &KeyTranslator,
 ) -> io::Result<()> {
-    run_event_loop_common(editor, terminal, session_enabled, |timeout| {
-        if event_poll(timeout)? {
-            Ok(Some(event_read()?))
-        } else {
-            Ok(None)
-        }
-    })
+    run_event_loop_common(
+        editor,
+        terminal,
+        session_enabled,
+        key_translator,
+        |timeout| {
+            if event_poll(timeout)? {
+                Ok(Some(event_read()?))
+            } else {
+                Ok(None)
+            }
+        },
+    )
 }
 
 fn run_event_loop_common<F>(
     editor: &mut Editor,
     terminal: &mut Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>,
     session_enabled: bool,
+    _key_translator: &KeyTranslator,
     mut poll_event: F,
 ) -> io::Result<()>
 where
@@ -884,7 +926,10 @@ where
         match event {
             CrosstermEvent::Key(key_event) => {
                 if key_event.kind == KeyEventKind::Press {
-                    handle_key_event(editor, key_event)?;
+                    // Apply key translation (for input calibration)
+                    // Use editor's translator so calibration changes take effect immediately
+                    let translated_event = editor.key_translator().translate(key_event);
+                    handle_key_event(editor, translated_event)?;
                     needs_render = true;
                 }
             }

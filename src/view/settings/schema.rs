@@ -193,8 +193,8 @@ impl SchemaType {
     /// Get the primary type (first type if array, or the single type)
     fn primary(&self) -> Option<&str> {
         match self {
-            SchemaType::Single(s) => Some(s.as_str()),
-            SchemaType::Multiple(v) => v.first().map(|s| s.as_str()),
+            Self::Single(s) => Some(s.as_str()),
+            Self::Multiple(v) => v.first().map(|s| s.as_str()),
         }
     }
 }

@@ -176,7 +176,7 @@ impl Language {
     /// Get tree-sitter highlight configuration for this language
     fn highlight_config(&self) -> Result<HighlightConfiguration, String> {
         match self {
-            Language::Rust => {
+            Self::Rust => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_rust::LANGUAGE.into(),
                     "rust",
@@ -203,7 +203,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::Python => {
+            Self::Python => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_python::LANGUAGE.into(),
                     "python",
@@ -230,7 +230,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::JavaScript => {
+            Self::JavaScript => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_javascript::LANGUAGE.into(),
                     "javascript",
@@ -257,7 +257,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::TypeScript => {
+            Self::TypeScript => {
                 // TypeScript extends JavaScript, so we need to combine queries
                 // TypeScript-specific highlights come first (higher priority),
                 // followed by JavaScript base highlights
@@ -305,7 +305,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::HTML => {
+            Self::HTML => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_html::LANGUAGE.into(),
                     "html",
@@ -331,7 +331,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::CSS => {
+            Self::CSS => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_css::LANGUAGE.into(),
                     "css",
@@ -357,7 +357,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::C => {
+            Self::C => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_c::LANGUAGE.into(),
                     "c",
@@ -383,7 +383,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::Cpp => {
+            Self::Cpp => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_cpp::LANGUAGE.into(),
                     "cpp",
@@ -409,7 +409,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::Go => {
+            Self::Go => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_go::LANGUAGE.into(),
                     "go",
@@ -435,7 +435,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::Json => {
+            Self::Json => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_json::LANGUAGE.into(),
                     "json",
@@ -461,7 +461,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::Java => {
+            Self::Java => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_java::LANGUAGE.into(),
                     "java",
@@ -487,7 +487,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::CSharp => {
+            Self::CSharp => {
                 // Note: tree-sitter-c-sharp doesn't export HIGHLIGHTS_QUERY
                 // Using empty query for now - basic parsing still works
                 let mut config = HighlightConfiguration::new(
@@ -515,7 +515,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::Php => {
+            Self::Php => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_php::LANGUAGE_PHP.into(),
                     "php",
@@ -541,7 +541,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::Ruby => {
+            Self::Ruby => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_ruby::LANGUAGE.into(),
                     "ruby",
@@ -567,7 +567,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::Bash => {
+            Self::Bash => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_bash::LANGUAGE.into(),
                     "bash",
@@ -593,7 +593,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::Lua => {
+            Self::Lua => {
                 let mut config = HighlightConfiguration::new(
                     tree_sitter_lua::LANGUAGE.into(),
                     "lua",
@@ -619,7 +619,7 @@ impl Language {
 
                 Ok(config)
             }
-            Language::Pascal => {
+            Self::Pascal => {
                 // Pascal highlighting is handled by syntect (TextMate) via Sublime's default packages
                 // Tree-sitter is still used for auto-indentation and semantic highlighting
                 tracing::warn!("Pascal highlighting uses TextMate/syntect, not tree-sitter. Tree-sitter is still used for auto-indentation and semantic highlighting.");
@@ -661,7 +661,7 @@ impl Language {
     /// Map tree-sitter highlight index to a highlight category
     fn highlight_category(&self, index: usize) -> Option<HighlightCategory> {
         match self {
-            Language::TypeScript => HighlightCategory::from_typescript_index(index),
+            Self::TypeScript => HighlightCategory::from_typescript_index(index),
             _ => HighlightCategory::from_default_index(index),
         }
     }

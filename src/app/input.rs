@@ -338,7 +338,16 @@ impl Editor {
                     );
                 }
             }
-            Action::Copy => self.copy_selection(),
+            Action::Copy => {
+                // Check if active buffer is a composite buffer
+                let buffer_id = self.active_buffer();
+                if self.is_composite_buffer(buffer_id) {
+                    if let Some(_handled) = self.handle_composite_action(buffer_id, &Action::Copy) {
+                        return Ok(());
+                    }
+                }
+                self.copy_selection()
+            }
             Action::CopyWithTheme(theme) => self.copy_selection_with_theme(&theme),
             Action::Cut => {
                 if self.is_editing_disabled() {
@@ -1058,6 +1067,9 @@ impl Editor {
             Action::SettingsDecrement => {
                 self.settings_decrement_current();
             }
+            Action::CalibrateInput => {
+                self.open_calibration_wizard();
+            }
             Action::PromptConfirm => {
                 if let Some((input, prompt_type, selected_index)) = self.confirm_prompt() {
                     use super::prompt_actions::PromptResult;
@@ -1189,6 +1201,28 @@ impl Editor {
         // Otherwise, scroll the editor in the active split
         // Use SplitViewState's viewport (View events go to SplitViewState, not EditorState)
         let active_split = self.split_manager.active_split();
+        let buffer_id = self.active_buffer();
+
+        // Check if this is a composite buffer - if so, use composite scroll
+        if self.is_composite_buffer(buffer_id) {
+            let max_row = self
+                .composite_buffers
+                .get(&buffer_id)
+                .map(|c| c.row_count().saturating_sub(1))
+                .unwrap_or(0);
+            if let Some(view_state) = self
+                .composite_view_states
+                .get_mut(&(active_split, buffer_id))
+            {
+                view_state.scroll(delta as isize, max_row);
+                tracing::trace!(
+                    "handle_mouse_scroll (composite): delta={}, scroll_row={}",
+                    delta,
+                    view_state.scroll_row
+                );
+            }
+            return Ok(());
+        }
 
         // Get view_transform tokens from SplitViewState (if any)
         let view_transform_tokens = self
@@ -1198,10 +1232,7 @@ impl Editor {
             .map(|vt| vt.tokens.clone());
 
         // Get mutable references to both buffer and view state
-        let buffer = self
-            .buffers
-            .get_mut(&self.active_buffer())
-            .map(|s| &mut s.buffer);
+        let buffer = self.buffers.get_mut(&buffer_id).map(|s| &mut s.buffer);
         let view_state = self.split_view_states.get_mut(&active_split);
 
         if let (Some(buffer), Some(view_state)) = (buffer, view_state) {
@@ -1690,6 +1721,11 @@ impl Editor {
         // Focus this split (handles terminal mode exit, tab state, etc.)
         self.focus_split(split_id, buffer_id);
 
+        // Handle composite buffer clicks specially
+        if self.is_composite_buffer(buffer_id) {
+            return self.handle_composite_click(col, row, split_id, buffer_id, content_rect);
+        }
+
         // Ensure key context is Normal for non-terminal buffers
         // This handles the edge case where split/buffer don't change but we clicked from FileExplorer
         if !self.is_terminal_buffer(buffer_id) {
@@ -1943,6 +1979,9 @@ impl Editor {
         if !theme_name.is_empty() {
             self.theme = crate::view::theme::Theme::from_name(theme_name);
 
+            // Set terminal cursor color to match theme
+            self.theme.set_terminal_cursor_color();
+
             // Update the config in memory
             self.config.theme = self.theme.name.clone().into();
 
@@ -1963,9 +2002,9 @@ impl Editor {
             return;
         }
 
-        // Save the config
-        let config_path = self.dir_context.config_path();
-        if let Err(e) = self.config.save_to_file(&config_path) {
+        // Save the config using the resolver
+        let resolver = ConfigResolver::new(self.dir_context.clone(), self.working_dir.clone());
+        if let Err(e) = resolver.save_to_layer(&self.config, ConfigLayer::User) {
             tracing::warn!("Failed to save theme to config: {}", e);
         }
     }
@@ -2068,9 +2107,9 @@ impl Editor {
             return;
         }
 
-        // Save the config
-        let config_path = self.dir_context.config_path();
-        if let Err(e) = self.config.save_to_file(&config_path) {
+        // Save the config using the resolver
+        let resolver = ConfigResolver::new(self.dir_context.clone(), self.working_dir.clone());
+        if let Err(e) = resolver.save_to_layer(&self.config, ConfigLayer::User) {
             tracing::warn!("Failed to save keybinding map to config: {}", e);
         }
     }
@@ -2160,9 +2199,9 @@ impl Editor {
             return;
         }
 
-        // Save the config
-        let config_path = self.dir_context.config_path();
-        if let Err(e) = self.config.save_to_file(&config_path) {
+        // Save the config using the resolver
+        let resolver = ConfigResolver::new(self.dir_context.clone(), self.working_dir.clone());
+        if let Err(e) = resolver.save_to_layer(&self.config, ConfigLayer::User) {
             tracing::warn!("Failed to save cursor style to config: {}", e);
         }
     }
@@ -2271,9 +2310,9 @@ impl Editor {
             return;
         }
 
-        // Save the config
-        let config_path = self.dir_context.config_path();
-        if let Err(e) = self.config.save_to_file(&config_path) {
+        // Save the config using the resolver
+        let resolver = ConfigResolver::new(self.dir_context.clone(), self.working_dir.clone());
+        if let Err(e) = resolver.save_to_layer(&self.config, ConfigLayer::User) {
             tracing::warn!("Failed to save locale to config: {}", e);
         }
     }
@@ -2482,6 +2521,14 @@ impl Editor {
     /// (cursor movements, text edits, etc.). It handles batching for multi-cursor,
     /// position history tracking, and editing permission checks.
     fn apply_action_as_events(&mut self, action: Action) -> std::io::Result<()> {
+        // Check if active buffer is a composite buffer - handle scroll/movement specially
+        let buffer_id = self.active_buffer();
+        if self.is_composite_buffer(buffer_id) {
+            if let Some(handled) = self.handle_composite_action(buffer_id, &action) {
+                return if handled { Ok(()) } else { Ok(()) };
+            }
+        }
+
         // Get description before moving action
         let action_description = format!("{:?}", action);
 

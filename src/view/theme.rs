@@ -2,6 +2,45 @@ use ratatui::style::Color;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+/// Convert a ratatui Color to RGB values.
+/// Returns None for Reset or Indexed colors.
+pub fn color_to_rgb(color: Color) -> Option<(u8, u8, u8)> {
+    match color {
+        Color::Rgb(r, g, b) => Some((r, g, b)),
+        Color::White => Some((255, 255, 255)),
+        Color::Black => Some((0, 0, 0)),
+        Color::Red => Some((205, 0, 0)),
+        Color::Green => Some((0, 205, 0)),
+        Color::Blue => Some((0, 0, 238)),
+        Color::Yellow => Some((205, 205, 0)),
+        Color::Magenta => Some((205, 0, 205)),
+        Color::Cyan => Some((0, 205, 205)),
+        Color::Gray => Some((229, 229, 229)),
+        Color::DarkGray => Some((127, 127, 127)),
+        Color::LightRed => Some((255, 0, 0)),
+        Color::LightGreen => Some((0, 255, 0)),
+        Color::LightBlue => Some((92, 92, 255)),
+        Color::LightYellow => Some((255, 255, 0)),
+        Color::LightMagenta => Some((255, 0, 255)),
+        Color::LightCyan => Some((0, 255, 255)),
+        Color::Reset | Color::Indexed(_) => None,
+    }
+}
+
+/// Brighten a color by adding an amount to each RGB component.
+/// Clamps values to 255.
+fn brighten_color(color: Color, amount: u8) -> Color {
+    if let Some((r, g, b)) = color_to_rgb(color) {
+        Color::Rgb(
+            r.saturating_add(amount),
+            g.saturating_add(amount),
+            b.saturating_add(amount),
+        )
+    } else {
+        color
+    }
+}
+
 /// Serializable color representation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -63,6 +102,24 @@ struct EditorColors {
     current_line_bg: ColorDef,
     line_number_fg: ColorDef,
     line_number_bg: ColorDef,
+    #[serde(default = "default_diff_add_bg")]
+    diff_add_bg: ColorDef,
+    #[serde(default = "default_diff_remove_bg")]
+    diff_remove_bg: ColorDef,
+    #[serde(default = "default_diff_modify_bg")]
+    diff_modify_bg: ColorDef,
+}
+
+fn default_diff_add_bg() -> ColorDef {
+    ColorDef::Rgb(35, 60, 35) // Dark green
+}
+
+fn default_diff_remove_bg() -> ColorDef {
+    ColorDef::Rgb(70, 35, 35) // Dark red
+}
+
+fn default_diff_modify_bg() -> ColorDef {
+    ColorDef::Rgb(40, 38, 30) // Very subtle yellow tint, close to dark bg
 }
 
 fn default_inactive_cursor() -> ColorDef {
@@ -328,6 +385,15 @@ pub struct Theme {
     pub line_number_fg: Color,
     pub line_number_bg: Color,
 
+    // Diff highlighting colors
+    pub diff_add_bg: Color,
+    pub diff_remove_bg: Color,
+    pub diff_modify_bg: Color,
+    /// Brighter background for inline diff highlighting on added content
+    pub diff_add_highlight_bg: Color,
+    /// Brighter background for inline diff highlighting on removed content
+    pub diff_remove_highlight_bg: Color,
+
     // UI element colors
     pub tab_active_fg: Color,
     pub tab_active_bg: Color,
@@ -449,6 +515,12 @@ impl From<ThemeFile> for Theme {
             current_line_bg: file.editor.current_line_bg.into(),
             line_number_fg: file.editor.line_number_fg.into(),
             line_number_bg: file.editor.line_number_bg.into(),
+            diff_add_bg: file.editor.diff_add_bg.clone().into(),
+            diff_remove_bg: file.editor.diff_remove_bg.clone().into(),
+            diff_modify_bg: file.editor.diff_modify_bg.into(),
+            // Compute brighter highlight colors from base diff colors
+            diff_add_highlight_bg: brighten_color(file.editor.diff_add_bg.into(), 40),
+            diff_remove_highlight_bg: brighten_color(file.editor.diff_remove_bg.into(), 40),
             tab_active_fg: file.ui.tab_active_fg.into(),
             tab_active_bg: file.ui.tab_active_bg.into(),
             tab_inactive_fg: file.ui.tab_inactive_fg.into(),
@@ -577,12 +649,19 @@ impl Theme {
             // Editor colors
             editor_bg: Color::Rgb(30, 30, 30),
             editor_fg: Color::Rgb(212, 212, 212),
-            cursor: Color::Rgb(82, 139, 255),
+            cursor: Color::Rgb(255, 255, 255),
             inactive_cursor: Color::Rgb(100, 100, 100),
             selection_bg: Color::Rgb(38, 79, 120),
             current_line_bg: Color::Rgb(40, 40, 40),
             line_number_fg: Color::Rgb(100, 100, 100),
             line_number_bg: Color::Rgb(30, 30, 30),
+
+            // Diff highlighting colors
+            diff_add_bg: Color::Rgb(35, 60, 35),    // Dark green
+            diff_remove_bg: Color::Rgb(70, 35, 35), // Dark red
+            diff_modify_bg: Color::Rgb(40, 38, 30), // Subtle yellow tint, close to editor_bg
+            diff_add_highlight_bg: Color::Rgb(60, 110, 60), // Brighter green for inline
+            diff_remove_highlight_bg: Color::Rgb(120, 50, 50), // Brighter red for inline
 
             // UI element colors
             tab_active_fg: Color::Yellow,
@@ -701,12 +780,19 @@ impl Theme {
             // Editor colors
             editor_bg: Color::Rgb(255, 255, 255),
             editor_fg: Color::Rgb(0, 0, 0),
-            cursor: Color::Rgb(0, 0, 255),
+            cursor: Color::Rgb(0, 0, 0),
             inactive_cursor: Color::Rgb(180, 180, 180),
             selection_bg: Color::Rgb(173, 214, 255),
             current_line_bg: Color::Rgb(245, 245, 245),
             line_number_fg: Color::Rgb(140, 140, 140),
             line_number_bg: Color::Rgb(255, 255, 255),
+
+            // Diff highlighting colors
+            diff_add_bg: Color::Rgb(200, 255, 200), // Light green
+            diff_remove_bg: Color::Rgb(255, 200, 200), // Light red
+            diff_modify_bg: Color::Rgb(255, 252, 240), // Subtle cream, close to white
+            diff_add_highlight_bg: Color::Rgb(140, 220, 140), // Darker green for inline (contrast on light bg)
+            diff_remove_highlight_bg: Color::Rgb(220, 140, 140), // Darker red for inline
 
             // UI element colors
             tab_active_fg: Color::Rgb(40, 40, 40),
@@ -825,12 +911,19 @@ impl Theme {
             // Editor colors
             editor_bg: Color::Black,
             editor_fg: Color::White,
-            cursor: Color::Yellow,
+            cursor: Color::White,
             inactive_cursor: Color::DarkGray,
             selection_bg: Color::Rgb(0, 100, 200),
             current_line_bg: Color::Rgb(20, 20, 20),
             line_number_fg: Color::Rgb(140, 140, 140),
             line_number_bg: Color::Black,
+
+            // Diff highlighting colors
+            diff_add_bg: Color::Rgb(0, 80, 0),     // Dark green
+            diff_remove_bg: Color::Rgb(100, 0, 0), // Dark red
+            diff_modify_bg: Color::Rgb(25, 22, 0), // Subtle yellow, close to black
+            diff_add_highlight_bg: Color::Rgb(0, 140, 0), // Brighter green
+            diff_remove_highlight_bg: Color::Rgb(180, 0, 0), // Brighter red
 
             // UI element colors
             tab_active_fg: Color::Black,
@@ -1006,6 +1099,13 @@ impl Theme {
             line_number_fg: Color::Rgb(85, 255, 255), // Cyan
             line_number_bg: Color::Rgb(0, 0, 170),
 
+            // Diff highlighting colors
+            diff_add_bg: Color::Rgb(0, 100, 0),      // DOS green
+            diff_remove_bg: Color::Rgb(170, 0, 0),   // DOS red
+            diff_modify_bg: Color::Rgb(20, 20, 140), // Subtle purple-blue, close to DOS blue bg
+            diff_add_highlight_bg: Color::Rgb(0, 170, 0), // Brighter DOS green
+            diff_remove_highlight_bg: Color::Rgb(255, 0, 0), // Brighter DOS red
+
             // UI element colors
             tab_active_fg: Color::Rgb(0, 0, 0),
             tab_active_bg: Color::Rgb(170, 170, 170),
@@ -1113,6 +1213,31 @@ impl Theme {
             syntax_constant: Color::Rgb(255, 0, 255),  // Bright magenta constants
             syntax_operator: Color::Rgb(170, 170, 170), // Light gray operators
         }
+    }
+
+    /// Set the terminal cursor color using OSC 12 escape sequence.
+    /// This makes the hardware cursor visible on any background.
+    pub fn set_terminal_cursor_color(&self) {
+        use std::io::Write;
+        if let Some((r, g, b)) = color_to_rgb(self.cursor) {
+            // OSC 12 sets cursor color: \x1b]12;#RRGGBB\x07
+            let _ = write!(
+                std::io::stdout(),
+                "\x1b]12;#{:02x}{:02x}{:02x}\x07",
+                r,
+                g,
+                b
+            );
+            let _ = std::io::stdout().flush();
+        }
+    }
+
+    /// Reset the terminal cursor color to default.
+    pub fn reset_terminal_cursor_color() {
+        use std::io::Write;
+        // OSC 112 resets cursor color to default
+        let _ = write!(std::io::stdout(), "\x1b]112\x07");
+        let _ = std::io::stdout().flush();
     }
 }
 

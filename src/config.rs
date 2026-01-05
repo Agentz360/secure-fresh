@@ -158,13 +158,13 @@ impl CursorStyle {
     pub fn to_crossterm_style(self) -> crossterm::cursor::SetCursorStyle {
         use crossterm::cursor::SetCursorStyle;
         match self {
-            CursorStyle::Default => SetCursorStyle::DefaultUserShape,
-            CursorStyle::BlinkingBlock => SetCursorStyle::BlinkingBlock,
-            CursorStyle::SteadyBlock => SetCursorStyle::SteadyBlock,
-            CursorStyle::BlinkingBar => SetCursorStyle::BlinkingBar,
-            CursorStyle::SteadyBar => SetCursorStyle::SteadyBar,
-            CursorStyle::BlinkingUnderline => SetCursorStyle::BlinkingUnderScore,
-            CursorStyle::SteadyUnderline => SetCursorStyle::SteadyUnderScore,
+            Self::Default => SetCursorStyle::DefaultUserShape,
+            Self::BlinkingBlock => SetCursorStyle::BlinkingBlock,
+            Self::SteadyBlock => SetCursorStyle::SteadyBlock,
+            Self::BlinkingBar => SetCursorStyle::BlinkingBar,
+            Self::SteadyBar => SetCursorStyle::SteadyBar,
+            Self::BlinkingUnderline => SetCursorStyle::BlinkingUnderScore,
+            Self::SteadyUnderline => SetCursorStyle::SteadyUnderScore,
         }
     }
 
@@ -185,13 +185,13 @@ impl CursorStyle {
     /// Convert to string representation
     pub fn as_str(self) -> &'static str {
         match self {
-            CursorStyle::Default => "default",
-            CursorStyle::BlinkingBlock => "blinking_block",
-            CursorStyle::SteadyBlock => "steady_block",
-            CursorStyle::BlinkingBar => "blinking_bar",
-            CursorStyle::SteadyBar => "steady_bar",
-            CursorStyle::BlinkingUnderline => "blinking_underline",
-            CursorStyle::SteadyUnderline => "steady_underline",
+            Self::Default => "default",
+            Self::BlinkingBlock => "blinking_block",
+            Self::SteadyBlock => "steady_block",
+            Self::BlinkingBar => "blinking_bar",
+            Self::SteadyBar => "steady_bar",
+            Self::BlinkingUnderline => "blinking_underline",
+            Self::SteadyUnderline => "steady_underline",
         }
     }
 }
@@ -259,7 +259,7 @@ pub enum LineEndingOption {
 
 impl Default for LineEndingOption {
     fn default() -> Self {
-        LineEndingOption::Lf
+        Self::Lf
     }
 }
 
@@ -267,9 +267,9 @@ impl LineEndingOption {
     /// Convert to the buffer's LineEnding type
     pub fn to_line_ending(&self) -> crate::model::buffer::LineEnding {
         match self {
-            LineEndingOption::Lf => crate::model::buffer::LineEnding::LF,
-            LineEndingOption::Crlf => crate::model::buffer::LineEnding::CRLF,
-            LineEndingOption::Cr => crate::model::buffer::LineEnding::CR,
+            Self::Lf => crate::model::buffer::LineEnding::LF,
+            Self::Crlf => crate::model::buffer::LineEnding::CRLF,
+            Self::Cr => crate::model::buffer::LineEnding::CR,
         }
     }
 }
@@ -1045,7 +1045,7 @@ pub enum MenuItem {
         checkbox: Option<String>,
     },
     /// A submenu (for future extensibility)
-    Submenu { label: String, items: Vec<MenuItem> },
+    Submenu { label: String, items: Vec<Self> },
     /// A dynamic submenu whose items are generated at runtime
     /// The `source` field specifies what to generate (e.g., "themes")
     DynamicSubmenu { label: String, source: String },
@@ -1056,11 +1056,11 @@ pub enum MenuItem {
 impl MenuItem {
     /// Expand a DynamicSubmenu into a regular Submenu with generated items.
     /// Returns the original item if not a DynamicSubmenu.
-    pub fn expand_dynamic(&self) -> MenuItem {
+    pub fn expand_dynamic(&self) -> Self {
         match self {
-            MenuItem::DynamicSubmenu { label, source } => {
+            Self::DynamicSubmenu { label, source } => {
                 let items = Self::generate_dynamic_items(source);
-                MenuItem::Submenu {
+                Self::Submenu {
                     label: label.clone(),
                     items,
                 }
@@ -1070,7 +1070,7 @@ impl MenuItem {
     }
 
     /// Generate menu items for a dynamic source
-    pub fn generate_dynamic_items(source: &str) -> Vec<MenuItem> {
+    pub fn generate_dynamic_items(source: &str) -> Vec<Self> {
         match source {
             "copy_with_theme" => {
                 // Generate theme options from available themes
@@ -1079,7 +1079,7 @@ impl MenuItem {
                     .map(|theme_name| {
                         let mut args = HashMap::new();
                         args.insert("theme".to_string(), serde_json::json!(theme_name));
-                        MenuItem::Action {
+                        Self::Action {
                             label: theme_name.to_string(),
                             action: "copy_with_theme".to_string(),
                             args,
@@ -1089,7 +1089,7 @@ impl MenuItem {
                     })
                     .collect()
             }
-            _ => vec![MenuItem::Label {
+            _ => vec![Self::Label {
                 info: format!("Unknown source: {}", source),
             }],
         }
@@ -1380,6 +1380,13 @@ impl MenuConfig {
                     MenuItem::Action {
                         label: t!("menu.view.settings").to_string(),
                         action: "open_settings".to_string(),
+                        args: HashMap::new(),
+                        when: None,
+                        checkbox: None,
+                    },
+                    MenuItem::Action {
+                        label: t!("menu.view.calibrate_input").to_string(),
+                        action: "calibrate_input".to_string(),
                         args: HashMap::new(),
                         when: None,
                         checkbox: None,
@@ -1804,50 +1811,18 @@ impl Config {
 
     /// Load configuration from a JSON file
     ///
-    /// This deserializes the user's config file and merges it with defaults.
-    /// For HashMap fields like `lsp` and `languages`, entries from the user config
-    /// are merged with (and override) the default entries. This allows users to
-    /// customize a single LSP server without losing the defaults for others.
+    /// This deserializes the user's config file as a partial config and resolves
+    /// it with system defaults. For HashMap fields like `lsp` and `languages`,
+    /// entries from the user config are merged with the default entries.
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
         let contents = std::fs::read_to_string(path.as_ref())
             .map_err(|e| ConfigError::IoError(e.to_string()))?;
 
-        let mut config: Config =
+        // Deserialize as PartialConfig first, then resolve with defaults
+        let partial: crate::partial_config::PartialConfig =
             serde_json::from_str(&contents).map_err(|e| ConfigError::ParseError(e.to_string()))?;
 
-        // Merge with defaults for HashMap fields
-        config.merge_defaults_for_maps();
-
-        Ok(config)
-    }
-
-    /// Merge default values for HashMap fields that should combine user entries with defaults.
-    ///
-    /// This is called after deserializing user config to ensure that:
-    /// - Default LSP servers are present even if user only customizes one
-    /// - Default language configs are present even if user only customizes one
-    ///
-    /// User entries override defaults when keys collide.
-    pub(crate) fn merge_defaults_for_maps(&mut self) {
-        let defaults = Self::default();
-
-        // Merge LSP configs: start with defaults, overlay user entries
-        let user_lsp = std::mem::take(&mut self.lsp);
-        self.lsp = defaults.lsp;
-        for (key, value) in user_lsp {
-            self.lsp.insert(key, value);
-        }
-
-        // Merge language configs: start with defaults, overlay user entries
-        let user_languages = std::mem::take(&mut self.languages);
-        self.languages = defaults.languages;
-        for (key, value) in user_languages {
-            self.languages.insert(key, value);
-        }
-
-        // Note: keybinding_maps is NOT merged - user defines their own complete maps
-        // Note: keybindings Vec is NOT merged - it's user customizations only
-        // Note: menu is NOT merged - user can completely override the menu structure
+        Ok(partial.resolve())
     }
 
     /// Load a built-in keymap from embedded JSON
@@ -2098,16 +2073,17 @@ impl Config {
             LanguageConfig {
                 extensions: vec!["sh".to_string(), "bash".to_string()],
                 filenames: vec![
-                    ".bashrc".to_string(),
-                    ".bash_profile".to_string(),
                     ".bash_aliases".to_string(),
                     ".bash_logout".to_string(),
+                    ".bash_profile".to_string(),
+                    ".bashrc".to_string(),
+                    ".env".to_string(),
                     ".profile".to_string(),
-                    ".zshrc".to_string(),
-                    ".zprofile".to_string(),
-                    ".zshenv".to_string(),
                     ".zlogin".to_string(),
                     ".zlogout".to_string(),
+                    ".zprofile".to_string(),
+                    ".zshenv".to_string(),
+                    ".zshrc".to_string(),
                     // Common shell script files without extensions
                     "PKGBUILD".to_string(),
                     "APKBUILD".to_string(),
@@ -2488,10 +2464,10 @@ pub enum ConfigError {
 impl std::fmt::Display for ConfigError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ConfigError::IoError(msg) => write!(f, "IO error: {msg}"),
-            ConfigError::ParseError(msg) => write!(f, "Parse error: {msg}"),
-            ConfigError::SerializeError(msg) => write!(f, "Serialize error: {msg}"),
-            ConfigError::ValidationError(msg) => write!(f, "Validation error: {msg}"),
+            Self::IoError(msg) => write!(f, "IO error: {msg}"),
+            Self::ParseError(msg) => write!(f, "Parse error: {msg}"),
+            Self::SerializeError(msg) => write!(f, "Serialize error: {msg}"),
+            Self::ValidationError(msg) => write!(f, "Validation error: {msg}"),
         }
     }
 }
@@ -2553,14 +2529,16 @@ mod tests {
     }
 
     #[test]
-    fn test_config_save_load() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let config_path = temp_dir.path().join("config.json");
-
+    fn test_config_serialize_deserialize() {
+        // Test that Config can be serialized and deserialized correctly
         let config = Config::default();
-        config.save_to_file(&config_path).unwrap();
 
-        let loaded = Config::load_from_file(&config_path).unwrap();
+        // Serialize to JSON
+        let json = serde_json::to_string_pretty(&config).unwrap();
+
+        // Deserialize back
+        let loaded: Config = serde_json::from_str(&json).unwrap();
+
         assert_eq!(config.editor.tab_size, loaded.editor.tab_size);
         assert_eq!(config.theme, loaded.theme);
     }
@@ -2611,7 +2589,10 @@ mod tests {
 
         // User's rust override should be present
         assert!(loaded.lsp.contains_key("rust"));
-        assert_eq!(loaded.lsp["rust"].command, "custom-rust-analyzer");
+        assert_eq!(
+            loaded.lsp["rust"].command,
+            "custom-rust-analyzer".to_string()
+        );
 
         // Default LSP servers should also be present (merged from defaults)
         assert!(

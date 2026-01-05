@@ -1,6 +1,9 @@
 mod async_messages;
 mod buffer_management;
+mod calibration_actions;
+pub mod calibration_wizard;
 mod clipboard;
+mod composite_buffer_actions;
 mod file_explorer;
 pub mod file_open;
 mod file_open_input;
@@ -73,7 +76,7 @@ use self::types::{
     DEFAULT_BACKGROUND_FILE,
 };
 use crate::config::Config;
-use crate::config_io::DirectoryContext;
+use crate::config_io::{ConfigLayer, ConfigResolver, DirectoryContext};
 use crate::input::actions::action_to_events as convert_action_to_events;
 use crate::input::buffer_mode::ModeRegistry;
 use crate::input::command_registry::CommandRegistry;
@@ -519,6 +522,12 @@ pub struct Editor {
     /// Settings UI state (when settings modal is open)
     pub(crate) settings_state: Option<crate::view::settings::SettingsState>,
 
+    /// Calibration wizard state (when calibration modal is open)
+    pub(crate) calibration_wizard: Option<calibration_wizard::CalibrationWizard>,
+
+    /// Key translator for input calibration (loaded from config)
+    pub(crate) key_translator: crate::input::key_translator::KeyTranslator,
+
     /// Terminal color capability (true color, 256, or 16 colors)
     color_capability: crate::view::color_support::ColorCapability,
 
@@ -528,6 +537,15 @@ pub struct Editor {
     /// Active action popup (for plugin showActionPopup API)
     /// Stores (popup_id, Vec<(action_id, action_label)>)
     active_action_popup: Option<(String, Vec<(String, String)>)>,
+
+    /// Composite buffers (separate from regular buffers)
+    /// These display multiple source buffers in a single tab
+    composite_buffers: HashMap<BufferId, crate::model::composite_buffer::CompositeBuffer>,
+
+    /// View state for composite buffers (per split)
+    /// Maps (split_id, buffer_id) to composite view state
+    composite_view_states:
+        HashMap<(SplitId, BufferId), crate::view::composite_view::CompositeViewState>,
 
     /// Stdin streaming state (if reading from stdin)
     stdin_streaming: Option<StdinStreamingState>,
@@ -648,6 +666,9 @@ impl Editor {
 
         // Load theme from config
         let theme = crate::view::theme::Theme::from_name(&config.theme);
+
+        // Set terminal cursor color to match theme
+        theme.set_terminal_cursor_color();
 
         tracing::info!(
             "Grammar registry has {} syntaxes",
@@ -958,10 +979,15 @@ impl Editor {
             previous_click_time: None,
             previous_click_position: None,
             settings_state: None,
+            calibration_wizard: None,
+            key_translator: crate::input::key_translator::KeyTranslator::load_default()
+                .unwrap_or_default(),
             color_capability,
             stdin_streaming: None,
             review_hunks: Vec::new(),
             active_action_popup: None,
+            composite_buffers: HashMap::new(),
+            composite_view_states: HashMap::new(),
         })
     }
 
@@ -978,6 +1004,11 @@ impl Editor {
     /// Get a reference to the config
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Get a reference to the key translator (for input calibration)
+    pub fn key_translator(&self) -> &crate::input::key_translator::KeyTranslator {
+        &self.key_translator
     }
 
     /// Get a reference to the time source
@@ -998,6 +1029,13 @@ impl Editor {
     /// Get all keybindings as (key, action) pairs
     pub fn get_all_keybindings(&self) -> Vec<(String, String)> {
         self.keybindings.get_all_bindings()
+    }
+
+    /// Get the formatted keybinding for a specific action (for display in messages)
+    /// Returns None if no keybinding is found for the action
+    pub fn get_keybinding_for_action(&self, action_name: &str) -> Option<String> {
+        self.keybindings
+            .find_keybinding_for_action(action_name, self.key_context)
     }
 
     /// Get mutable access to the mode registry
@@ -1541,6 +1579,11 @@ impl Editor {
 
     /// Get the display name for a buffer (filename or virtual buffer name)
     pub fn get_buffer_display_name(&self, buffer_id: BufferId) -> String {
+        // Check composite buffers first
+        if let Some(composite) = self.composite_buffers.get(&buffer_id) {
+            return composite.name.clone();
+        }
+
         self.buffer_metadata
             .get(&buffer_id)
             .map(|m| m.display_name.clone())
@@ -3727,6 +3770,7 @@ impl Editor {
                 show_line_numbers,
                 show_cursors,
                 editing_disabled,
+                hidden_from_tabs,
                 request_id,
             } => {
                 let buffer_id = self.create_virtual_buffer(name.clone(), mode.clone(), read_only);
@@ -3749,6 +3793,13 @@ impl Editor {
                         show_cursors,
                         editing_disabled
                     );
+                }
+
+                // Apply hidden_from_tabs to buffer metadata
+                if hidden_from_tabs {
+                    if let Some(meta) = self.buffer_metadata.get_mut(&buffer_id) {
+                        meta.hidden_from_tabs = true;
+                    }
                 }
 
                 // Now set the content
@@ -4192,6 +4243,24 @@ impl Editor {
                 } else {
                     tracing::warn!("Scroll sync group {} not found", group_id);
                 }
+            }
+
+            // ==================== Composite Buffer Commands ====================
+            PluginCommand::CreateCompositeBuffer {
+                name,
+                mode,
+                layout,
+                sources,
+                hunks,
+                request_id,
+            } => {
+                self.handle_create_composite_buffer(name, mode, layout, sources, hunks, request_id);
+            }
+            PluginCommand::UpdateCompositeAlignment { buffer_id, hunks } => {
+                self.handle_update_composite_alignment(buffer_id, hunks);
+            }
+            PluginCommand::CloseCompositeBuffer { buffer_id } => {
+                self.close_composite_buffer(buffer_id);
             }
         }
         Ok(())

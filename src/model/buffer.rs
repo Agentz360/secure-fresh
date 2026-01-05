@@ -37,7 +37,7 @@ pub enum LineEnding {
 impl Default for LineEnding {
     fn default() -> Self {
         // Default to LF (Unix) for new files
-        LineEnding::LF
+        Self::LF
     }
 }
 
@@ -45,18 +45,18 @@ impl LineEnding {
     /// Get the string representation of this line ending
     pub fn as_str(&self) -> &'static str {
         match self {
-            LineEnding::LF => "\n",
-            LineEnding::CRLF => "\r\n",
-            LineEnding::CR => "\r",
+            Self::LF => "\n",
+            Self::CRLF => "\r\n",
+            Self::CR => "\r",
         }
     }
 
     /// Get the display name for status bar
     pub fn display_name(&self) -> &'static str {
         match self {
-            LineEnding::LF => "LF",
-            LineEnding::CRLF => "CRLF",
-            LineEnding::CR => "CR",
+            Self::LF => "LF",
+            Self::CRLF => "CRLF",
+            Self::CR => "CR",
         }
     }
 }
@@ -78,8 +78,7 @@ impl LineNumber {
     /// Get the line number value
     pub fn value(&self) -> usize {
         match self {
-            LineNumber::Absolute(line) => *line,
-            LineNumber::Relative { line, .. } => *line,
+            Self::Absolute(line) | Self::Relative { line, .. } => *line,
         }
     }
 
@@ -96,8 +95,8 @@ impl LineNumber {
     /// Format the line number for display
     pub fn format(&self) -> String {
         match self {
-            LineNumber::Absolute(line) => format!("{}", line + 1),
-            LineNumber::Relative { line, .. } => format!("~{}", line + 1),
+            Self::Absolute(line) => format!("{}", line + 1),
+            Self::Relative { line, .. } => format!("~{}", line + 1),
         }
     }
 }
@@ -3070,6 +3069,60 @@ mod tests {
             // The buffer should be unloaded
             assert!(!buffer.buffers[0].is_loaded());
             assert_eq!(buffer.buffers[0].get_data(), None);
+        }
+
+        /// Test that reproduces issue #657: Search on large plain text files
+        ///
+        /// The bug: When a large file is opened with lazy loading, buffer.to_string()
+        /// returns None because some buffers are unloaded. This causes search to fail
+        /// with "Buffer not fully loaded" error.
+        ///
+        /// The fix: Use get_text_range_mut() which loads the buffer on demand.
+        #[test]
+        fn test_issue_657_search_on_large_file_unloaded_buffer() {
+            let temp_dir = TempDir::new().unwrap();
+            let file_path = temp_dir.path().join("large_search_test.txt");
+
+            // Create test content with a searchable string
+            let test_data = b"line1\nline2\nSEARCH_TARGET\nline4\nline5";
+            File::create(&file_path)
+                .unwrap()
+                .write_all(test_data)
+                .unwrap();
+
+            // Load with small threshold to force lazy loading
+            let mut buffer = TextBuffer::load_from_file(&file_path, 10).unwrap();
+
+            // Verify we're in large file mode with unloaded buffer
+            assert!(buffer.large_file, "Buffer should be in large file mode");
+            assert!(
+                !buffer.buffers[0].is_loaded(),
+                "Buffer should be unloaded initially"
+            );
+
+            // REPRODUCE THE BUG: to_string() returns None for unloaded buffers
+            // This is what the old perform_search() code did, causing the error
+            assert!(
+                buffer.to_string().is_none(),
+                "BUG REPRODUCED: to_string() returns None for unloaded buffer"
+            );
+
+            // THE FIX: get_text_range_mut() loads the buffer on demand
+            let total_bytes = buffer.len();
+            let content = buffer.get_text_range_mut(0, total_bytes).unwrap();
+            let content_str = String::from_utf8_lossy(&content);
+
+            // Verify the content is now available and contains our search target
+            assert!(
+                content_str.contains("SEARCH_TARGET"),
+                "FIX WORKS: get_text_range_mut() loaded the buffer and found the search target"
+            );
+
+            // After loading, to_string() should also work
+            assert!(
+                buffer.to_string().is_some(),
+                "After get_text_range_mut(), to_string() should work"
+            );
         }
 
         #[test]

@@ -332,7 +332,7 @@ pub struct DirGuard {
 
 impl DirGuard {
     pub fn new(original_dir: PathBuf) -> Self {
-        DirGuard { original_dir }
+        Self { original_dir }
     }
 }
 

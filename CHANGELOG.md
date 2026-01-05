@@ -1,5 +1,44 @@
 # Release Notes
 
+## 0.1.70
+
+### Features
+
+* **Input Calibration Wizard**: New wizard to calibrate keyboard input for terminals with broken key sequences. Access via "Calibrate Keyboard" in command palette or View menu. Uses failsafe ASCII-only navigation (#219).
+
+* **Terminal Cursor Color**: Cursor color now set via OSC 12 escape sequence for proper visibility across all themes, especially light theme.
+
+### Bug Fixes
+
+* **Dynamic Keybinding Hints**: Status messages now show actual keybindings from keymap instead of hardcoded shortcuts (#659).
+
+* **Search in Large Files**: Fixed "Buffer not fully loaded" error when searching in large plain text files (#657).
+
+* **LSP Config Preservation**: Fixed LSP command field becoming empty when toggling enabled state. Partial config now merges with defaults (#630, #631).
+
+* **Multi-Cursor End of Line**: Fixed secondary cursors rendering at line start instead of end (#632).
+
+* **Selection at Cursor**: Fixed selection background not showing at primary cursor position with bar/underline cursor styles (#614).
+
+* **Locale Interpolation**: Fixed locale name not appearing in "Locale changed" message (#624).
+
+* **Cursor Past Trailing Newline**: Allow cursor to navigate to the empty line after trailing newline (#622, @Asuka-Minato).
+
+* **.env Syntax Highlighting**: Added .env to default shell syntax patterns (#559).
+
+* **Spanish Translation**: Fixed typo in menu bar (@osniel).
+
+* **Audit Mode Keybindings**: Use Emacs-style key notation in diff-view bindings (@xunzhou).
+
+### Internal
+
+* Refactored config system to use layered PartialConfig resolution everywhere.
+* Code cleanup: use `Self` where possible, merge match arms (@adamnemecek).
+* Clean up log output by resetting to column zero (@Martin-Häcker).
+* Bumped windows-sys to 0.61.2 (@dependabot).
+
+---
+
 ## 0.1.69
 
 > **macOS Users**: This release includes significant improvements for macOS terminal compatibility. See the new [macOS Terminal Tips](docs/USER_GUIDE.md#macos-terminal-tips) guide for recommended terminal emulators and keyboard configuration. The macOS keymap ([`keymaps/macos.json`](keymaps/macos.json)) is a work in progress—please submit patches based on your experience with different terminals and keyboard layouts!

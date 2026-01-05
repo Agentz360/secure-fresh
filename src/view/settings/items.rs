@@ -256,12 +256,12 @@ impl SettingControl {
     pub fn control_height(&self) -> u16 {
         match self {
             // TextList needs: 1 label line + items + 1 "add new" row
-            SettingControl::TextList(state) => {
+            Self::TextList(state) => {
                 // 1 for label + items count + 1 for add-new row
                 (state.items.len() + 2) as u16
             }
             // Map needs: 1 label + entries + expanded content + 1 add-new row
-            SettingControl::Map(state) => {
+            Self::Map(state) => {
                 let base = 1 + state.entries.len() + 1; // label + entries + add-new
                                                         // Add extra height for expanded entries (up to 6 lines each)
                 let expanded_height: usize = state
@@ -279,7 +279,7 @@ impl SettingControl {
                 (base + expanded_height) as u16
             }
             // Dropdown needs extra height when open to show options
-            SettingControl::Dropdown(state) => {
+            Self::Dropdown(state) => {
                 if state.open {
                     // 1 for label/button + number of options (max 8 visible)
                     1 + state.options.len().min(8) as u16
@@ -288,12 +288,12 @@ impl SettingControl {
                 }
             }
             // KeybindingList needs: 1 label + bindings + 1 add-new row
-            SettingControl::ObjectArray(state) => {
+            Self::ObjectArray(state) => {
                 // 1 for label + bindings count + 1 for add-new row
                 (state.bindings.len() + 2) as u16
             }
             // Json needs: 1 label + visible lines
-            SettingControl::Json(state) => {
+            Self::Json(state) => {
                 // 1 for label + displayed lines
                 1 + state.display_height() as u16
             }

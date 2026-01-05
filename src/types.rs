@@ -74,10 +74,12 @@ impl ProcessLimits {
 }
 
 /// LSP server configuration
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[schemars(extend("x-display-field" = "/command"))]
 pub struct LspServerConfig {
-    /// Command to spawn the server
+    /// Command to spawn the server.
+    /// Required when enabled=true, ignored when enabled=false.
+    #[serde(default)]
     pub command: String,
 
     /// Arguments to pass to the server
@@ -101,4 +103,31 @@ pub struct LspServerConfig {
     /// These are passed in the `initializationOptions` field of the LSP Initialize request
     #[serde(default)]
     pub initialization_options: Option<serde_json::Value>,
+}
+
+impl LspServerConfig {
+    /// Merge this config with defaults, using default values for empty/unset fields.
+    ///
+    /// This is used when loading configs where fields like `command` may be empty
+    /// (serde's default) because they weren't specified in the user's config file.
+    pub fn merge_with_defaults(self, defaults: &LspServerConfig) -> LspServerConfig {
+        LspServerConfig {
+            command: if self.command.is_empty() {
+                defaults.command.clone()
+            } else {
+                self.command
+            },
+            args: if self.args.is_empty() {
+                defaults.args.clone()
+            } else {
+                self.args
+            },
+            enabled: self.enabled,
+            auto_start: self.auto_start,
+            process_limits: self.process_limits,
+            initialization_options: self
+                .initialization_options
+                .or_else(|| defaults.initialization_options.clone()),
+        }
+    }
 }

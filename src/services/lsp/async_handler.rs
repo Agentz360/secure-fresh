@@ -171,27 +171,24 @@ impl LspClientState {
 
     /// Check if the client is ready to send requests
     pub fn can_send_requests(&self) -> bool {
-        matches!(self, LspClientState::Running)
+        matches!(self, Self::Running)
     }
 
     /// Check if the client can accept initialization
     pub fn can_initialize(&self) -> bool {
-        matches!(
-            self,
-            LspClientState::Initial | LspClientState::Starting | LspClientState::Stopped
-        )
+        matches!(self, Self::Initial | Self::Starting | Self::Stopped)
     }
 
     /// Convert to LspServerStatus for UI reporting
     pub fn to_server_status(&self) -> LspServerStatus {
         match self {
-            LspClientState::Initial => LspServerStatus::Starting,
-            LspClientState::Starting => LspServerStatus::Starting,
-            LspClientState::Initializing => LspServerStatus::Initializing,
-            LspClientState::Running => LspServerStatus::Running,
-            LspClientState::Stopping => LspServerStatus::Shutdown,
-            LspClientState::Stopped => LspServerStatus::Shutdown,
-            LspClientState::Error => LspServerStatus::Error,
+            Self::Initial => LspServerStatus::Starting,
+            Self::Starting => LspServerStatus::Starting,
+            Self::Initializing => LspServerStatus::Initializing,
+            Self::Running => LspServerStatus::Running,
+            Self::Stopping => LspServerStatus::Shutdown,
+            Self::Stopped => LspServerStatus::Shutdown,
+            Self::Error => LspServerStatus::Error,
         }
     }
 }

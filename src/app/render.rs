@@ -332,6 +332,8 @@ impl Editor {
                 &mut self.buffers,
                 &self.buffer_metadata,
                 &mut self.event_logs,
+                &self.composite_buffers,
+                &mut self.composite_view_states,
                 &self.theme,
                 self.ansi_background.as_ref(),
                 self.background_fade,
@@ -747,6 +749,18 @@ impl Editor {
                 );
                 self.cached_layout.settings_layout = Some(settings_layout);
             }
+        }
+
+        // Render calibration wizard if active
+        if let Some(ref wizard) = self.calibration_wizard {
+            // Dim the editor content behind the wizard modal
+            crate::view::dimming::apply_dimming(frame, size);
+            crate::view::calibration_wizard::render_calibration_wizard(
+                frame,
+                size,
+                wizard,
+                &self.theme,
+            );
         }
 
         if self.menu_bar_visible {
@@ -1291,7 +1305,11 @@ impl Editor {
         // Get the server command for display
         let server_info = if let Some(lsp) = &self.lsp {
             if let Some(config) = lsp.get_config(language) {
-                format!("{} ({})", language, config.command)
+                if !config.command.is_empty() {
+                    format!("{} ({})", language, config.command)
+                } else {
+                    language.to_string()
+                }
             } else {
                 language.to_string()
             }
@@ -1353,7 +1371,8 @@ impl Editor {
                 if let Some(lsp) = &mut self.lsp {
                     // Temporarily allow this language for spawning
                     lsp.allow_language(&language);
-                    if lsp.get_or_spawn(&language).is_some() {
+                    // Use force_spawn since user explicitly confirmed
+                    if lsp.force_spawn(&language).is_some() {
                         tracing::info!("LSP server for {} started (allowed once)", language);
                         self.set_status_message(
                             t!("lsp.server_started", language = language).to_string(),
@@ -1371,7 +1390,8 @@ impl Editor {
                 // Spawn the LSP server and remember the preference
                 if let Some(lsp) = &mut self.lsp {
                     lsp.allow_language(&language);
-                    if lsp.get_or_spawn(&language).is_some() {
+                    // Use force_spawn since user explicitly confirmed
+                    if lsp.force_spawn(&language).is_some() {
                         tracing::info!("LSP server for {} started (always allowed)", language);
                         self.set_status_message(
                             t!("lsp.server_started_auto", language = language).to_string(),
@@ -1477,9 +1497,9 @@ impl Editor {
             return;
         };
 
-        // Send didOpen to LSP
+        // Send didOpen to LSP (use force_spawn since this is called after user confirmation)
         if let Some(lsp) = &mut self.lsp {
-            if let Some(client) = lsp.get_or_spawn(language) {
+            if let Some(client) = lsp.force_spawn(language) {
                 tracing::info!("Sending didOpen to newly started LSP for: {}", uri.as_str());
                 if let Err(e) = client.did_open(uri.clone(), text, file_language) {
                     tracing::warn!("Failed to send didOpen to LSP: {}", e);
@@ -1786,8 +1806,17 @@ impl Editor {
             full_text.len()
         );
 
+        // Only send didSave if LSP is already running (respect auto_start setting)
         if let Some(lsp) = &mut self.lsp {
-            if let Some(client) = lsp.get_or_spawn(&language) {
+            use crate::services::lsp::manager::LspSpawnResult;
+            if lsp.try_spawn(&language) != LspSpawnResult::Spawned {
+                tracing::debug!(
+                    "notify_lsp_save: LSP not running for {} (auto_start disabled)",
+                    language
+                );
+                return;
+            }
+            if let Some(client) = lsp.get_handle_mut(&language) {
                 // Send didSave with the full text content
                 if let Err(e) = client.did_save(uri, Some(full_text)) {
                     tracing::warn!("Failed to send didSave to LSP: {}", e);
@@ -1795,10 +1824,7 @@ impl Editor {
                     tracing::info!("Successfully sent didSave to LSP");
                 }
             } else {
-                tracing::warn!(
-                    "notify_lsp_save: failed to get or spawn LSP client for {}",
-                    language
-                );
+                tracing::warn!("notify_lsp_save: failed to get LSP client for {}", language);
             }
         } else {
             tracing::debug!("notify_lsp_save: no LSP manager available");
@@ -1960,11 +1986,19 @@ impl Editor {
 
         let search_range = self.pending_search_range.take();
 
+        // For large files with lazy loading, we need to load the entire buffer
+        // before searching. This ensures the search can access all content.
+        // (Issue #657: Search on large plain text files)
         let buffer_content = {
-            let state = self.active_state();
-            match state.buffer.to_string() {
-                Some(t) => t,
-                None => {
+            let state = self.active_state_mut();
+            let total_bytes = state.buffer.len();
+
+            // Force-load the entire buffer if not already loaded
+            // get_text_range_mut() handles lazy loading and returns the content
+            match state.buffer.get_text_range_mut(0, total_bytes) {
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Err(e) => {
+                    tracing::warn!("Failed to load buffer for search: {}", e);
                     self.set_status_message(t!("error.buffer_not_loaded").to_string());
                     return;
                 }
@@ -2133,7 +2167,10 @@ impl Editor {
                 .to_string(),
             );
         } else {
-            self.set_status_message(t!("search.no_active").to_string());
+            let find_key = self
+                .get_keybinding_for_action("find")
+                .unwrap_or_else(|| "Ctrl+F".to_string());
+            self.set_status_message(t!("search.no_active", find_key = find_key).to_string());
         }
     }
 
@@ -2182,7 +2219,10 @@ impl Editor {
                 .to_string(),
             );
         } else {
-            self.set_status_message(t!("search.no_active").to_string());
+            let find_key = self
+                .get_keybinding_for_action("find")
+                .unwrap_or_else(|| "Ctrl+F".to_string());
+            self.set_status_message(t!("search.no_active", find_key = find_key).to_string());
         }
     }
 
@@ -3209,7 +3249,40 @@ impl Editor {
             key,
             actions: Vec::new(),
         });
-        self.set_status_message(t!("macro.recording_with_hint", key = key).to_string());
+
+        // Build the stop hint dynamically from keybindings
+        let stop_hint = self.build_macro_stop_hint(key);
+        self.set_status_message(
+            t!(
+                "macro.recording_with_hint",
+                key = key,
+                stop_hint = stop_hint
+            )
+            .to_string(),
+        );
+    }
+
+    /// Build a hint message for how to stop macro recording
+    fn build_macro_stop_hint(&self, _key: char) -> String {
+        let mut hints = Vec::new();
+
+        // Check for F5 (stop_macro_recording)
+        if let Some(stop_key) = self.get_keybinding_for_action("stop_macro_recording") {
+            hints.push(stop_key);
+        }
+
+        // Get command palette keybinding
+        let palette_key = self
+            .get_keybinding_for_action("command_palette")
+            .unwrap_or_else(|| "Ctrl+P".to_string());
+
+        if hints.is_empty() {
+            // No keybindings found, just mention command palette
+            format!("{} → Stop Recording Macro", palette_key)
+        } else {
+            // Show keybindings and command palette
+            format!("{} or {} → Stop Recording", hints.join("/"), palette_key)
+        }
     }
 
     /// Stop recording and save the macro
@@ -3219,10 +3292,31 @@ impl Editor {
             let key = state.key;
             self.macros.insert(key, state.actions);
             self.last_macro_register = Some(key);
-            self.set_status_message(t!("macro.saved", key = key, count = action_count).to_string());
+
+            // Build play hint
+            let play_hint = self.build_macro_play_hint();
+            self.set_status_message(
+                t!(
+                    "macro.saved",
+                    key = key,
+                    count = action_count,
+                    play_hint = play_hint
+                )
+                .to_string(),
+            );
         } else {
             self.set_status_message(t!("macro.not_recording").to_string());
         }
+    }
+
+    /// Build a hint message for how to play a macro
+    fn build_macro_play_hint(&self) -> String {
+        // Get command palette keybinding
+        let palette_key = self
+            .get_keybinding_for_action("command_palette")
+            .unwrap_or_else(|| "Ctrl+P".to_string());
+
+        format!("{} → Play Macro", palette_key)
     }
 
     /// Play back a recorded macro
@@ -3338,6 +3432,7 @@ impl Editor {
             read_only: false, // Allow editing for saving
             binary: false,
             lsp_opened_with: std::collections::HashSet::new(),
+            hidden_from_tabs: false,
         };
         self.buffer_metadata.insert(buffer_id, metadata);
 
@@ -3412,6 +3507,7 @@ impl Editor {
             read_only: true,
             binary: false,
             lsp_opened_with: std::collections::HashSet::new(),
+            hidden_from_tabs: false,
         };
         self.buffer_metadata.insert(buffer_id, metadata);
 

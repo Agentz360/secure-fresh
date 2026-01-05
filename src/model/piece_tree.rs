@@ -228,7 +228,7 @@ impl BufferLocation {
     /// Get the buffer ID
     pub fn buffer_id(&self) -> usize {
         match self {
-            BufferLocation::Stored(id) | BufferLocation::Added(id) => *id,
+            Self::Stored(id) | Self::Added(id) => *id,
         }
     }
 }
@@ -322,7 +322,7 @@ impl PieceTreeNode {
     /// Find the piece containing the given byte offset
     fn find_by_offset(&self, offset: usize) -> Option<OffsetFindResult> {
         match self {
-            PieceTreeNode::Internal {
+            Self::Internal {
                 left_bytes,
                 left,
                 right,
@@ -339,7 +339,7 @@ impl PieceTreeNode {
                     })
                 }
             }
-            PieceTreeNode::Leaf {
+            Self::Leaf {
                 location,
                 offset: piece_offset,
                 bytes,
@@ -365,10 +365,10 @@ impl PieceTreeNode {
     /// Get total bytes in this node
     fn total_bytes(&self) -> usize {
         match self {
-            PieceTreeNode::Internal {
+            Self::Internal {
                 left_bytes, right, ..
             } => left_bytes + right.total_bytes(),
-            PieceTreeNode::Leaf { bytes, .. } => *bytes,
+            Self::Leaf { bytes, .. } => *bytes,
         }
     }
 
@@ -376,42 +376,38 @@ impl PieceTreeNode {
     /// Returns None if any piece has unknown line count
     fn total_line_feeds(&self) -> Option<usize> {
         match self {
-            PieceTreeNode::Internal { lf_left, right, .. } => {
-                match (lf_left, right.total_line_feeds()) {
-                    (Some(left), Some(right)) => Some(left + right),
-                    _ => None,
-                }
-            }
-            PieceTreeNode::Leaf { line_feed_cnt, .. } => *line_feed_cnt,
+            Self::Internal { lf_left, right, .. } => match (lf_left, right.total_line_feeds()) {
+                (Some(left), Some(right)) => Some(left + right),
+                _ => None,
+            },
+            Self::Leaf { line_feed_cnt, .. } => *line_feed_cnt,
         }
     }
 
     /// Get the depth of this tree
     fn depth(&self) -> usize {
         match self {
-            PieceTreeNode::Internal { left, right, .. } => 1 + left.depth().max(right.depth()),
-            PieceTreeNode::Leaf { .. } => 1,
+            Self::Internal { left, right, .. } => 1 + left.depth().max(right.depth()),
+            Self::Leaf { .. } => 1,
         }
     }
 
     /// Count the number of leaf nodes
     fn count_leaves(&self) -> usize {
         match self {
-            PieceTreeNode::Internal { left, right, .. } => {
-                left.count_leaves() + right.count_leaves()
-            }
-            PieceTreeNode::Leaf { .. } => 1,
+            Self::Internal { left, right, .. } => left.count_leaves() + right.count_leaves(),
+            Self::Leaf { .. } => 1,
         }
     }
 
     /// Collect all leaves in order
     fn collect_leaves(&self, leaves: &mut Vec<LeafData>) {
         match self {
-            PieceTreeNode::Internal { left, right, .. } => {
+            Self::Internal { left, right, .. } => {
                 left.collect_leaves(leaves);
                 right.collect_leaves(leaves);
             }
-            PieceTreeNode::Leaf {
+            Self::Leaf {
                 location,
                 offset,
                 bytes,
@@ -432,7 +428,7 @@ impl PieceTreeNode {
         end: usize,
     ) -> Option<usize> {
         match self {
-            PieceTreeNode::Internal {
+            Self::Internal {
                 left_bytes,
                 left,
                 right,
@@ -460,7 +456,7 @@ impl PieceTreeNode {
                     Some(left_count + right_count)
                 }
             }
-            PieceTreeNode::Leaf {
+            Self::Leaf {
                 line_feed_cnt,
                 bytes,
                 ..
@@ -493,7 +489,7 @@ impl PieceTreeNode {
         buffers: &[StringBuffer],
     ) -> Option<usize> {
         match self {
-            PieceTreeNode::Internal {
+            Self::Internal {
                 left_bytes,
                 lf_left,
                 left,
@@ -541,7 +537,7 @@ impl PieceTreeNode {
                     )
                 }
             }
-            PieceTreeNode::Leaf {
+            Self::Leaf {
                 location,
                 offset,
                 bytes,

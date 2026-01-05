@@ -132,9 +132,11 @@ impl Editor {
         }
 
         // If the current buffer is empty and unmodified, replace it instead of creating a new one
+        // Note: Don't replace composite buffers (they appear empty but are special views)
         let replace_current = {
             let current_state = self.buffers.get(&self.active_buffer()).unwrap();
-            current_state.buffer.is_empty()
+            !current_state.is_composite_buffer
+                && current_state.buffer.is_empty()
                 && !current_state.buffer.is_modified()
                 && current_state.buffer.file_path().is_none()
         };
@@ -485,9 +487,11 @@ impl Editor {
         self.position_history.commit_pending_movement();
 
         // If the current buffer is empty and unmodified, replace it instead of creating a new one
+        // Note: Don't replace composite buffers (they appear empty but are special views)
         let replace_current = {
             let current_state = self.buffers.get(&self.active_buffer()).unwrap();
-            current_state.buffer.is_empty()
+            !current_state.is_composite_buffer
+                && current_state.buffer.is_empty()
                 && !current_state.buffer.is_modified()
                 && current_state.buffer.file_path().is_none()
         };
@@ -985,13 +989,22 @@ impl Editor {
             self.key_context = crate::input::keybindings::KeyContext::Normal;
         }
 
-        // If it's the last buffer, create a new empty buffer and focus file explorer
-        let is_last_buffer = self.buffers.len() == 1;
-        let replacement_buffer = if is_last_buffer {
+        // Find a visible (non-hidden) replacement buffer
+        // Hidden buffers should never be switched to from UI
+        let visible_replacement = self.buffers.keys().find(|&&bid| {
+            bid != id
+                && !self
+                    .buffer_metadata
+                    .get(&bid)
+                    .map(|m| m.hidden_from_tabs)
+                    .unwrap_or(false)
+        });
+
+        let is_last_visible_buffer = visible_replacement.is_none();
+        let replacement_buffer = if is_last_visible_buffer {
             self.new_buffer()
         } else {
-            // Find a replacement buffer (any buffer that's not the one being closed)
-            *self.buffers.keys().find(|&&bid| bid != id).unwrap()
+            *visible_replacement.unwrap()
         };
 
         // Update all splits that are showing this buffer to show the replacement
@@ -1021,8 +1034,8 @@ impl Editor {
             self.set_active_buffer(replacement_buffer);
         }
 
-        // If this was the last buffer, focus file explorer
-        if is_last_buffer {
+        // If this was the last visible buffer, focus file explorer
+        if is_last_visible_buffer {
             self.focus_file_explorer();
         }
 
@@ -1408,18 +1421,45 @@ impl Editor {
         }
     }
 
-    /// Switch to next buffer in current split's tabs
-    pub fn next_buffer(&mut self) {
-        // Get the current split's open buffers
+    /// Get visible (non-hidden) buffers for the current split.
+    /// This filters out buffers with hidden_from_tabs=true.
+    fn visible_buffers_for_active_split(&self) -> Vec<BufferId> {
         let active_split = self.split_manager.active_split();
-        let ids = if let Some(view_state) = self.split_view_states.get(&active_split) {
-            view_state.open_buffers.clone()
+        if let Some(view_state) = self.split_view_states.get(&active_split) {
+            view_state
+                .open_buffers
+                .iter()
+                .copied()
+                .filter(|id| {
+                    !self
+                        .buffer_metadata
+                        .get(id)
+                        .map(|m| m.hidden_from_tabs)
+                        .unwrap_or(false)
+                })
+                .collect()
         } else {
-            // Fallback to all buffers if no view state
-            let mut all_ids: Vec<_> = self.buffers.keys().copied().collect();
+            // Fallback to all visible buffers if no view state
+            let mut all_ids: Vec<_> = self
+                .buffers
+                .keys()
+                .copied()
+                .filter(|id| {
+                    !self
+                        .buffer_metadata
+                        .get(id)
+                        .map(|m| m.hidden_from_tabs)
+                        .unwrap_or(false)
+                })
+                .collect();
             all_ids.sort_by_key(|id| id.0);
             all_ids
-        };
+        }
+    }
+
+    /// Switch to next buffer in current split's tabs
+    pub fn next_buffer(&mut self) {
+        let ids = self.visible_buffers_for_active_split();
 
         if ids.is_empty() {
             return;
@@ -1446,16 +1486,7 @@ impl Editor {
 
     /// Switch to previous buffer in current split's tabs
     pub fn prev_buffer(&mut self) {
-        // Get the current split's open buffers
-        let active_split = self.split_manager.active_split();
-        let ids = if let Some(view_state) = self.split_view_states.get(&active_split) {
-            view_state.open_buffers.clone()
-        } else {
-            // Fallback to all buffers if no view state
-            let mut all_ids: Vec<_> = self.buffers.keys().copied().collect();
-            all_ids.sort_by_key(|id| id.0);
-            all_ids
-        };
+        let ids = self.visible_buffers_for_active_split();
 
         if ids.is_empty() {
             return;

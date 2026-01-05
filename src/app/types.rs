@@ -108,6 +108,9 @@ pub struct BufferMetadata {
     /// When a server restarts, it gets a new ID, so didOpen is automatically resent.
     /// Old IDs are harmless - they just remain in the set but don't match any active server.
     pub lsp_opened_with: HashSet<u64>,
+
+    /// Whether this buffer should be hidden from tabs (used for composite source buffers)
+    pub hidden_from_tabs: bool,
 }
 
 impl BufferMetadata {
@@ -155,6 +158,7 @@ impl BufferMetadata {
             read_only: false,
             binary: false,
             lsp_opened_with: HashSet::new(),
+            hidden_from_tabs: false,
         }
     }
 
@@ -172,6 +176,7 @@ impl BufferMetadata {
             read_only: false,
             binary: false,
             lsp_opened_with: HashSet::new(),
+            hidden_from_tabs: false,
         }
     }
 
@@ -201,6 +206,7 @@ impl BufferMetadata {
             read_only: false,
             binary: false,
             lsp_opened_with: HashSet::new(),
+            hidden_from_tabs: false,
         }
     }
 
@@ -249,6 +255,23 @@ impl BufferMetadata {
             read_only,
             binary: false,
             lsp_opened_with: HashSet::new(),
+            hidden_from_tabs: false,
+        }
+    }
+
+    /// Create metadata for a hidden virtual buffer (for composite source buffers)
+    /// These buffers are not shown in tabs and are managed by their parent composite buffer.
+    /// Hidden buffers are always read-only to prevent accidental edits.
+    pub fn hidden_virtual_buffer(name: String, mode: String) -> Self {
+        Self {
+            kind: BufferKind::Virtual { mode },
+            display_name: name,
+            lsp_enabled: false,
+            lsp_disabled_reason: Some(t!("lsp.disabled.virtual").to_string()),
+            read_only: true, // Hidden buffers are always read-only
+            binary: false,
+            lsp_opened_with: HashSet::new(),
+            hidden_from_tabs: true,
         }
     }
 
@@ -363,24 +386,24 @@ pub enum TabContextMenuItem {
 
 impl TabContextMenuItem {
     /// Get all menu items in order
-    pub fn all() -> &'static [TabContextMenuItem] {
+    pub fn all() -> &'static [Self] {
         &[
-            TabContextMenuItem::Close,
-            TabContextMenuItem::CloseOthers,
-            TabContextMenuItem::CloseToRight,
-            TabContextMenuItem::CloseToLeft,
-            TabContextMenuItem::CloseAll,
+            Self::Close,
+            Self::CloseOthers,
+            Self::CloseToRight,
+            Self::CloseToLeft,
+            Self::CloseAll,
         ]
     }
 
     /// Get the display label for this menu item
     pub fn label(&self) -> String {
         match self {
-            TabContextMenuItem::Close => t!("tab.close").to_string(),
-            TabContextMenuItem::CloseOthers => t!("tab.close_others").to_string(),
-            TabContextMenuItem::CloseToRight => t!("tab.close_to_right").to_string(),
-            TabContextMenuItem::CloseToLeft => t!("tab.close_to_left").to_string(),
-            TabContextMenuItem::CloseAll => t!("tab.close_all").to_string(),
+            Self::Close => t!("tab.close").to_string(),
+            Self::CloseOthers => t!("tab.close_others").to_string(),
+            Self::CloseToRight => t!("tab.close_to_right").to_string(),
+            Self::CloseToLeft => t!("tab.close_to_left").to_string(),
+            Self::CloseAll => t!("tab.close_all").to_string(),
         }
     }
 }
@@ -454,12 +477,12 @@ impl TabDropZone {
     /// Get the split ID this drop zone is associated with
     pub fn split_id(&self) -> SplitId {
         match self {
-            TabDropZone::TabBar(id, _) => *id,
-            TabDropZone::SplitLeft(id) => *id,
-            TabDropZone::SplitRight(id) => *id,
-            TabDropZone::SplitTop(id) => *id,
-            TabDropZone::SplitBottom(id) => *id,
-            TabDropZone::SplitCenter(id) => *id,
+            Self::TabBar(id, _)
+            | Self::SplitLeft(id)
+            | Self::SplitRight(id)
+            | Self::SplitTop(id)
+            | Self::SplitBottom(id)
+            | Self::SplitCenter(id) => *id,
         }
     }
 }

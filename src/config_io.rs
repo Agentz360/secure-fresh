@@ -38,6 +38,36 @@ fn strip_nulls(value: Value) -> Option<Value> {
     }
 }
 
+/// Recursively strip default values (empty strings, empty arrays) from a JSON value.
+/// This ensures that fields with default serde values don't get saved to config files.
+fn strip_empty_defaults(value: Value) -> Option<Value> {
+    match value {
+        Value::Null => None,
+        Value::String(s) if s.is_empty() => None,
+        Value::Array(arr) if arr.is_empty() => None,
+        Value::Object(map) => {
+            let filtered: serde_json::Map<String, Value> = map
+                .into_iter()
+                .filter_map(|(k, v)| strip_empty_defaults(v).map(|v| (k, v)))
+                .collect();
+            if filtered.is_empty() {
+                None
+            } else {
+                Some(Value::Object(filtered))
+            }
+        }
+        Value::Array(arr) => {
+            let filtered: Vec<Value> = arr.into_iter().filter_map(strip_empty_defaults).collect();
+            if filtered.is_empty() {
+                None
+            } else {
+                Some(Value::Array(filtered))
+            }
+        }
+        other => Some(other),
+    }
+}
+
 // ============================================================================
 // Configuration Migration System
 // ============================================================================
@@ -101,10 +131,10 @@ impl ConfigLayer {
     /// Get the precedence level (higher = takes priority)
     pub fn precedence(self) -> u8 {
         match self {
-            ConfigLayer::System => 0,
-            ConfigLayer::User => 1,
-            ConfigLayer::Project => 2,
-            ConfigLayer::Session => 3,
+            Self::System => 0,
+            Self::User => 1,
+            Self::Project => 2,
+            Self::Session => 3,
         }
     }
 }
@@ -291,10 +321,12 @@ impl ConfigResolver {
                 .map_err(|e| ConfigError::IoError(format!("{}: {}", parent_dir.display(), e)))?;
         }
 
-        // Write delta to file, stripping null values to keep configs minimal
+        // Write delta to file, stripping null values and empty defaults to keep configs minimal
         let delta_value =
             serde_json::to_value(&delta).map_err(|e| ConfigError::SerializeError(e.to_string()))?;
-        let clean_delta = strip_nulls(delta_value).unwrap_or(Value::Object(Default::default()));
+        let stripped_nulls = strip_nulls(delta_value).unwrap_or(Value::Object(Default::default()));
+        let clean_delta =
+            strip_empty_defaults(stripped_nulls).unwrap_or(Value::Object(Default::default()));
         let json = serde_json::to_string_pretty(&clean_delta)
             .map_err(|e| ConfigError::SerializeError(e.to_string()))?;
         std::fs::write(&path, json)
@@ -507,29 +539,6 @@ impl Config {
         Self::config_search_paths(working_dir).into_iter().next()
     }
 
-    /// Load configuration, checking working directory first, then system paths.
-    ///
-    /// Falls back to defaults if no config file is found or all fail to load.
-    pub fn load_for_working_dir(working_dir: &Path) -> Self {
-        for path in Self::config_search_paths(working_dir) {
-            match Self::load_from_file(&path) {
-                Ok(config) => {
-                    tracing::info!("Loaded config from {}", path.display());
-                    return config;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to load config from {}: {}, trying next option",
-                        path.display(),
-                        e
-                    );
-                }
-            }
-        }
-        tracing::debug!("No config file found, using defaults");
-        Self::default()
-    }
-
     /// Load configuration using the 4-level layer system.
     ///
     /// Merges layers in precedence order: Session > Project > User > System
@@ -568,26 +577,6 @@ impl Config {
         }
         serde_json::Value::Object(serde_json::Map::new())
     }
-
-    /// Save configuration to a JSON file, only saving fields that differ from defaults.
-    ///
-    /// This keeps user config files minimal and clean - only user customizations are saved.
-    pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> Result<(), ConfigError> {
-        let current =
-            serde_json::to_value(self).map_err(|e| ConfigError::SerializeError(e.to_string()))?;
-        let defaults = serde_json::to_value(Self::default())
-            .map_err(|e| ConfigError::SerializeError(e.to_string()))?;
-
-        // Compute diff - only values that differ from defaults
-        let diff = json_diff(&defaults, &current);
-
-        let contents = serde_json::to_string_pretty(&diff)
-            .map_err(|e| ConfigError::SerializeError(e.to_string()))?;
-
-        std::fs::write(path.as_ref(), contents).map_err(|e| ConfigError::IoError(e.to_string()))?;
-
-        Ok(())
-    }
 }
 
 /// Compute the difference between two JSON values.
@@ -609,8 +598,10 @@ fn json_diff(defaults: &serde_json::Value, current: &serde_json::Value) -> serde
                         result.insert(key.clone(), diff);
                     }
                 } else {
-                    // Key only in current - include it entirely
-                    result.insert(key.clone(), cur_val.clone());
+                    // Key only in current - include it, but strip empty defaults
+                    if let Some(stripped) = strip_empty_defaults(cur_val.clone()) {
+                        result.insert(key.clone(), stripped);
+                    }
                 }
             }
 
@@ -618,6 +609,12 @@ fn json_diff(defaults: &serde_json::Value, current: &serde_json::Value) -> serde
         }
         // For arrays and primitives, include if different
         _ => {
+            // Treat empty string as "not set" - don't include in diff
+            if let Value::String(s) = current {
+                if s.is_empty() {
+                    return Value::Object(serde_json::Map::new()); // No diff
+                }
+            }
             if defaults == current {
                 Value::Object(serde_json::Map::new()) // Empty object signals "no diff"
             } else {
@@ -1173,5 +1170,305 @@ mod tests {
         );
 
         drop(temp);
+    }
+
+    /// Issue #630 FIX: save_to_layer saves only the delta, defaults are inherited.
+    ///
+    /// The save_to_layer method correctly:
+    /// 1. Saves only settings that differ from defaults
+    /// 2. Loads correctly because defaults are applied during resolve()
+    ///
+    /// This test verifies that modifying a config and saving works correctly.
+    #[test]
+    fn issue_630_save_to_file_strips_settings_matching_defaults() {
+        let (_temp, resolver) = create_test_resolver();
+
+        // Create a config with some non-default settings
+        let user_config_path = resolver.user_config_path();
+        std::fs::create_dir_all(user_config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &user_config_path,
+            r#"{
+                "theme": "dracula",
+                "editor": {
+                    "tab_size": 2
+                }
+            }"#,
+        )
+        .unwrap();
+
+        // Load the config
+        let mut config = resolver.resolve().unwrap();
+        assert_eq!(config.theme.0, "dracula");
+        assert_eq!(config.editor.tab_size, 2);
+
+        // User disables LSP via UI
+        if let Some(lsp_config) = config.lsp.get_mut("python") {
+            lsp_config.enabled = false;
+        }
+
+        // Save using save_to_layer
+        resolver.save_to_layer(&config, ConfigLayer::User).unwrap();
+
+        // Read back the saved config file
+        let content = std::fs::read_to_string(&user_config_path).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+        eprintln!(
+            "Saved config:\n{}",
+            serde_json::to_string_pretty(&json).unwrap()
+        );
+
+        // Verify the delta contains what we changed
+        assert_eq!(
+            json.get("theme").and_then(|v| v.as_str()),
+            Some("dracula"),
+            "Theme should be saved (differs from default)"
+        );
+        assert_eq!(
+            json.get("editor")
+                .and_then(|e| e.get("tab_size"))
+                .and_then(|v| v.as_u64()),
+            Some(2),
+            "tab_size should be saved (differs from default)"
+        );
+        assert_eq!(
+            json.get("lsp")
+                .and_then(|l| l.get("python"))
+                .and_then(|p| p.get("enabled"))
+                .and_then(|v| v.as_bool()),
+            Some(false),
+            "lsp.python.enabled should be saved (differs from default)"
+        );
+
+        // Reload and verify the full config is correct
+        let reloaded = resolver.resolve().unwrap();
+        assert_eq!(reloaded.theme.0, "dracula");
+        assert_eq!(reloaded.editor.tab_size, 2);
+        assert!(!reloaded.lsp["python"].enabled);
+        // Command should come from defaults
+        assert_eq!(reloaded.lsp["python"].command, "pylsp");
+    }
+
+    /// Test that toggling LSP enabled/disabled preserves the command field.
+    ///
+    /// 1. Start with empty config (defaults apply, python has command "pylsp")
+    /// 2. Disable python LSP, save
+    /// 3. Load, enable python LSP, save
+    /// 4. Load and verify command is still the default
+    #[test]
+    fn toggle_lsp_preserves_command() {
+        let (_temp, resolver) = create_test_resolver();
+        let user_config_path = resolver.user_config_path();
+        std::fs::create_dir_all(user_config_path.parent().unwrap()).unwrap();
+
+        // Step 1: Empty config - defaults apply (python has command "pylsp")
+        std::fs::write(&user_config_path, r#"{}"#).unwrap();
+
+        // Load and verify default command
+        let config = resolver.resolve().unwrap();
+        let original_command = config.lsp["python"].command.clone();
+        assert!(
+            !original_command.is_empty(),
+            "Default python LSP should have a command"
+        );
+
+        // Step 2: Disable python LSP, save
+        let mut config = resolver.resolve().unwrap();
+        config.lsp.get_mut("python").unwrap().enabled = false;
+        resolver.save_to_layer(&config, ConfigLayer::User).unwrap();
+
+        // Verify saved file only has enabled:false, not empty command/args
+        let saved_content = std::fs::read_to_string(&user_config_path).unwrap();
+        assert!(
+            !saved_content.contains(r#""command""#),
+            "Saved config should not contain 'command' field. File content: {}",
+            saved_content
+        );
+        assert!(
+            !saved_content.contains(r#""args""#),
+            "Saved config should not contain 'args' field. File content: {}",
+            saved_content
+        );
+
+        // Step 3: Load again, enable python LSP, save
+        let mut config = resolver.resolve().unwrap();
+        assert!(!config.lsp["python"].enabled);
+        config.lsp.get_mut("python").unwrap().enabled = true;
+        resolver.save_to_layer(&config, ConfigLayer::User).unwrap();
+
+        // Step 4: Load and verify command is still the same
+        let config = resolver.resolve().unwrap();
+        assert_eq!(
+            config.lsp["python"].command, original_command,
+            "Command should be preserved after toggling enabled. Got: '{}'",
+            config.lsp["python"].command
+        );
+    }
+
+    /// Issue #631 REPRODUCTION: Config with disabled LSP (no command) should be valid.
+    ///
+    /// Users write configs like:
+    /// ```json
+    /// { "lsp": { "python": { "enabled": false } } }
+    /// ```
+    /// This SHOULD be valid - a disabled LSP doesn't need a command.
+    /// But currently it FAILS because `command` is required.
+    ///
+    /// THIS TEST WILL FAIL until the bug is fixed.
+    #[test]
+    fn issue_631_disabled_lsp_without_command_should_be_valid() {
+        let (_temp, resolver) = create_test_resolver();
+
+        // Create the exact config from issue #631 - disabled LSP without command field
+        let user_config_path = resolver.user_config_path();
+        std::fs::create_dir_all(user_config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &user_config_path,
+            r#"{
+                "lsp": {
+                    "json": { "enabled": false },
+                    "python": { "enabled": false },
+                    "toml": { "enabled": false }
+                },
+                "theme": "dracula"
+            }"#,
+        )
+        .unwrap();
+
+        // Try to load this config - it SHOULD succeed
+        let result = resolver.resolve();
+
+        // THIS ASSERTION FAILS - demonstrating bug #631
+        // A disabled LSP config should NOT require a command field
+        assert!(
+            result.is_ok(),
+            "BUG #631: Config with disabled LSP should be valid even without 'command' field. \
+             Got parse error: {:?}",
+            result.err()
+        );
+
+        // Verify the theme was loaded (config parsed correctly)
+        let config = result.unwrap();
+        assert_eq!(
+            config.theme.0, "dracula",
+            "Theme should be 'dracula' from config file"
+        );
+    }
+
+    /// Test that loading a config without command field uses the default command.
+    #[test]
+    fn loading_lsp_without_command_uses_default() {
+        let (_temp, resolver) = create_test_resolver();
+        let user_config_path = resolver.user_config_path();
+        std::fs::create_dir_all(user_config_path.parent().unwrap()).unwrap();
+
+        // Write config with rust LSP but no command field
+        std::fs::write(
+            &user_config_path,
+            r#"{ "lsp": { "rust": { "enabled": false } } }"#,
+        )
+        .unwrap();
+
+        // Load and check that command comes from defaults
+        let config = resolver.resolve().unwrap();
+        assert_eq!(
+            config.lsp["rust"].command, "rust-analyzer",
+            "Command should come from defaults when not in file. Got: '{}'",
+            config.lsp["rust"].command
+        );
+        assert!(
+            !config.lsp["rust"].enabled,
+            "enabled should be false from file"
+        );
+    }
+
+    /// Test simulating the Settings UI flow:
+    /// 1. Load config with defaults
+    /// 2. Apply change (toggle enabled) via JSON pointer (like Settings UI does)
+    /// 3. Save via save_to_layer
+    /// 4. Reload and verify command is preserved
+    #[test]
+    fn settings_ui_toggle_lsp_preserves_command() {
+        let (_temp, resolver) = create_test_resolver();
+        let user_config_path = resolver.user_config_path();
+        std::fs::create_dir_all(user_config_path.parent().unwrap()).unwrap();
+
+        // Step 1: Start with empty config
+        std::fs::write(&user_config_path, r#"{}"#).unwrap();
+
+        // Load resolved config - should have rust with command="rust-analyzer"
+        let config = resolver.resolve().unwrap();
+        assert_eq!(
+            config.lsp["rust"].command, "rust-analyzer",
+            "Default rust command should be rust-analyzer"
+        );
+        assert!(
+            config.lsp["rust"].enabled,
+            "Default rust enabled should be true"
+        );
+
+        // Step 2: Simulate Settings UI applying a change to disable rust LSP
+        // (This mimics what SettingsState::apply_changes does)
+        let mut config_json = serde_json::to_value(&config).unwrap();
+        *config_json
+            .pointer_mut("/lsp/rust/enabled")
+            .expect("path should exist") = serde_json::json!(false);
+        let modified_config: crate::config::Config =
+            serde_json::from_value(config_json).expect("should deserialize");
+
+        // Verify command is still present after JSON round-trip
+        assert_eq!(
+            modified_config.lsp["rust"].command, "rust-analyzer",
+            "Command should be preserved after JSON modification"
+        );
+
+        // Step 3: Save via save_to_layer
+        resolver
+            .save_to_layer(&modified_config, ConfigLayer::User)
+            .unwrap();
+
+        // Check what was saved to file
+        let saved_content = std::fs::read_to_string(&user_config_path).unwrap();
+        eprintln!("After disable, file contains:\n{}", saved_content);
+
+        // Note: File may contain extra fields like auto_start, process_limits due to
+        // how json_diff handles nested objects. The important thing is that command
+        // is NOT in the file (it matches defaults) and reloading works correctly.
+
+        // Step 4: Reload and verify command is preserved
+        let reloaded = resolver.resolve().unwrap();
+        assert_eq!(
+            reloaded.lsp["rust"].command, "rust-analyzer",
+            "Command should be preserved after save/reload (disabled). Got: '{}'",
+            reloaded.lsp["rust"].command
+        );
+        assert!(!reloaded.lsp["rust"].enabled, "rust should be disabled");
+
+        // Step 5: Re-enable rust LSP (simulating Settings UI)
+        let mut config_json = serde_json::to_value(&reloaded).unwrap();
+        *config_json
+            .pointer_mut("/lsp/rust/enabled")
+            .expect("path should exist") = serde_json::json!(true);
+        let modified_config: crate::config::Config =
+            serde_json::from_value(config_json).expect("should deserialize");
+
+        // Step 6: Save via save_to_layer
+        resolver
+            .save_to_layer(&modified_config, ConfigLayer::User)
+            .unwrap();
+
+        // Check what was saved to file
+        let saved_content = std::fs::read_to_string(&user_config_path).unwrap();
+        eprintln!("After re-enable, file contains:\n{}", saved_content);
+
+        // Step 7: Reload and verify command is STILL preserved
+        let final_config = resolver.resolve().unwrap();
+        assert_eq!(
+            final_config.lsp["rust"].command, "rust-analyzer",
+            "Command should be preserved after toggle cycle. Got: '{}'",
+            final_config.lsp["rust"].command
+        );
+        assert!(final_config.lsp["rust"].enabled, "rust should be enabled");
     }
 }

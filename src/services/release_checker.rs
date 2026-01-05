@@ -40,14 +40,14 @@ pub enum InstallMethod {
 impl InstallMethod {
     /// Get the update command for this installation method
     pub fn update_command(&self) -> Option<&'static str> {
-        match self {
-            InstallMethod::Homebrew => Some(" brew upgrade fresh-editor"),
-            InstallMethod::Cargo => Some("cargo install fresh-editor"),
-            InstallMethod::Npm => Some("npm update -g @fresh-editor/fresh-editor"),
-            InstallMethod::Aur => Some("yay -Syu fresh-editor  # or use your AUR helper"),
-            InstallMethod::PackageManager => Some("Update using your system package manager"),
-            InstallMethod::Unknown => None,
-        }
+        Some(match self {
+            Self::Homebrew => " brew upgrade fresh-editor",
+            Self::Cargo => "cargo install fresh-editor",
+            Self::Npm => "npm update -g @fresh-editor/fresh-editor",
+            Self::Aur => "yay -Syu fresh-editor  # or use your AUR helper",
+            Self::PackageManager => "Update using your system package manager",
+            Self::Unknown => return None,
+        })
     }
 }
 

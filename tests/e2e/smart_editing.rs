@@ -798,6 +798,76 @@ fn test_toggle_macro_recording() {
     );
 }
 
+/// Test that macro recording hint message shows correct keybindings (fix for issue #659)
+/// The message should show dynamic keybindings (F5 and command palette) not hardcoded ones.
+#[test]
+fn test_macro_recording_hint_shows_correct_keybinding() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+    std::fs::write(&file_path, "test").unwrap();
+
+    let mut harness = harness_with_auto_indent();
+    harness.open_file(&file_path).unwrap();
+
+    // Start recording macro 1 using Alt+Shift+1
+    harness
+        .send_key(KeyCode::Char('1'), KeyModifiers::ALT | KeyModifiers::SHIFT)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Get the status message
+    let status = harness
+        .editor()
+        .get_status_message()
+        .cloned()
+        .unwrap_or_default();
+
+    // Verify recording started
+    assert!(
+        status.contains("Recording macro") && status.contains("'1'"),
+        "Should show recording status, got: {}",
+        status
+    );
+
+    // The message should NOT contain the hardcoded "Ctrl+Shift+R" (which was never bound)
+    assert!(
+        !status.contains("Ctrl+Shift+R"),
+        "Message should NOT contain hardcoded Ctrl+Shift+R, got: {}",
+        status
+    );
+
+    // The message should contain the actual keybinding (F5) or mention command palette
+    assert!(
+        status.contains("F5") || status.contains("Ctrl+P"),
+        "Message should mention F5 or Ctrl+P (command palette), got: {}",
+        status
+    );
+
+    // Verify F5 actually stops recording
+    harness.send_key(KeyCode::F(5), KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+
+    let status_after = harness
+        .editor()
+        .get_status_message()
+        .cloned()
+        .unwrap_or_default();
+
+    // The status should say "saved" after F5
+    assert!(
+        status_after.contains("saved"),
+        "F5 should stop recording, got: {}",
+        status_after
+    );
+
+    // The saved message should also contain a play hint mentioning command palette
+    assert!(
+        status_after.contains("Ctrl+P") || status_after.contains("Play"),
+        "Saved message should mention how to play macro, got: {}",
+        status_after
+    );
+}
+
 // =============================================================================
 // Jump to Next/Previous Error Tests
 // =============================================================================

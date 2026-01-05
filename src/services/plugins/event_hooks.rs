@@ -19,7 +19,7 @@ pub trait EventHooks {
 impl EventHooks for Event {
     fn before_hook(&self, buffer_id: BufferId) -> Option<HookArgs> {
         match self {
-            Event::Insert {
+            Self::Insert {
                 position,
                 text,
                 cursor_id: _,
@@ -28,7 +28,7 @@ impl EventHooks for Event {
                 position: *position,
                 text: text.clone(),
             }),
-            Event::Delete { range, .. } => Some(HookArgs::BeforeDelete {
+            Self::Delete { range, .. } => Some(HookArgs::BeforeDelete {
                 buffer_id,
                 range: range.clone(),
             }),
@@ -38,7 +38,7 @@ impl EventHooks for Event {
 
     fn after_hook(&self, buffer_id: BufferId) -> Option<HookArgs> {
         match self {
-            Event::Insert {
+            Self::Insert {
                 position,
                 text,
                 cursor_id: _,
@@ -53,7 +53,7 @@ impl EventHooks for Event {
                 end_line: 0,
                 lines_added: 0,
             }),
-            Event::Delete {
+            Self::Delete {
                 range,
                 deleted_text,
                 ..
@@ -68,7 +68,7 @@ impl EventHooks for Event {
                 end_line: 0,
                 lines_removed: 0,
             }),
-            Event::MoveCursor {
+            Self::MoveCursor {
                 cursor_id,
                 old_position,
                 new_position,

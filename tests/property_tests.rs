@@ -25,15 +25,15 @@ impl EditOp {
     /// Apply this operation to the test harness
     fn apply(&self, harness: &mut EditorTestHarness) -> std::io::Result<()> {
         match self {
-            EditOp::TypeChar(ch) => harness.type_text(&ch.to_string()),
-            EditOp::TypeString(s) => harness.type_text(s),
-            EditOp::Backspace => harness.send_key(KeyCode::Backspace, KeyModifiers::NONE),
-            EditOp::Delete => harness.send_key(KeyCode::Delete, KeyModifiers::NONE),
-            EditOp::Enter => harness.send_key(KeyCode::Enter, KeyModifiers::NONE),
-            EditOp::Left => harness.send_key(KeyCode::Left, KeyModifiers::NONE),
-            EditOp::Right => harness.send_key(KeyCode::Right, KeyModifiers::NONE),
-            EditOp::Home => harness.send_key(KeyCode::Home, KeyModifiers::NONE),
-            EditOp::End => harness.send_key(KeyCode::End, KeyModifiers::NONE),
+            Self::TypeChar(ch) => harness.type_text(&ch.to_string()),
+            Self::TypeString(s) => harness.type_text(s),
+            Self::Backspace => harness.send_key(KeyCode::Backspace, KeyModifiers::NONE),
+            Self::Delete => harness.send_key(KeyCode::Delete, KeyModifiers::NONE),
+            Self::Enter => harness.send_key(KeyCode::Enter, KeyModifiers::NONE),
+            Self::Left => harness.send_key(KeyCode::Left, KeyModifiers::NONE),
+            Self::Right => harness.send_key(KeyCode::Right, KeyModifiers::NONE),
+            Self::Home => harness.send_key(KeyCode::Home, KeyModifiers::NONE),
+            Self::End => harness.send_key(KeyCode::End, KeyModifiers::NONE),
         }
     }
 }

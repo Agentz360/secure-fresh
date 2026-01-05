@@ -91,8 +91,12 @@ impl Editor {
             };
 
             if let Some(lsp) = self.lsp.as_mut() {
-                if let Some(handle) = lsp.get_or_spawn(&lang_id) {
-                    let _ = handle.did_open(uri, content, lang_id);
+                // Respect auto_start setting for this user action
+                use crate::services::lsp::manager::LspSpawnResult;
+                if lsp.try_spawn(&lang_id) == LspSpawnResult::Spawned {
+                    if let Some(handle) = lsp.get_handle_mut(&lang_id) {
+                        let _ = handle.did_open(uri, content, lang_id);
+                    }
                 }
             }
         }
@@ -122,6 +126,7 @@ impl Editor {
                     .lsp
                     .as_ref()
                     .and_then(|lsp| lsp.get_config(lang))
+                    .filter(|c| !c.command.is_empty())
                     .map(|c| format!("Command: {}", c.command));
 
                 Suggestion {
