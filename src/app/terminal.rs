@@ -466,11 +466,20 @@ impl Editor {
             }
 
             // In read-only view, keep line wrapping disabled for terminal buffers
+            // Also scroll viewport to show the end of the buffer where the cursor is
             if let Some(view_state) = self
                 .split_view_states
                 .get_mut(&self.split_manager.active_split())
             {
                 view_state.viewport.line_wrap_enabled = false;
+
+                // Scroll viewport to make cursor visible at the end of buffer
+                if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                    let cursor = *state.cursors.primary();
+                    view_state
+                        .viewport
+                        .ensure_visible(&mut state.buffer, &cursor);
+                }
             }
         }
     }
@@ -559,6 +568,11 @@ impl Editor {
     /// Check if terminal mode is active (for testing)
     pub fn is_terminal_mode(&self) -> bool {
         self.terminal_mode
+    }
+
+    /// Check if a buffer is in terminal_mode_resume set (for testing/debugging)
+    pub fn is_in_terminal_mode_resume(&self, buffer_id: BufferId) -> bool {
+        self.terminal_mode_resume.contains(&buffer_id)
     }
 
     /// Check if keyboard capture is enabled in terminal mode (for testing)

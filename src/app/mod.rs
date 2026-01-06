@@ -1464,6 +1464,10 @@ impl Editor {
         if self.terminal_mode_resume.contains(&buffer_id) && self.is_terminal_buffer(buffer_id) {
             self.terminal_mode = true;
             self.key_context = crate::input::keybindings::KeyContext::Terminal;
+        } else if self.is_terminal_buffer(buffer_id) {
+            // Switching to terminal in read-only mode - sync buffer to show current terminal content
+            // This ensures the backing file content and cursor position are up to date
+            self.sync_terminal_to_buffer(buffer_id);
         }
 
         // Add buffer to the active split's open_buffers (tabs) if not already there
@@ -2626,6 +2630,17 @@ impl Editor {
 
     /// Cancel the current prompt and return to normal mode
     pub fn cancel_prompt(&mut self) {
+        // Extract theme to restore if this is a SelectTheme prompt
+        let theme_to_restore = if let Some(ref prompt) = self.prompt {
+            if let PromptType::SelectTheme { original_theme } = &prompt.prompt_type {
+                Some(original_theme.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Determine prompt type and reset appropriate history navigation
         if let Some(ref prompt) = self.prompt {
             match &prompt.prompt_type {
@@ -2654,7 +2669,7 @@ impl Editor {
                     };
                     self.apply_event_to_active_buffer(&remove_overlay_event);
                 }
-                PromptType::OpenFile | PromptType::SwitchProject => {
+                PromptType::OpenFile | PromptType::SwitchProject | PromptType::SaveFileAs => {
                     // Clear file browser state
                     self.file_open_state = None;
                     self.file_browser_layout = None;
@@ -2666,6 +2681,11 @@ impl Editor {
         self.prompt = None;
         self.pending_search_range = None;
         self.status_message = Some(t!("search.cancelled").to_string());
+
+        // Restore original theme if we were in SelectTheme prompt
+        if let Some(original_theme) = theme_to_restore {
+            self.preview_theme(&original_theme);
+        }
     }
 
     /// Get the confirmed input and prompt type, consuming the prompt
@@ -2683,7 +2703,7 @@ impl Editor {
                     | PromptType::SwitchProject
                     | PromptType::SaveFileAs
                     | PromptType::StopLspServer
-                    | PromptType::SelectTheme
+                    | PromptType::SelectTheme { .. }
                     | PromptType::SelectLocale
                     | PromptType::SwitchToTab
             ) {
@@ -2820,6 +2840,10 @@ impl Editor {
         match prompt_type {
             PromptType::Command => {
                 let selection_active = self.has_active_selection();
+                let active_buffer_mode = self
+                    .buffer_metadata
+                    .get(&self.active_buffer())
+                    .and_then(|m| m.virtual_mode());
                 if let Some(prompt) = &mut self.prompt {
                     // Use the underlying context (not Prompt context) for filtering
                     prompt.suggestions = self.command_registry.read().unwrap().filter(
@@ -2828,6 +2852,7 @@ impl Editor {
                         &self.keybindings,
                         selection_active,
                         &self.active_custom_contexts,
+                        active_buffer_mode,
                     );
                     prompt.selected_suggestion = if prompt.suggestions.is_empty() {
                         None
@@ -2846,23 +2871,9 @@ impl Editor {
                 // Reset history navigation when user types - allows Up to navigate history
                 self.replace_history.reset_navigation();
             }
-            PromptType::OpenFile | PromptType::SwitchProject => {
-                // For OpenFile/SwitchProject, update the file browser filter (native implementation)
+            PromptType::OpenFile | PromptType::SwitchProject | PromptType::SaveFileAs => {
+                // For OpenFile/SwitchProject/SaveFileAs, update the file browser filter (native implementation)
                 self.update_file_open_filter();
-            }
-            PromptType::SaveFileAs => {
-                // Fire plugin hook for file path completion.
-                // The hook is processed asynchronously by the plugin thread.
-                // Commands (SetPromptSuggestions) will be picked up by the main loop's
-                // process_async_messages() -> process_plugin_commands() on the next frame.
-                use crate::services::plugins::hooks::HookArgs;
-                self.plugin_manager.run_hook(
-                    "prompt_changed",
-                    HookArgs::PromptChanged {
-                        prompt_type: "save-file-as".to_string(),
-                        input,
-                    },
-                );
             }
             PromptType::Plugin { custom_type } => {
                 // Fire plugin hook for prompt input change
@@ -2874,51 +2885,22 @@ impl Editor {
                         input,
                     },
                 );
+                // Apply fuzzy filtering if original_suggestions is set
+                if let Some(prompt) = &mut self.prompt {
+                    prompt.filter_suggestions(false);
+                }
             }
             PromptType::SwitchToTab
-            | PromptType::SelectTheme
-            | PromptType::SelectLocale
+            | PromptType::SelectTheme { .. }
             | PromptType::StopLspServer => {
-                // Filter suggestions using fuzzy matching
-                use crate::input::fuzzy::{fuzzy_match, FuzzyMatch};
-
                 if let Some(prompt) = &mut self.prompt {
-                    let match_description = matches!(prompt.prompt_type, PromptType::SelectLocale);
-
-                    if let Some(original) = &prompt.original_suggestions {
-                        // Apply fuzzy filtering with scoring
-                        let mut filtered: Vec<(crate::input::commands::Suggestion, i32)> = original
-                            .iter()
-                            .filter_map(|s| {
-                                let text_result = fuzzy_match(&input, &s.text);
-                                // For locale selection, also match on description (language names)
-                                let desc_result = if match_description {
-                                    s.description
-                                        .as_ref()
-                                        .map(|d| fuzzy_match(&input, d))
-                                        .unwrap_or_else(FuzzyMatch::no_match)
-                                } else {
-                                    FuzzyMatch::no_match()
-                                };
-                                // Use the best score from either text or description match
-                                if text_result.matched || desc_result.matched {
-                                    Some((s.clone(), text_result.score.max(desc_result.score)))
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-
-                        // Sort by score (best matches first)
-                        filtered.sort_by(|a, b| b.1.cmp(&a.1));
-
-                        prompt.suggestions = filtered.into_iter().map(|(s, _)| s).collect();
-                        prompt.selected_suggestion = if prompt.suggestions.is_empty() {
-                            None
-                        } else {
-                            Some(0)
-                        };
-                    }
+                    prompt.filter_suggestions(false);
+                }
+            }
+            PromptType::SelectLocale => {
+                // Locale selection also matches on description (language names)
+                if let Some(prompt) = &mut self.prompt {
+                    prompt.filter_suggestions(true);
                 }
             }
             _ => {}

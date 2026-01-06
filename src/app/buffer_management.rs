@@ -983,10 +983,31 @@ impl Editor {
         // Save file state before closing (for per-file session persistence)
         self.save_file_state_on_close(id);
 
-        // If closing a terminal buffer while in terminal mode, exit terminal mode
-        if self.terminal_mode && self.is_terminal_buffer(id) {
-            self.terminal_mode = false;
-            self.key_context = crate::input::keybindings::KeyContext::Normal;
+        // If closing a terminal buffer, clean up terminal-related data structures
+        if let Some(terminal_id) = self.terminal_buffers.remove(&id) {
+            // Close the terminal process
+            self.terminal_manager.close(terminal_id);
+
+            // Clean up backing/rendering file
+            let backing_file = self.terminal_backing_files.remove(&terminal_id);
+            if let Some(ref path) = backing_file {
+                let _ = std::fs::remove_file(path);
+            }
+            // Clean up raw log file
+            if let Some(log_file) = self.terminal_log_files.remove(&terminal_id) {
+                if backing_file.as_ref() != Some(&log_file) {
+                    let _ = std::fs::remove_file(&log_file);
+                }
+            }
+
+            // Remove from terminal_mode_resume to prevent stale entries
+            self.terminal_mode_resume.remove(&id);
+
+            // Exit terminal mode if we were in it
+            if self.terminal_mode {
+                self.terminal_mode = false;
+                self.key_context = crate::input::keybindings::KeyContext::Normal;
+            }
         }
 
         // Find a visible (non-hidden) replacement buffer
@@ -1006,6 +1027,14 @@ impl Editor {
         } else {
             *visible_replacement.unwrap()
         };
+
+        // Switch to replacement buffer BEFORE updating splits.
+        // This is important because set_active_buffer returns early if the buffer
+        // is already active, and updating splits changes what active_buffer() returns.
+        // We need set_active_buffer to run its terminal_mode_resume logic.
+        if self.active_buffer() == id {
+            self.set_active_buffer(replacement_buffer);
+        }
 
         // Update all splits that are showing this buffer to show the replacement
         let splits_to_update = self.split_manager.splits_for_buffer(id);
@@ -1027,11 +1056,6 @@ impl Editor {
         // Remove buffer from all splits' open_buffers lists
         for view_state in self.split_view_states.values_mut() {
             view_state.remove_buffer(id);
-        }
-
-        // Switch to another buffer if we closed the active one
-        if self.active_buffer() == id {
-            self.set_active_buffer(replacement_buffer);
         }
 
         // If this was the last visible buffer, focus file explorer
@@ -1088,6 +1112,35 @@ impl Editor {
         let is_last_viewport = buffer_in_other_splits == 0;
 
         if is_last_viewport {
+            // If this is the only buffer in this split AND there are other splits,
+            // close the split instead of the buffer (don't create an empty replacement)
+            let has_other_splits = self.split_manager.root().count_leaves() > 1;
+            if current_split_tabs.len() <= 1 && has_other_splits {
+                // Check for unsaved changes first
+                if self.active_state().buffer.is_modified() {
+                    let name = self.get_buffer_display_name(buffer_id);
+                    let save_key = t!("prompt.key.save").to_string();
+                    let discard_key = t!("prompt.key.discard").to_string();
+                    let cancel_key = t!("prompt.key.cancel").to_string();
+                    self.start_prompt(
+                        t!(
+                            "prompt.buffer_modified",
+                            name = name,
+                            save_key = save_key,
+                            discard_key = discard_key,
+                            cancel_key = cancel_key
+                        )
+                        .to_string(),
+                        PromptType::ConfirmCloseBuffer { buffer_id },
+                    );
+                    return;
+                }
+                // Close the buffer first, then the split
+                let _ = self.close_buffer(buffer_id);
+                self.close_active_split();
+                return;
+            }
+
             // Last viewport of this buffer - close the buffer entirely
             if self.active_state().buffer.is_modified() {
                 // Buffer has unsaved changes - prompt for confirmation
@@ -1115,6 +1168,11 @@ impl Editor {
             // There are other viewports of this buffer - just remove from current split's tabs
             if current_split_tabs.len() <= 1 {
                 // This is the only tab in this split - close the split
+                // If we're closing a terminal buffer while in terminal mode, exit terminal mode
+                if self.terminal_mode && self.is_terminal_buffer(buffer_id) {
+                    self.terminal_mode = false;
+                    self.key_context = crate::input::keybindings::KeyContext::Normal;
+                }
                 self.close_active_split();
                 return;
             }
@@ -1126,6 +1184,12 @@ impl Editor {
                 .unwrap_or(0);
             let replacement_idx = if current_idx > 0 { current_idx - 1 } else { 1 };
             let replacement_buffer = current_split_tabs[replacement_idx];
+
+            // If we're closing a terminal buffer while in terminal mode, exit terminal mode
+            if self.terminal_mode && self.is_terminal_buffer(buffer_id) {
+                self.terminal_mode = false;
+                self.key_context = crate::input::keybindings::KeyContext::Normal;
+            }
 
             // Remove buffer from this split's tabs
             if let Some(view_state) = self.split_view_states.get_mut(&active_split) {

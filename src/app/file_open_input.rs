@@ -6,18 +6,19 @@
 use super::file_open::{FileOpenSection, SortMode};
 use super::Editor;
 use crate::input::keybindings::Action;
+use crate::primitives::path_utils::expand_tilde;
 use crate::view::prompt::PromptType;
 use rust_i18n::t;
 
 impl Editor {
-    /// Check if the file open dialog is active (for both OpenFile and SwitchProject)
+    /// Check if the file open dialog is active (for OpenFile, SwitchProject, or SaveFileAs)
     pub fn is_file_open_active(&self) -> bool {
         self.prompt
             .as_ref()
             .map(|p| {
                 matches!(
                     p.prompt_type,
-                    PromptType::OpenFile | PromptType::SwitchProject
+                    PromptType::OpenFile | PromptType::SwitchProject | PromptType::SaveFileAs
                 )
             })
             .unwrap_or(false)
@@ -29,6 +30,14 @@ impl Editor {
         self.prompt
             .as_ref()
             .map(|p| p.prompt_type == PromptType::SwitchProject)
+            .unwrap_or(false)
+    }
+
+    /// Check if we're in save mode (Save As)
+    fn is_save_mode(&self) -> bool {
+        self.prompt
+            .as_ref()
+            .map(|p| p.prompt_type == PromptType::SaveFileAs)
             .unwrap_or(false)
     }
 
@@ -149,6 +158,7 @@ impl Editor {
     /// Confirm selection in file open dialog
     fn file_open_confirm(&mut self) {
         let is_folder_mode = self.is_folder_open_mode();
+        let is_save_mode = self.is_save_mode();
         let prompt_input = self
             .prompt
             .as_ref()
@@ -164,16 +174,10 @@ impl Editor {
 
         // If there's any prompt input, try to resolve it as a path
         if !prompt_input.is_empty() {
-            let expanded_path = if prompt_input.starts_with('~') {
-                // Path starting with ~
-                if let Some(home) = dirs::home_dir() {
-                    home.join(&prompt_input[1..].trim_start_matches('/'))
-                } else {
-                    std::path::PathBuf::from(&prompt_input)
-                }
-            } else if prompt_input.starts_with('/') {
-                // Absolute path
-                std::path::PathBuf::from(&prompt_input)
+            // Expand tilde and resolve path
+            let tilde_expanded = expand_tilde(&prompt_input);
+            let expanded_path = if tilde_expanded.is_absolute() {
+                tilde_expanded
             } else {
                 // Relative path (including plain filename) - resolve against current directory
                 current_dir.join(&prompt_input)
@@ -187,13 +191,23 @@ impl Editor {
                     self.file_open_navigate_to(expanded_path);
                 }
                 return;
+            } else if is_save_mode {
+                // In save mode, save to the specified path
+                self.file_open_save_file(expanded_path);
+                return;
             } else if expanded_path.is_file() && !is_folder_mode {
                 // File exists - open it directly (handles pasted paths before async load completes)
                 // Only allowed in file mode, not folder mode
                 self.file_open_open_file(expanded_path);
                 return;
+            } else if !is_folder_mode && Self::should_create_new_file(&prompt_input) {
+                // File doesn't exist but input looks like a filename - create new file
+                // This handles cases like "newfile.txt" or "/path/to/newfile.txt"
+                self.file_open_create_new_file(expanded_path);
+                return;
             }
-            // File doesn't exist - fall through to use selected entry from file list
+            // File doesn't exist and doesn't look like a new filename -
+            // fall through to use selected entry from file list
             // This allows partial filters like "bar" to match "bar.txt"
         }
 
@@ -213,6 +227,11 @@ impl Editor {
             let path = match state.get_selected_path() {
                 Some(p) => p,
                 None => {
+                    // In save mode with no input, we can't save
+                    if is_save_mode {
+                        self.set_status_message(t!("file.save_as_no_filename").to_string());
+                        return;
+                    }
                     // If no file is selected but we're in folder mode, use the current directory
                     if is_folder_mode {
                         self.file_open_select_folder(current_dir);
@@ -232,6 +251,9 @@ impl Editor {
                 // Navigate into directory
                 self.file_open_navigate_to(path);
             }
+        } else if is_save_mode {
+            // In save mode, save to the selected file
+            self.file_open_save_file(path);
         } else if !is_folder_mode {
             // Open the file (only in file mode)
             self.file_open_open_file(path);
@@ -277,6 +299,71 @@ impl Editor {
         }
     }
 
+    /// Create a new file (opens an unsaved buffer that will create the file on save)
+    fn file_open_create_new_file(&mut self, path: std::path::PathBuf) {
+        // Close the file browser
+        self.file_open_state = None;
+        self.prompt = None;
+
+        // Open the file - this will create an unsaved buffer with the path set
+        if let Err(e) = self.open_file(&path) {
+            self.set_status_message(t!("file.error_opening", error = e.to_string()).to_string());
+        } else {
+            self.set_status_message(
+                t!("file.created_new", path = path.display().to_string()).to_string(),
+            );
+        }
+    }
+
+    /// Save the current buffer to a file (for SaveFileAs mode)
+    fn file_open_save_file(&mut self, path: std::path::PathBuf) {
+        use crate::view::prompt::PromptType as PT;
+
+        // Close the file browser
+        self.file_open_state = None;
+        self.prompt = None;
+
+        // Check if file exists and is different from current file
+        let current_file_path = self
+            .active_state()
+            .buffer
+            .file_path()
+            .map(|p| p.to_path_buf());
+        let is_different_file = current_file_path.as_ref() != Some(&path);
+
+        if is_different_file && path.is_file() {
+            // File exists and is different from current - ask for confirmation
+            let filename = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.display().to_string());
+            self.start_prompt(
+                t!("buffer.overwrite_confirm", name = &filename).to_string(),
+                PT::ConfirmOverwriteFile { path },
+            );
+            return;
+        }
+
+        // Proceed with save
+        self.perform_save_file_as(path);
+    }
+
+    /// Check if the input looks like a filename that should be created
+    /// (has an extension or contains a path separator)
+    fn should_create_new_file(input: &str) -> bool {
+        // If input contains a dot with something after it (extension), or
+        // contains a path separator, treat it as a file to be created
+        let has_extension = input.rfind('.').map_or(false, |pos| {
+            // Check there's something after the dot that's not a path separator
+            let after_dot = &input[pos + 1..];
+            !after_dot.is_empty() && !after_dot.contains('/') && !after_dot.contains('\\')
+        });
+
+        let has_path_separator = input.contains('/') || input.contains('\\');
+
+        has_extension || has_path_separator
+    }
+
     /// Navigate to parent directory
     fn file_open_go_parent(&mut self) {
         let parent = self
@@ -312,14 +399,10 @@ impl Editor {
                 .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
 
             // Build the full path
-            let full_path = if filter.starts_with('/') {
-                std::path::PathBuf::from(&filter)
-            } else if filter.starts_with('~') {
-                if let Some(home) = dirs::home_dir() {
-                    home.join(&filter[1..].trim_start_matches('/'))
-                } else {
-                    current_dir.join(&filter)
-                }
+            // Expand tilde and resolve path
+            let tilde_expanded = expand_tilde(&filter);
+            let full_path = if tilde_expanded.is_absolute() {
+                tilde_expanded
             } else {
                 current_dir.join(&filter)
             };

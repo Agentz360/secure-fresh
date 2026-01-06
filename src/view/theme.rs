@@ -1,4 +1,5 @@
 use ratatui::style::Color;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -42,9 +43,9 @@ fn brighten_color(color: Color, amount: u8) -> Color {
 }
 
 /// Serializable color representation
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
-enum ColorDef {
+pub enum ColorDef {
     /// RGB color as [r, g, b]
     Rgb(u8, u8, u8),
     /// Named color
@@ -81,152 +82,297 @@ impl From<ColorDef> for Color {
 }
 
 /// Serializable theme definition (matches JSON structure)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ThemeFile {
-    name: String,
-    editor: EditorColors,
-    ui: UiColors,
-    search: SearchColors,
-    diagnostic: DiagnosticColors,
-    syntax: SyntaxColors,
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ThemeFile {
+    /// Theme name
+    pub name: String,
+    /// Editor area colors
+    pub editor: EditorColors,
+    /// UI element colors (tabs, menus, status bar, etc.)
+    pub ui: UiColors,
+    /// Search result highlighting colors
+    pub search: SearchColors,
+    /// LSP diagnostic colors (errors, warnings, etc.)
+    pub diagnostic: DiagnosticColors,
+    /// Syntax highlighting colors
+    pub syntax: SyntaxColors,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct EditorColors {
-    bg: ColorDef,
-    fg: ColorDef,
-    cursor: ColorDef,
+/// Editor area colors
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct EditorColors {
+    /// Editor background color
+    #[serde(default = "default_editor_bg")]
+    pub bg: ColorDef,
+    /// Default text color
+    #[serde(default = "default_editor_fg")]
+    pub fg: ColorDef,
+    /// Cursor color
+    #[serde(default = "default_cursor")]
+    pub cursor: ColorDef,
+    /// Cursor color in unfocused splits
     #[serde(default = "default_inactive_cursor")]
-    inactive_cursor: ColorDef,
-    selection_bg: ColorDef,
-    current_line_bg: ColorDef,
-    line_number_fg: ColorDef,
-    line_number_bg: ColorDef,
+    pub inactive_cursor: ColorDef,
+    /// Selected text background
+    #[serde(default = "default_selection_bg")]
+    pub selection_bg: ColorDef,
+    /// Background of the line containing cursor
+    #[serde(default = "default_current_line_bg")]
+    pub current_line_bg: ColorDef,
+    /// Line number text color
+    #[serde(default = "default_line_number_fg")]
+    pub line_number_fg: ColorDef,
+    /// Line number gutter background
+    #[serde(default = "default_line_number_bg")]
+    pub line_number_bg: ColorDef,
+    /// Diff added line background
     #[serde(default = "default_diff_add_bg")]
-    diff_add_bg: ColorDef,
+    pub diff_add_bg: ColorDef,
+    /// Diff removed line background
     #[serde(default = "default_diff_remove_bg")]
-    diff_remove_bg: ColorDef,
+    pub diff_remove_bg: ColorDef,
+    /// Diff modified line background
     #[serde(default = "default_diff_modify_bg")]
-    diff_modify_bg: ColorDef,
+    pub diff_modify_bg: ColorDef,
 }
 
+// Default editor colors (for minimal themes)
+fn default_editor_bg() -> ColorDef {
+    ColorDef::Rgb(30, 30, 30)
+}
+fn default_editor_fg() -> ColorDef {
+    ColorDef::Rgb(212, 212, 212)
+}
+fn default_cursor() -> ColorDef {
+    ColorDef::Rgb(255, 255, 255)
+}
+fn default_inactive_cursor() -> ColorDef {
+    ColorDef::Named("DarkGray".to_string())
+}
+fn default_selection_bg() -> ColorDef {
+    ColorDef::Rgb(38, 79, 120)
+}
+fn default_current_line_bg() -> ColorDef {
+    ColorDef::Rgb(40, 40, 40)
+}
+fn default_line_number_fg() -> ColorDef {
+    ColorDef::Rgb(100, 100, 100)
+}
+fn default_line_number_bg() -> ColorDef {
+    ColorDef::Rgb(30, 30, 30)
+}
 fn default_diff_add_bg() -> ColorDef {
     ColorDef::Rgb(35, 60, 35) // Dark green
 }
-
 fn default_diff_remove_bg() -> ColorDef {
     ColorDef::Rgb(70, 35, 35) // Dark red
 }
-
 fn default_diff_modify_bg() -> ColorDef {
     ColorDef::Rgb(40, 38, 30) // Very subtle yellow tint, close to dark bg
 }
 
-fn default_inactive_cursor() -> ColorDef {
-    ColorDef::Named("DarkGray".to_string())
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct UiColors {
-    tab_active_fg: ColorDef,
-    tab_active_bg: ColorDef,
-    tab_inactive_fg: ColorDef,
-    tab_inactive_bg: ColorDef,
-    tab_separator_bg: ColorDef,
+/// UI element colors (tabs, menus, status bar, etc.)
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct UiColors {
+    /// Active tab text color
+    #[serde(default = "default_tab_active_fg")]
+    pub tab_active_fg: ColorDef,
+    /// Active tab background color
+    #[serde(default = "default_tab_active_bg")]
+    pub tab_active_bg: ColorDef,
+    /// Inactive tab text color
+    #[serde(default = "default_tab_inactive_fg")]
+    pub tab_inactive_fg: ColorDef,
+    /// Inactive tab background color
+    #[serde(default = "default_tab_inactive_bg")]
+    pub tab_inactive_bg: ColorDef,
+    /// Tab bar separator color
+    #[serde(default = "default_tab_separator_bg")]
+    pub tab_separator_bg: ColorDef,
+    /// Tab close button hover color
     #[serde(default = "default_tab_close_hover_fg")]
-    tab_close_hover_fg: ColorDef,
+    pub tab_close_hover_fg: ColorDef,
+    /// Tab hover background color
     #[serde(default = "default_tab_hover_bg")]
-    tab_hover_bg: ColorDef,
+    pub tab_hover_bg: ColorDef,
+    /// Menu bar background
     #[serde(default = "default_menu_bg")]
-    menu_bg: ColorDef,
+    pub menu_bg: ColorDef,
+    /// Menu bar text color
     #[serde(default = "default_menu_fg")]
-    menu_fg: ColorDef,
+    pub menu_fg: ColorDef,
+    /// Active menu item background
     #[serde(default = "default_menu_active_bg")]
-    menu_active_bg: ColorDef,
+    pub menu_active_bg: ColorDef,
+    /// Active menu item text color
     #[serde(default = "default_menu_active_fg")]
-    menu_active_fg: ColorDef,
+    pub menu_active_fg: ColorDef,
+    /// Dropdown menu background
     #[serde(default = "default_menu_dropdown_bg")]
-    menu_dropdown_bg: ColorDef,
+    pub menu_dropdown_bg: ColorDef,
+    /// Dropdown menu text color
     #[serde(default = "default_menu_dropdown_fg")]
-    menu_dropdown_fg: ColorDef,
+    pub menu_dropdown_fg: ColorDef,
+    /// Highlighted menu item background
     #[serde(default = "default_menu_highlight_bg")]
-    menu_highlight_bg: ColorDef,
+    pub menu_highlight_bg: ColorDef,
+    /// Highlighted menu item text color
     #[serde(default = "default_menu_highlight_fg")]
-    menu_highlight_fg: ColorDef,
+    pub menu_highlight_fg: ColorDef,
+    /// Menu border color
     #[serde(default = "default_menu_border_fg")]
-    menu_border_fg: ColorDef,
+    pub menu_border_fg: ColorDef,
+    /// Menu separator line color
     #[serde(default = "default_menu_separator_fg")]
-    menu_separator_fg: ColorDef,
+    pub menu_separator_fg: ColorDef,
+    /// Menu item hover background
     #[serde(default = "default_menu_hover_bg")]
-    menu_hover_bg: ColorDef,
+    pub menu_hover_bg: ColorDef,
+    /// Menu item hover text color
     #[serde(default = "default_menu_hover_fg")]
-    menu_hover_fg: ColorDef,
+    pub menu_hover_fg: ColorDef,
+    /// Disabled menu item text color
     #[serde(default = "default_menu_disabled_fg")]
-    menu_disabled_fg: ColorDef,
+    pub menu_disabled_fg: ColorDef,
+    /// Disabled menu item background
     #[serde(default = "default_menu_disabled_bg")]
-    menu_disabled_bg: ColorDef,
-    status_bar_fg: ColorDef,
-    status_bar_bg: ColorDef,
-    prompt_fg: ColorDef,
-    prompt_bg: ColorDef,
-    prompt_selection_fg: ColorDef,
-    prompt_selection_bg: ColorDef,
-    popup_border_fg: ColorDef,
-    popup_bg: ColorDef,
-    popup_selection_bg: ColorDef,
-    popup_text_fg: ColorDef,
-    suggestion_bg: ColorDef,
-    suggestion_selected_bg: ColorDef,
-    help_bg: ColorDef,
-    help_fg: ColorDef,
-    help_key_fg: ColorDef,
-    help_separator_fg: ColorDef,
-    help_indicator_fg: ColorDef,
-    help_indicator_bg: ColorDef,
+    pub menu_disabled_bg: ColorDef,
+    /// Status bar text color
+    #[serde(default = "default_status_bar_fg")]
+    pub status_bar_fg: ColorDef,
+    /// Status bar background color
+    #[serde(default = "default_status_bar_bg")]
+    pub status_bar_bg: ColorDef,
+    /// Command prompt text color
+    #[serde(default = "default_prompt_fg")]
+    pub prompt_fg: ColorDef,
+    /// Command prompt background
+    #[serde(default = "default_prompt_bg")]
+    pub prompt_bg: ColorDef,
+    /// Prompt selected text color
+    #[serde(default = "default_prompt_selection_fg")]
+    pub prompt_selection_fg: ColorDef,
+    /// Prompt selection background
+    #[serde(default = "default_prompt_selection_bg")]
+    pub prompt_selection_bg: ColorDef,
+    /// Popup window border color
+    #[serde(default = "default_popup_border_fg")]
+    pub popup_border_fg: ColorDef,
+    /// Popup window background
+    #[serde(default = "default_popup_bg")]
+    pub popup_bg: ColorDef,
+    /// Popup selected item background
+    #[serde(default = "default_popup_selection_bg")]
+    pub popup_selection_bg: ColorDef,
+    /// Popup window text color
+    #[serde(default = "default_popup_text_fg")]
+    pub popup_text_fg: ColorDef,
+    /// Autocomplete suggestion background
+    #[serde(default = "default_suggestion_bg")]
+    pub suggestion_bg: ColorDef,
+    /// Selected suggestion background
+    #[serde(default = "default_suggestion_selected_bg")]
+    pub suggestion_selected_bg: ColorDef,
+    /// Help panel background
+    #[serde(default = "default_help_bg")]
+    pub help_bg: ColorDef,
+    /// Help panel text color
+    #[serde(default = "default_help_fg")]
+    pub help_fg: ColorDef,
+    /// Help keybinding text color
+    #[serde(default = "default_help_key_fg")]
+    pub help_key_fg: ColorDef,
+    /// Help panel separator color
+    #[serde(default = "default_help_separator_fg")]
+    pub help_separator_fg: ColorDef,
+    /// Help indicator text color
+    #[serde(default = "default_help_indicator_fg")]
+    pub help_indicator_fg: ColorDef,
+    /// Help indicator background
+    #[serde(default = "default_help_indicator_bg")]
+    pub help_indicator_bg: ColorDef,
+    /// Inline code block background
     #[serde(default = "default_inline_code_bg")]
-    inline_code_bg: ColorDef,
-    split_separator_fg: ColorDef,
+    pub inline_code_bg: ColorDef,
+    /// Split pane separator color
+    #[serde(default = "default_split_separator_fg")]
+    pub split_separator_fg: ColorDef,
+    /// Split separator hover color
     #[serde(default = "default_split_separator_hover_fg")]
-    split_separator_hover_fg: ColorDef,
+    pub split_separator_hover_fg: ColorDef,
+    /// Scrollbar track color
     #[serde(default = "default_scrollbar_track_fg")]
-    scrollbar_track_fg: ColorDef,
+    pub scrollbar_track_fg: ColorDef,
+    /// Scrollbar thumb color
     #[serde(default = "default_scrollbar_thumb_fg")]
-    scrollbar_thumb_fg: ColorDef,
+    pub scrollbar_thumb_fg: ColorDef,
+    /// Scrollbar track hover color
     #[serde(default = "default_scrollbar_track_hover_fg")]
-    scrollbar_track_hover_fg: ColorDef,
+    pub scrollbar_track_hover_fg: ColorDef,
+    /// Scrollbar thumb hover color
     #[serde(default = "default_scrollbar_thumb_hover_fg")]
-    scrollbar_thumb_hover_fg: ColorDef,
+    pub scrollbar_thumb_hover_fg: ColorDef,
+    /// Compose mode margin background
     #[serde(default = "default_compose_margin_bg")]
-    compose_margin_bg: ColorDef,
+    pub compose_margin_bg: ColorDef,
+    /// Word under cursor highlight
     #[serde(default = "default_semantic_highlight_bg")]
-    semantic_highlight_bg: ColorDef,
+    pub semantic_highlight_bg: ColorDef,
+    /// Embedded terminal background (use Default for transparency)
     #[serde(default = "default_terminal_bg")]
-    terminal_bg: ColorDef,
+    pub terminal_bg: ColorDef,
+    /// Embedded terminal default text color
     #[serde(default = "default_terminal_fg")]
-    terminal_fg: ColorDef,
+    pub terminal_fg: ColorDef,
+    /// Warning indicator background in status bar
     #[serde(default = "default_status_warning_indicator_bg")]
-    status_warning_indicator_bg: ColorDef,
+    pub status_warning_indicator_bg: ColorDef,
+    /// Warning indicator text color in status bar
     #[serde(default = "default_status_warning_indicator_fg")]
-    status_warning_indicator_fg: ColorDef,
+    pub status_warning_indicator_fg: ColorDef,
+    /// Error indicator background in status bar
     #[serde(default = "default_status_error_indicator_bg")]
-    status_error_indicator_bg: ColorDef,
+    pub status_error_indicator_bg: ColorDef,
+    /// Error indicator text color in status bar
     #[serde(default = "default_status_error_indicator_fg")]
-    status_error_indicator_fg: ColorDef,
+    pub status_error_indicator_fg: ColorDef,
+    /// Warning indicator hover background
     #[serde(default = "default_status_warning_indicator_hover_bg")]
-    status_warning_indicator_hover_bg: ColorDef,
+    pub status_warning_indicator_hover_bg: ColorDef,
+    /// Warning indicator hover text color
     #[serde(default = "default_status_warning_indicator_hover_fg")]
-    status_warning_indicator_hover_fg: ColorDef,
+    pub status_warning_indicator_hover_fg: ColorDef,
+    /// Error indicator hover background
     #[serde(default = "default_status_error_indicator_hover_bg")]
-    status_error_indicator_hover_bg: ColorDef,
+    pub status_error_indicator_hover_bg: ColorDef,
+    /// Error indicator hover text color
     #[serde(default = "default_status_error_indicator_hover_fg")]
-    status_error_indicator_hover_fg: ColorDef,
+    pub status_error_indicator_hover_fg: ColorDef,
+    /// Tab drop zone background during drag
     #[serde(default = "default_tab_drop_zone_bg")]
-    tab_drop_zone_bg: ColorDef,
+    pub tab_drop_zone_bg: ColorDef,
+    /// Tab drop zone border during drag
     #[serde(default = "default_tab_drop_zone_border")]
-    tab_drop_zone_border: ColorDef,
+    pub tab_drop_zone_border: ColorDef,
 }
 
 // Default tab close hover color (for backward compatibility with existing themes)
+// Default tab colors (for minimal themes)
+fn default_tab_active_fg() -> ColorDef {
+    ColorDef::Named("Yellow".to_string())
+}
+fn default_tab_active_bg() -> ColorDef {
+    ColorDef::Named("Blue".to_string())
+}
+fn default_tab_inactive_fg() -> ColorDef {
+    ColorDef::Named("White".to_string())
+}
+fn default_tab_inactive_bg() -> ColorDef {
+    ColorDef::Named("DarkGray".to_string())
+}
+fn default_tab_separator_bg() -> ColorDef {
+    ColorDef::Named("Black".to_string())
+}
 fn default_tab_close_hover_fg() -> ColorDef {
     ColorDef::Rgb(255, 100, 100) // Red-ish color for close button hover
 }
@@ -277,8 +423,77 @@ fn default_menu_disabled_fg() -> ColorDef {
 fn default_menu_disabled_bg() -> ColorDef {
     ColorDef::Rgb(50, 50, 50) // Same as dropdown bg
 }
+// Default status bar colors
+fn default_status_bar_fg() -> ColorDef {
+    ColorDef::Named("White".to_string())
+}
+fn default_status_bar_bg() -> ColorDef {
+    ColorDef::Named("DarkGray".to_string())
+}
+
+// Default prompt colors
+fn default_prompt_fg() -> ColorDef {
+    ColorDef::Named("White".to_string())
+}
+fn default_prompt_bg() -> ColorDef {
+    ColorDef::Named("Black".to_string())
+}
+fn default_prompt_selection_fg() -> ColorDef {
+    ColorDef::Named("White".to_string())
+}
+fn default_prompt_selection_bg() -> ColorDef {
+    ColorDef::Rgb(58, 79, 120)
+}
+
+// Default popup colors
+fn default_popup_border_fg() -> ColorDef {
+    ColorDef::Named("Gray".to_string())
+}
+fn default_popup_bg() -> ColorDef {
+    ColorDef::Rgb(30, 30, 30)
+}
+fn default_popup_selection_bg() -> ColorDef {
+    ColorDef::Rgb(58, 79, 120)
+}
+fn default_popup_text_fg() -> ColorDef {
+    ColorDef::Named("White".to_string())
+}
+
+// Default suggestion colors
+fn default_suggestion_bg() -> ColorDef {
+    ColorDef::Rgb(30, 30, 30)
+}
+fn default_suggestion_selected_bg() -> ColorDef {
+    ColorDef::Rgb(58, 79, 120)
+}
+
+// Default help colors
+fn default_help_bg() -> ColorDef {
+    ColorDef::Named("Black".to_string())
+}
+fn default_help_fg() -> ColorDef {
+    ColorDef::Named("White".to_string())
+}
+fn default_help_key_fg() -> ColorDef {
+    ColorDef::Named("Cyan".to_string())
+}
+fn default_help_separator_fg() -> ColorDef {
+    ColorDef::Named("DarkGray".to_string())
+}
+fn default_help_indicator_fg() -> ColorDef {
+    ColorDef::Named("Red".to_string())
+}
+fn default_help_indicator_bg() -> ColorDef {
+    ColorDef::Named("Black".to_string())
+}
+
 fn default_inline_code_bg() -> ColorDef {
     ColorDef::Named("DarkGray".to_string())
+}
+
+// Default split separator colors
+fn default_split_separator_fg() -> ColorDef {
+    ColorDef::Rgb(100, 100, 100)
 }
 fn default_split_separator_hover_fg() -> ColorDef {
     ColorDef::Rgb(100, 149, 237) // Cornflower blue for visibility
@@ -338,35 +553,133 @@ fn default_tab_drop_zone_border() -> ColorDef {
     ColorDef::Rgb(100, 149, 237) // Cornflower blue for border
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SearchColors {
-    match_bg: ColorDef,
-    match_fg: ColorDef,
+/// Search result highlighting colors
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SearchColors {
+    /// Search match background color
+    #[serde(default = "default_search_match_bg")]
+    pub match_bg: ColorDef,
+    /// Search match text color
+    #[serde(default = "default_search_match_fg")]
+    pub match_fg: ColorDef,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct DiagnosticColors {
-    error_fg: ColorDef,
-    error_bg: ColorDef,
-    warning_fg: ColorDef,
-    warning_bg: ColorDef,
-    info_fg: ColorDef,
-    info_bg: ColorDef,
-    hint_fg: ColorDef,
-    hint_bg: ColorDef,
+// Default search colors
+fn default_search_match_bg() -> ColorDef {
+    ColorDef::Rgb(100, 100, 20)
+}
+fn default_search_match_fg() -> ColorDef {
+    ColorDef::Rgb(255, 255, 255)
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SyntaxColors {
-    keyword: ColorDef,
-    string: ColorDef,
-    comment: ColorDef,
-    function: ColorDef,
-    #[serde(rename = "type")]
-    type_: ColorDef,
-    variable: ColorDef,
-    constant: ColorDef,
-    operator: ColorDef,
+/// LSP diagnostic colors (errors, warnings, etc.)
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct DiagnosticColors {
+    /// Error message text color
+    #[serde(default = "default_diagnostic_error_fg")]
+    pub error_fg: ColorDef,
+    /// Error highlight background
+    #[serde(default = "default_diagnostic_error_bg")]
+    pub error_bg: ColorDef,
+    /// Warning message text color
+    #[serde(default = "default_diagnostic_warning_fg")]
+    pub warning_fg: ColorDef,
+    /// Warning highlight background
+    #[serde(default = "default_diagnostic_warning_bg")]
+    pub warning_bg: ColorDef,
+    /// Info message text color
+    #[serde(default = "default_diagnostic_info_fg")]
+    pub info_fg: ColorDef,
+    /// Info highlight background
+    #[serde(default = "default_diagnostic_info_bg")]
+    pub info_bg: ColorDef,
+    /// Hint message text color
+    #[serde(default = "default_diagnostic_hint_fg")]
+    pub hint_fg: ColorDef,
+    /// Hint highlight background
+    #[serde(default = "default_diagnostic_hint_bg")]
+    pub hint_bg: ColorDef,
+}
+
+// Default diagnostic colors
+fn default_diagnostic_error_fg() -> ColorDef {
+    ColorDef::Named("Red".to_string())
+}
+fn default_diagnostic_error_bg() -> ColorDef {
+    ColorDef::Rgb(60, 20, 20)
+}
+fn default_diagnostic_warning_fg() -> ColorDef {
+    ColorDef::Named("Yellow".to_string())
+}
+fn default_diagnostic_warning_bg() -> ColorDef {
+    ColorDef::Rgb(60, 50, 0)
+}
+fn default_diagnostic_info_fg() -> ColorDef {
+    ColorDef::Named("Blue".to_string())
+}
+fn default_diagnostic_info_bg() -> ColorDef {
+    ColorDef::Rgb(0, 30, 60)
+}
+fn default_diagnostic_hint_fg() -> ColorDef {
+    ColorDef::Named("Gray".to_string())
+}
+fn default_diagnostic_hint_bg() -> ColorDef {
+    ColorDef::Rgb(30, 30, 30)
+}
+
+/// Syntax highlighting colors
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct SyntaxColors {
+    /// Language keywords (if, for, fn, etc.)
+    #[serde(default = "default_syntax_keyword")]
+    pub keyword: ColorDef,
+    /// String literals
+    #[serde(default = "default_syntax_string")]
+    pub string: ColorDef,
+    /// Code comments
+    #[serde(default = "default_syntax_comment")]
+    pub comment: ColorDef,
+    /// Function names
+    #[serde(default = "default_syntax_function")]
+    pub function: ColorDef,
+    /// Type names
+    #[serde(rename = "type", default = "default_syntax_type")]
+    pub type_: ColorDef,
+    /// Variable names
+    #[serde(default = "default_syntax_variable")]
+    pub variable: ColorDef,
+    /// Constants and literals
+    #[serde(default = "default_syntax_constant")]
+    pub constant: ColorDef,
+    /// Operators (+, -, =, etc.)
+    #[serde(default = "default_syntax_operator")]
+    pub operator: ColorDef,
+}
+
+// Default syntax colors (VSCode Dark+ inspired)
+fn default_syntax_keyword() -> ColorDef {
+    ColorDef::Rgb(86, 156, 214)
+}
+fn default_syntax_string() -> ColorDef {
+    ColorDef::Rgb(206, 145, 120)
+}
+fn default_syntax_comment() -> ColorDef {
+    ColorDef::Rgb(106, 153, 85)
+}
+fn default_syntax_function() -> ColorDef {
+    ColorDef::Rgb(220, 220, 170)
+}
+fn default_syntax_type() -> ColorDef {
+    ColorDef::Rgb(78, 201, 176)
+}
+fn default_syntax_variable() -> ColorDef {
+    ColorDef::Rgb(156, 220, 254)
+}
+fn default_syntax_constant() -> ColorDef {
+    ColorDef::Rgb(79, 193, 255)
+}
+fn default_syntax_operator() -> ColorDef {
+    ColorDef::Rgb(212, 212, 212)
 }
 
 /// Comprehensive theme structure with all UI colors
@@ -1062,7 +1375,23 @@ impl Theme {
             "nostalgia".to_string(),
         ];
 
-        // Scan user themes directory
+        // Scan built-in themes directory (themes/*.json in the project)
+        if let Ok(entries) = std::fs::read_dir("themes") {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|ext| ext == "json") {
+                    if let Some(stem) = path.file_stem() {
+                        let name = stem.to_string_lossy().to_string();
+                        // Avoid duplicates
+                        if !themes.iter().any(|t| t == &name) {
+                            themes.push(name);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Scan user themes directory (user themes can override built-ins)
         if let Some(config_dir) = dirs::config_dir() {
             let user_themes_dir = config_dir.join("fresh").join("themes");
             if let Ok(entries) = std::fs::read_dir(&user_themes_dir) {
@@ -1245,6 +1574,19 @@ impl Default for Theme {
     fn default() -> Self {
         Self::high_contrast()
     }
+}
+
+// =============================================================================
+// Theme Schema Generation for Plugin API
+// =============================================================================
+
+/// Returns the raw JSON Schema for ThemeFile, generated by schemars.
+/// The schema uses standard JSON Schema format with $ref for type references.
+/// Plugins are responsible for parsing and resolving $ref references.
+pub fn get_theme_schema() -> serde_json::Value {
+    use schemars::schema_for;
+    let schema = schema_for!(ThemeFile);
+    serde_json::to_value(&schema).unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -226,6 +226,7 @@ impl Editor {
                         PromptType::SaveFileAs,
                         String::new(),
                     );
+                    self.init_file_open_state();
                 } else if self.check_save_conflict().is_some() {
                     // Check if file was modified externally since we opened/saved it
                     self.start_prompt(
@@ -255,6 +256,7 @@ impl Editor {
                     PromptType::SaveFileAs,
                     current_path,
                 );
+                self.init_file_open_state();
             }
             Action::Open => {
                 self.start_prompt(t!("file.open_prompt").to_string(), PromptType::OpenFile);
@@ -275,34 +277,11 @@ impl Editor {
             Action::New => {
                 self.new_buffer();
             }
-            Action::Close => {
-                let buffer_id = self.active_buffer();
-                if self.active_state().buffer.is_modified() {
-                    // Buffer has unsaved changes - prompt for confirmation
-                    let name = self.get_buffer_display_name(buffer_id);
-                    let save_key = t!("prompt.key.save").to_string();
-                    let discard_key = t!("prompt.key.discard").to_string();
-                    let cancel_key = t!("prompt.key.cancel").to_string();
-                    self.start_prompt(
-                        t!(
-                            "prompt.buffer_modified",
-                            name = name,
-                            save_key = save_key,
-                            discard_key = discard_key,
-                            cancel_key = cancel_key
-                        )
-                        .to_string(),
-                        PromptType::ConfirmCloseBuffer { buffer_id },
-                    );
-                } else if let Err(e) = self.close_buffer(buffer_id) {
-                    self.set_status_message(
-                        t!("error.cannot_close_buffer", error = e.to_string()).to_string(),
-                    );
-                } else {
-                    self.set_status_message(t!("buffer.closed").to_string());
-                }
-            }
-            Action::CloseTab => {
+            Action::Close | Action::CloseTab => {
+                // Both Close and CloseTab use close_tab() which handles:
+                // - Closing the split if this is the last buffer and there are other splits
+                // - Prompting for unsaved changes
+                // - Properly closing the buffer
                 self.close_tab();
             }
             Action::Revert => {
@@ -398,12 +377,17 @@ impl Editor {
                 }
 
                 // Use the current context for filtering commands
+                let active_buffer_mode = self
+                    .buffer_metadata
+                    .get(&self.active_buffer())
+                    .and_then(|m| m.virtual_mode());
                 let suggestions = self.command_registry.read().unwrap().filter(
                     "",
                     self.key_context,
                     &self.keybindings,
                     self.has_active_selection(),
                     &self.active_custom_contexts,
+                    active_buffer_mode,
                 );
                 self.start_prompt_with_suggestions(
                     t!("file.command_prompt").to_string(),
@@ -1960,7 +1944,9 @@ impl Editor {
 
         self.prompt = Some(crate::view::prompt::Prompt::with_suggestions(
             "Select theme: ".to_string(),
-            PromptType::SelectTheme,
+            PromptType::SelectTheme {
+                original_theme: current_theme_name.clone(),
+            },
             suggestions,
         ));
 
@@ -1991,6 +1977,15 @@ impl Editor {
             self.set_status_message(
                 t!("view.theme_changed", theme = self.theme.name.clone()).to_string(),
             );
+        }
+    }
+
+    /// Preview a theme by name (without persisting to config)
+    /// Used for live preview when navigating theme selection
+    pub(super) fn preview_theme(&mut self, theme_name: &str) {
+        if !theme_name.is_empty() && theme_name != self.theme.name {
+            self.theme = crate::view::theme::Theme::from_name(theme_name);
+            self.theme.set_terminal_cursor_color();
         }
     }
 

@@ -249,6 +249,60 @@ fn test_spawn_with_nonexistent_file() {
     assert_eq!(content, "fn main() {}\n");
 }
 
+/// Test creating a new file via the Open File dialog by typing a non-existent filename
+#[test]
+fn test_open_file_dialog_create_new_file() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use std::fs;
+
+    // Use harness with temp project
+    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let project_dir = harness.project_dir().unwrap();
+
+    // Create an existing file for initial context
+    let existing_file = project_dir.join("existing.txt");
+    fs::write(&existing_file, "Existing content").unwrap();
+
+    // Open the existing file first
+    harness.open_file(&existing_file).unwrap();
+    harness.assert_screen_contains("existing.txt");
+
+    // Now use command palette to open a NEW file
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Command:"))
+        .unwrap();
+
+    // Type to search for Open File command
+    harness.type_text("Open File").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Wait for the Open File prompt
+    harness.wait_for_screen_contains("Open file:").unwrap();
+
+    // Type a filename that doesn't exist (has extension so it's treated as a filename)
+    harness.type_text("brandnew.txt").unwrap();
+
+    // Confirm with Enter
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Should show "New file" message
+    harness.assert_screen_contains("New file");
+
+    // Should show the new filename in the tab
+    harness.assert_screen_contains("brandnew.txt");
+
+    // Buffer should be empty (new unsaved buffer)
+    assert_eq!(harness.get_buffer_content().unwrap(), "");
+}
+
 /// Test Save As functionality
 #[test]
 fn test_save_as_functionality() {
@@ -316,6 +370,86 @@ fn test_save_as_functionality() {
 
     // Buffer should now show the new filename
     harness.assert_screen_contains("saved_as.txt");
+}
+
+/// Test Save As with tilde path expansion (~/path expands to home directory)
+#[test]
+fn test_save_as_tilde_expansion() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use std::fs;
+    use tempfile::TempDir;
+
+    // Create a temp dir to use as a fake "home/subdir"
+    let temp_dir = TempDir::new().unwrap();
+    let target_dir = temp_dir.path().join("subdir");
+    fs::create_dir_all(&target_dir).unwrap();
+
+    // Create a test file
+    let original_path = temp_dir.path().join("original.txt");
+    fs::write(&original_path, "Test content").unwrap();
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+
+    // Open the original file
+    harness.open_file(&original_path).unwrap();
+    harness.assert_buffer_content("Test content");
+
+    // Trigger command palette with Ctrl+P
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Command:"))
+        .unwrap();
+
+    // Type to search for Save As command
+    harness.type_text("Save File As").unwrap();
+
+    // Confirm with Enter
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Wait for the Save As prompt to appear
+    harness.wait_for_screen_contains("Save as:").unwrap();
+
+    // Clear the current filename
+    harness
+        .send_key(KeyCode::Char('a'), KeyModifiers::CONTROL)
+        .unwrap();
+
+    // Type a tilde path - save to home directory
+    // We use ~/fresh_test_tilde_<random>.txt to test tilde expansion
+    let random_suffix: u32 = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    let tilde_filename = format!("~/fresh_test_tilde_{}.txt", random_suffix);
+    harness.type_text(&tilde_filename).unwrap();
+
+    // Confirm with Enter
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // The file should be saved to the home directory, not as a literal "~"
+    if let Some(home) = dirs::home_dir() {
+        let expected_path = home.join(format!("fresh_test_tilde_{}.txt", random_suffix));
+
+        // Give it a moment to save
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // The file should exist in home directory
+        assert!(
+            expected_path.exists(),
+            "File should be saved to home directory at {:?}, not as literal ~/...",
+            expected_path
+        );
+
+        // Clean up
+        let _ = fs::remove_file(&expected_path);
+    }
 }
 
 /// Test Save As with relative path
