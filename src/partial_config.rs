@@ -151,6 +151,7 @@ pub struct PartialEditorConfig {
     pub file_tree_poll_interval_ms: Option<u64>,
     pub default_line_ending: Option<LineEndingOption>,
     pub cursor_style: Option<CursorStyle>,
+    pub quick_suggestions: Option<bool>,
 }
 
 impl Merge for PartialEditorConfig {
@@ -191,6 +192,7 @@ impl Merge for PartialEditorConfig {
         self.default_line_ending
             .merge_from(&other.default_line_ending);
         self.cursor_style.merge_from(&other.cursor_style);
+        self.quick_suggestions.merge_from(&other.quick_suggestions);
     }
 }
 
@@ -341,6 +343,7 @@ impl From<&crate::config::EditorConfig> for PartialEditorConfig {
             file_tree_poll_interval_ms: Some(cfg.file_tree_poll_interval_ms),
             default_line_ending: Some(cfg.default_line_ending.clone()),
             cursor_style: Some(cfg.cursor_style),
+            quick_suggestions: Some(cfg.quick_suggestions),
         }
     }
 }
@@ -399,6 +402,7 @@ impl PartialEditorConfig {
                 .default_line_ending
                 .unwrap_or(defaults.default_line_ending.clone()),
             cursor_style: self.cursor_style.unwrap_or(defaults.cursor_style),
+            quick_suggestions: self.quick_suggestions.unwrap_or(defaults.quick_suggestions),
         }
     }
 }

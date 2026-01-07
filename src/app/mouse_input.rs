@@ -12,6 +12,7 @@ use crate::input::keybindings::Action;
 use crate::model::event::{SplitDirection, SplitId};
 use crate::services::plugins::hooks::HookArgs;
 use crate::view::prompt::PromptType;
+use anyhow::Result as AnyhowResult;
 use rust_i18n::t;
 
 impl Editor {
@@ -20,7 +21,7 @@ impl Editor {
     pub fn handle_mouse(
         &mut self,
         mouse_event: crossterm::event::MouseEvent,
-    ) -> std::io::Result<bool> {
+    ) -> AnyhowResult<bool> {
         use crossterm::event::{MouseButton, MouseEventKind};
 
         let col = mouse_event.column;
@@ -134,6 +135,9 @@ impl Editor {
                 self.mouse_state.dragging_text_selection = false;
                 self.mouse_state.drag_selection_split = None;
                 self.mouse_state.drag_selection_anchor = None;
+                // Clear popup scrollbar drag state
+                self.mouse_state.dragging_popup_scrollbar = None;
+                self.mouse_state.drag_start_popup_scroll = None;
 
                 // If we finished dragging a separator, resize visible terminals
                 if was_dragging_separator {
@@ -387,6 +391,8 @@ impl Editor {
     /// - Mouse is within the hovered symbol range
     /// Hover is dismissed when mouse leaves the editor area entirely.
     fn update_lsp_hover_state(&mut self, col: u16, row: u16) {
+        tracing::trace!(col, row, "update_lsp_hover_state: raw mouse position");
+
         // Check if mouse is over a transient popup - if so, keep hover active
         if self.is_mouse_over_transient_popup(col, row) {
             return;
@@ -453,6 +459,58 @@ impl Editor {
             return;
         };
 
+        // Check if mouse is past the end of line content - don't trigger hover for empty space
+        let content_col = col.saturating_sub(content_rect.x);
+        let text_col = content_col.saturating_sub(gutter_width) as usize;
+        let visual_row = row.saturating_sub(content_rect.y) as usize;
+
+        let line_info = cached_mappings
+            .as_ref()
+            .and_then(|mappings| mappings.get(visual_row))
+            .map(|line_mapping| {
+                (
+                    line_mapping.visual_to_char.len(),
+                    line_mapping.line_end_byte,
+                )
+            });
+
+        let is_past_line_end_or_empty = line_info
+            .map(|(line_len, _)| {
+                // Empty lines (just newline) should not trigger hover
+                if line_len <= 1 {
+                    return true;
+                }
+                text_col >= line_len
+            })
+            // If mouse is below all mapped lines (no mapping), don't trigger hover
+            .unwrap_or(true);
+
+        tracing::trace!(
+            col,
+            row,
+            content_col,
+            text_col,
+            visual_row,
+            gutter_width,
+            byte_pos,
+            ?line_info,
+            is_past_line_end_or_empty,
+            "update_lsp_hover_state: position check"
+        );
+
+        if is_past_line_end_or_empty {
+            tracing::trace!(
+                "update_lsp_hover_state: mouse past line end or empty line, clearing hover"
+            );
+            // Mouse is past end of line content - clear hover state and don't trigger new hover
+            if self.mouse_state.lsp_hover_state.is_some() {
+                self.mouse_state.lsp_hover_state = None;
+                self.mouse_state.lsp_hover_request_sent = false;
+                self.dismiss_transient_popups();
+            }
+            return;
+        }
+
         // Check if mouse is within the hovered symbol range - if so, keep hover active
         if let Some((start, end)) = self.hover_symbol_range {
             if byte_pos >= start && byte_pos < end {
@@ -500,7 +558,7 @@ impl Editor {
         }
 
         // Check if mouse is over any popup area
-        for (_popup_idx, popup_rect, _inner_rect, _scroll_offset, _num_items) in
+        for (_popup_idx, popup_rect, _inner_rect, _scroll_offset, _num_items, _, _) in
             self.cached_layout.popup_areas.iter()
         {
             if col >= popup_rect.x
@@ -557,7 +615,7 @@ impl Editor {
 
         // Check popups (they're rendered on top)
         // Check from top to bottom (reverse order since last popup is on top)
-        for (popup_idx, _popup_rect, inner_rect, scroll_offset, num_items) in
+        for (popup_idx, _popup_rect, inner_rect, scroll_offset, num_items, _, _) in
             self.cached_layout.popup_areas.iter().rev()
         {
             if col >= inner_rect.x
@@ -752,7 +810,7 @@ impl Editor {
 
     /// Handle mouse double click (down event)
     /// Double-click in editor area selects the word under the cursor.
-    pub(super) fn handle_mouse_double_click(&mut self, col: u16, row: u16) -> std::io::Result<()> {
+    pub(super) fn handle_mouse_double_click(&mut self, col: u16, row: u16) -> AnyhowResult<()> {
         tracing::debug!("handle_mouse_double_click at col={}, row={}", col, row);
 
         // Is it in the file open dialog?
@@ -796,7 +854,7 @@ impl Editor {
         split_id: crate::model::event::SplitId,
         buffer_id: BufferId,
         content_rect: ratatui::layout::Rect,
-    ) -> std::io::Result<()> {
+    ) -> AnyhowResult<()> {
         use crate::model::event::Event;
 
         // Focus this split
@@ -856,7 +914,7 @@ impl Editor {
         Ok(())
     }
     /// Handle mouse click (down event)
-    pub(super) fn handle_mouse_click(&mut self, col: u16, row: u16) -> std::io::Result<()> {
+    pub(super) fn handle_mouse_click(&mut self, col: u16, row: u16) -> AnyhowResult<()> {
         // Check if click is on tab context menu first
         if self.tab_context_menu.is_some() {
             if let Some(result) = self.handle_tab_context_menu_click(col, row) {
@@ -887,8 +945,69 @@ impl Editor {
             }
         }
 
-        // Check if click is on a popup (they're rendered on top)
-        for (_popup_idx, _popup_rect, inner_rect, scroll_offset, num_items) in
+        // Check if click is on a popup scrollbar first (they're rendered on top)
+        // Collect scroll info first to avoid borrow conflicts
+        let scrollbar_scroll_info: Option<(usize, i32)> =
+            self.cached_layout.popup_areas.iter().rev().find_map(
+                |(
+                    popup_idx,
+                    _popup_rect,
+                    inner_rect,
+                    _scroll_offset,
+                    _num_items,
+                    scrollbar_rect,
+                    total_lines,
+                )| {
+                    let sb_rect = scrollbar_rect.as_ref()?;
+                    if col >= sb_rect.x
+                        && col < sb_rect.x + sb_rect.width
+                        && row >= sb_rect.y
+                        && row < sb_rect.y + sb_rect.height
+                    {
+                        let relative_row = (row - sb_rect.y) as usize;
+                        let track_height = sb_rect.height as usize;
+                        let visible_lines = inner_rect.height as usize;
+
+                        if track_height > 0 && *total_lines > visible_lines {
+                            let max_scroll = total_lines.saturating_sub(visible_lines);
+                            let target_scroll = if track_height > 1 {
+                                (relative_row * max_scroll) / (track_height.saturating_sub(1))
+                            } else {
+                                0
+                            };
+                            Some((*popup_idx, target_scroll as i32))
+                        } else {
+                            Some((*popup_idx, 0))
+                        }
+                    } else {
+                        None
+                    }
+                },
+            );
+
+        if let Some((popup_idx, target_scroll)) = scrollbar_scroll_info {
+            // Set up drag state for popup scrollbar (reuse drag_start_row like editor scrollbar)
+            self.mouse_state.dragging_popup_scrollbar = Some(popup_idx);
+            self.mouse_state.drag_start_row = Some(row);
+            // Get current scroll offset before mutable borrow
+            let current_scroll = self
+                .active_state()
+                .popups
+                .get(popup_idx)
+                .map(|p| p.scroll_offset)
+                .unwrap_or(0);
+            self.mouse_state.drag_start_popup_scroll = Some(current_scroll);
+            // Now do the scroll
+            let state = self.active_state_mut();
+            if let Some(popup) = state.popups.get_mut(popup_idx) {
+                let delta = target_scroll - current_scroll as i32;
+                popup.scroll_by(delta);
+            }
+            return Ok(());
+        }
+
+        // Check if click is on a popup content area (they're rendered on top)
+        for (_popup_idx, _popup_rect, inner_rect, scroll_offset, num_items, _, _) in
             self.cached_layout.popup_areas.iter().rev()
         {
             if col >= inner_rect.x
@@ -1231,7 +1350,7 @@ impl Editor {
     }
 
     /// Handle mouse drag event
-    pub(super) fn handle_mouse_drag(&mut self, col: u16, row: u16) -> std::io::Result<()> {
+    pub(super) fn handle_mouse_drag(&mut self, col: u16, row: u16) -> AnyhowResult<()> {
         // If dragging scrollbar, update scroll position
         if let Some(dragging_split_id) = self.mouse_state.dragging_scrollbar {
             // Find the buffer and scrollbar rect for this split
@@ -1263,6 +1382,40 @@ impl Editor {
             }
         }
 
+        // If dragging popup scrollbar, update popup scroll position
+        if let Some(popup_idx) = self.mouse_state.dragging_popup_scrollbar {
+            // Find the popup's scrollbar rect from cached layout
+            if let Some((_, _, inner_rect, _, _, scrollbar_rect, total_lines)) = self
+                .cached_layout
+                .popup_areas
+                .iter()
+                .find(|(idx, _, _, _, _, _, _)| *idx == popup_idx)
+            {
+                if let Some(sb_rect) = scrollbar_rect {
+                    let track_height = sb_rect.height as usize;
+                    let visible_lines = inner_rect.height as usize;
+
+                    if track_height > 0 && *total_lines > visible_lines {
+                        let relative_row = row.saturating_sub(sb_rect.y) as usize;
+                        let max_scroll = total_lines.saturating_sub(visible_lines);
+                        let target_scroll = if track_height > 1 {
+                            (relative_row * max_scroll) / (track_height.saturating_sub(1))
+                        } else {
+                            0
+                        };
+
+                        let state = self.active_state_mut();
+                        if let Some(popup) = state.popups.get_mut(popup_idx) {
+                            let current_scroll = popup.scroll_offset as i32;
+                            let delta = target_scroll as i32 - current_scroll;
+                            popup.scroll_by(delta);
+                        }
+                    }
+                }
+            }
+            return Ok(());
+        }
+
         // If dragging separator, update split ratio
         if let Some((split_id, direction)) = self.mouse_state.dragging_separator {
             self.handle_separator_drag(col, row, split_id, direction)?;
@@ -1291,7 +1444,7 @@ impl Editor {
     }
 
     /// Handle text selection drag - extends selection from anchor to current position
-    fn handle_text_selection_drag(&mut self, col: u16, row: u16) -> std::io::Result<()> {
+    fn handle_text_selection_drag(&mut self, col: u16, row: u16) -> AnyhowResult<()> {
         use crate::model::event::Event;
 
         let Some(split_id) = self.mouse_state.drag_selection_split else {
@@ -1377,7 +1530,7 @@ impl Editor {
     }
 
     /// Handle file explorer border drag for resizing
-    pub(super) fn handle_file_explorer_border_drag(&mut self, col: u16) -> std::io::Result<()> {
+    pub(super) fn handle_file_explorer_border_drag(&mut self, col: u16) -> AnyhowResult<()> {
         let Some((start_col, _start_row)) = self.mouse_state.drag_start_position else {
             return Ok(());
         };
@@ -1407,7 +1560,7 @@ impl Editor {
         row: u16,
         split_id: SplitId,
         direction: SplitDirection,
-    ) -> std::io::Result<()> {
+    ) -> AnyhowResult<()> {
         let Some((start_col, start_row)) = self.mouse_state.drag_start_position else {
             return Ok(());
         };
@@ -1448,7 +1601,7 @@ impl Editor {
     }
 
     /// Handle right-click event
-    pub(super) fn handle_right_click(&mut self, col: u16, row: u16) -> std::io::Result<()> {
+    pub(super) fn handle_right_click(&mut self, col: u16, row: u16) -> AnyhowResult<()> {
         // First check if a tab context menu is open and the click is on a menu item
         if let Some(ref menu) = self.tab_context_menu {
             let menu_x = menu.position.0;
@@ -1494,7 +1647,7 @@ impl Editor {
         &mut self,
         col: u16,
         row: u16,
-    ) -> Option<std::io::Result<()>> {
+    ) -> Option<AnyhowResult<()>> {
         let menu = self.tab_context_menu.as_ref()?;
         let menu_x = menu.position.0;
         let menu_y = menu.position.1;
@@ -1539,7 +1692,7 @@ impl Editor {
         item: super::types::TabContextMenuItem,
         buffer_id: BufferId,
         split_id: SplitId,
-    ) -> std::io::Result<()> {
+    ) -> AnyhowResult<()> {
         use super::types::TabContextMenuItem;
 
         match item {

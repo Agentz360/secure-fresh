@@ -10,12 +10,14 @@
 //! - Rename operations
 //! - Inlay hints
 
+use anyhow::Result as AnyhowResult;
 use rust_i18n::t;
 use std::io;
 
 use lsp_types::TextDocumentContentChangeEvent;
 
 use crate::model::event::{BufferId, Event};
+use crate::primitives::word_navigation::{find_word_end, find_word_start};
 use crate::services::lsp::manager::detect_language;
 use crate::view::prompt::{Prompt, PromptType};
 
@@ -27,7 +29,7 @@ impl Editor {
         &mut self,
         request_id: u64,
         items: Vec<lsp_types::CompletionItem>,
-    ) -> io::Result<()> {
+    ) -> AnyhowResult<()> {
         // Check if this is the pending completion request
         if self.pending_completion_request != Some(request_id) {
             tracing::debug!(
@@ -168,7 +170,7 @@ impl Editor {
         &mut self,
         request_id: u64,
         locations: Vec<lsp_types::Location>,
-    ) -> io::Result<()> {
+    ) -> AnyhowResult<()> {
         // Check if this is the pending request
         if self.pending_goto_definition_request != Some(request_id) {
             tracing::debug!(
@@ -360,7 +362,7 @@ impl Editor {
     }
 
     /// Request LSP completion at current cursor position
-    pub(crate) fn request_completion(&mut self) -> io::Result<()> {
+    pub(crate) fn request_completion(&mut self) -> AnyhowResult<()> {
         // Get the current buffer and cursor position
         let state = self.active_state();
         let cursor_pos = state.cursors.primary().position;
@@ -396,8 +398,57 @@ impl Editor {
         Ok(())
     }
 
+    /// Check if the inserted character should trigger completion
+    /// and if so, request completion automatically.
+    ///
+    /// Triggers completion in two cases:
+    /// 1. Always: when the character is an LSP trigger character (like `.`, `::`, etc.)
+    /// 2. When quick_suggestions is enabled: when the character is a word character (alphanumeric or `_`)
+    ///
+    /// This provides VS Code-like behavior where suggestions appear while typing.
+    pub(crate) fn maybe_trigger_completion(&mut self, c: char) {
+        // Get the active buffer's file path and detect its language
+        let path = match self.active_state().buffer.file_path() {
+            Some(p) => p,
+            None => return, // No path, no language detection
+        };
+
+        let language = match detect_language(&path, &self.config.languages) {
+            Some(lang) => lang,
+            None => return, // Unknown language
+        };
+
+        // Check if this character is a trigger character for this language
+        let is_lsp_trigger = self
+            .lsp
+            .as_ref()
+            .map(|lsp| lsp.is_completion_trigger_char(c, &language))
+            .unwrap_or(false);
+
+        // Check if quick suggestions is enabled and this is a word character
+        let quick_suggestions_enabled = self.config.editor.quick_suggestions;
+        let is_word_char = c.is_alphanumeric() || c == '_';
+
+        // Trigger completion if:
+        // 1. It's an LSP trigger character (always), OR
+        // 2. Quick suggestions is enabled AND it's a word character
+        let should_trigger = is_lsp_trigger || (quick_suggestions_enabled && is_word_char);
+
+        if should_trigger {
+            tracing::debug!(
+                "Character '{}' triggered completion for language {} (lsp_trigger={}, word_char={}, quick_suggestions={})",
+                c,
+                language,
+                is_lsp_trigger,
+                is_word_char,
+                quick_suggestions_enabled
+            );
+            let _ = self.request_completion();
+        }
+    }
+
     /// Request LSP go-to-definition at current cursor position
-    pub(crate) fn request_goto_definition(&mut self) -> io::Result<()> {
+    pub(crate) fn request_goto_definition(&mut self) -> AnyhowResult<()> {
         // Get the current buffer and cursor position
         let state = self.active_state();
         let cursor_pos = state.cursors.primary().position;
@@ -433,7 +484,7 @@ impl Editor {
     }
 
     /// Request LSP hover documentation at current cursor position
-    pub(crate) fn request_hover(&mut self) -> io::Result<()> {
+    pub(crate) fn request_hover(&mut self) -> AnyhowResult<()> {
         // Get the current buffer and cursor position
         let state = self.active_state();
         let cursor_pos = state.cursors.primary().position;
@@ -483,7 +534,7 @@ impl Editor {
 
     /// Request LSP hover documentation at a specific byte position
     /// Used for mouse-triggered hover
-    pub(crate) fn request_hover_at_position(&mut self, byte_pos: usize) -> io::Result<()> {
+    pub(crate) fn request_hover_at_position(&mut self, byte_pos: usize) -> AnyhowResult<()> {
         // Get the current buffer
         let state = self.active_state();
 
@@ -596,8 +647,25 @@ impl Editor {
                 self.hover_symbol_overlay = state.overlays.all().last().map(|o| o.handle.clone());
             }
         } else {
-            // No range provided by LSP, clear any previous highlight
-            self.hover_symbol_range = None;
+            // No range provided by LSP - compute word boundaries at hover position
+            // This prevents the popup from following the mouse within the same word
+            if let Some((hover_byte_pos, _, _, _)) = self.mouse_state.lsp_hover_state {
+                let state = self.active_state();
+                let start_byte = find_word_start(&state.buffer, hover_byte_pos);
+                let end_byte = find_word_end(&state.buffer, hover_byte_pos);
+                if start_byte < end_byte {
+                    self.hover_symbol_range = Some((start_byte, end_byte));
+                    tracing::debug!(
+                        "Hover symbol range (computed from word boundaries): {}..{}",
+                        start_byte,
+                        end_byte
+                    );
+                } else {
+                    self.hover_symbol_range = None;
+                }
+            } else {
+                self.hover_symbol_range = None;
+            }
         }
 
         // Create a popup with the hover contents
@@ -636,6 +704,10 @@ impl Editor {
             state.popups.show(popup);
             tracing::info!("Showing hover popup (markdown={})", is_markdown);
         }
+
+        // Mark hover request as sent to prevent duplicate popups during race conditions
+        // (e.g., when mouse moves while a hover response is pending)
+        self.mouse_state.lsp_hover_request_sent = true;
     }
 
     /// Apply inlay hints to editor state as virtual text
@@ -696,7 +768,7 @@ impl Editor {
     }
 
     /// Request LSP find references at current cursor position
-    pub(crate) fn request_references(&mut self) -> io::Result<()> {
+    pub(crate) fn request_references(&mut self) -> AnyhowResult<()> {
         // Get the current buffer and cursor position
         let state = self.active_state();
         let cursor_pos = state.cursors.primary().position;
@@ -795,7 +867,7 @@ impl Editor {
     }
 
     /// Request LSP signature help at current cursor position
-    pub(crate) fn request_signature_help(&mut self) -> io::Result<()> {
+    pub(crate) fn request_signature_help(&mut self) -> AnyhowResult<()> {
         // Get the current buffer and cursor position
         let state = self.active_state();
         let cursor_pos = state.cursors.primary().position;
@@ -949,7 +1021,7 @@ impl Editor {
     }
 
     /// Request LSP code actions at current cursor position
-    pub(crate) fn request_code_actions(&mut self) -> io::Result<()> {
+    pub(crate) fn request_code_actions(&mut self) -> AnyhowResult<()> {
         // Get the current buffer and cursor position
         let state = self.active_state();
         let cursor_pos = state.cursors.primary().position;
@@ -1075,7 +1147,7 @@ impl Editor {
         &mut self,
         request_id: u64,
         locations: Vec<lsp_types::Location>,
-    ) -> io::Result<()> {
+    ) -> AnyhowResult<()> {
         tracing::info!(
             "handle_references_response: received {} locations for request_id={}",
             locations.len(),
@@ -1146,7 +1218,7 @@ impl Editor {
         &mut self,
         buffer_id: BufferId,
         mut edits: Vec<lsp_types::TextEdit>,
-    ) -> io::Result<usize> {
+    ) -> AnyhowResult<usize> {
         if edits.is_empty() {
             return Ok(0);
         }
@@ -1243,7 +1315,7 @@ impl Editor {
         &mut self,
         _request_id: u64,
         result: Result<lsp_types::WorkspaceEdit, String>,
-    ) -> io::Result<()> {
+    ) -> AnyhowResult<()> {
         self.lsp_status.clear();
 
         match result {
@@ -1363,7 +1435,7 @@ impl Editor {
         buffer_id: BufferId,
         events: Vec<Event>,
         description: String,
-    ) -> io::Result<()> {
+    ) -> AnyhowResult<()> {
         use crate::model::event::CursorId;
 
         if events.is_empty() {
@@ -1634,7 +1706,7 @@ impl Editor {
     }
 
     /// Start rename mode - select the symbol at cursor and allow inline editing
-    pub(crate) fn start_rename(&mut self) -> io::Result<()> {
+    pub(crate) fn start_rename(&mut self) -> AnyhowResult<()> {
         use crate::primitives::word_navigation::{find_word_end, find_word_start};
 
         // Get the current buffer and cursor position

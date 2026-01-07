@@ -560,6 +560,10 @@ pub(super) struct MouseState {
     pub drag_selection_anchor: Option<usize>,
     /// Tab drag state (for drag-to-split functionality)
     pub dragging_tab: Option<TabDragState>,
+    /// Whether we're currently dragging a popup scrollbar (popup index)
+    pub dragging_popup_scrollbar: Option<usize>,
+    /// Initial scroll offset when starting to drag popup scrollbar
+    pub drag_start_popup_scroll: Option<usize>,
 }
 
 /// Mapping from visual row to buffer positions for mouse click handling
@@ -598,8 +602,9 @@ pub(crate) struct CachedLayout {
     /// (split_id, direction, x, y, length)
     pub separator_areas: Vec<(SplitId, SplitDirection, u16, u16, u16)>,
     /// Popup areas for mouse hit testing
-    /// (popup_index, rect, inner_rect, scroll_offset, num_items)
-    pub popup_areas: Vec<(usize, Rect, Rect, usize, usize)>,
+    /// (popup_index, rect, inner_rect, scroll_offset, num_items, scrollbar_rect, total_lines)
+    /// scrollbar_rect is Some if popup has a scrollbar
+    pub popup_areas: Vec<(usize, Rect, Rect, usize, usize, Option<Rect>, usize)>,
     /// Suggestions area for mouse hit testing
     /// (inner_rect, scroll_start_idx, visible_count, total_count)
     pub suggestions_area: Option<(Rect, usize, usize, usize)>,

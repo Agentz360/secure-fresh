@@ -21,7 +21,7 @@ impl FakeLspServer {
     ///
     /// The server will listen on stdin/stdout and respond to LSP requests.
     /// It uses a Bash script that acts as a simple JSON-RPC server.
-    pub fn spawn() -> std::io::Result<Self> {
+    pub fn spawn() -> anyhow::Result<Self> {
         let (stop_tx, stop_rx) = mpsc::channel();
 
         // Create a Bash script that acts as a fake LSP server
@@ -161,7 +161,7 @@ done
     /// but then blocks forever on all other requests without responding.
     /// This is useful for testing that the editor UI remains responsive even
     /// when the LSP server is completely stuck.
-    pub fn spawn_blocking() -> std::io::Result<Self> {
+    pub fn spawn_blocking() -> anyhow::Result<Self> {
         let (stop_tx, stop_rx) = mpsc::channel();
 
         // Create a Bash script that acts as a fake LSP server that blocks forever
@@ -258,7 +258,7 @@ done
     ///
     /// This version responds to didChange notifications with a large number of diagnostics
     /// across many lines. This is useful for testing performance with many diagnostics.
-    pub fn spawn_many_diagnostics(diagnostic_count: usize) -> std::io::Result<Self> {
+    pub fn spawn_many_diagnostics(diagnostic_count: usize) -> anyhow::Result<Self> {
         let (stop_tx, stop_rx) = mpsc::channel();
 
         // Generate JSON for many diagnostics
@@ -374,7 +374,7 @@ done
     ///
     /// This version sends progress notifications (begin, report, end) after initialization.
     /// This is useful for testing LSP progress display in the status bar.
-    pub fn spawn_with_progress() -> std::io::Result<Self> {
+    pub fn spawn_with_progress() -> anyhow::Result<Self> {
         let (stop_tx, stop_rx) = mpsc::channel();
 
         // Create a Bash script that sends progress notifications
@@ -492,7 +492,7 @@ done
     /// This version initializes successfully but then crashes (exits with non-zero)
     /// after receiving any subsequent request. This is useful for testing LSP server
     /// crash detection and auto-restart functionality.
-    pub fn spawn_crashing() -> std::io::Result<Self> {
+    pub fn spawn_crashing() -> anyhow::Result<Self> {
         let (stop_tx, stop_rx) = mpsc::channel();
 
         // Create a Bash script that crashes after init
@@ -598,7 +598,7 @@ done
     /// It also tracks result_id for incremental updates and returns "unchanged" responses
     /// when the same result_id is passed. This is useful for testing LSP 3.17+ pull
     /// diagnostics functionality.
-    pub fn spawn_with_pull_diagnostics() -> std::io::Result<Self> {
+    pub fn spawn_with_pull_diagnostics() -> anyhow::Result<Self> {
         let (stop_tx, stop_rx) = mpsc::channel();
 
         // Create a Bash script that supports pull diagnostics
@@ -730,7 +730,7 @@ done
     ///
     /// This version responds to textDocument/inlayHint requests with sample hints.
     /// This is useful for testing LSP 3.17+ inlay hints functionality.
-    pub fn spawn_with_inlay_hints() -> std::io::Result<Self> {
+    pub fn spawn_with_inlay_hints() -> anyhow::Result<Self> {
         let (stop_tx, stop_rx) = mpsc::channel();
 
         // Create a Bash script that supports inlay hints
@@ -833,7 +833,7 @@ done
     ///
     /// This variant logs each method name to a log file, which can be used
     /// to verify the order of LSP messages (e.g., that didOpen is sent before hover).
-    pub fn spawn_with_logging() -> std::io::Result<Self> {
+    pub fn spawn_with_logging() -> anyhow::Result<Self> {
         let (stop_tx, stop_rx) = mpsc::channel();
 
         // Create a Bash script that logs all methods to a file
@@ -957,6 +957,111 @@ done
     /// Get the default log file path used by the logging server
     pub fn default_log_path() -> std::path::PathBuf {
         std::path::PathBuf::from("/tmp/fake_lsp_log.txt")
+    }
+
+    /// Spawn a fake LSP server that returns hover content WITHOUT a range
+    ///
+    /// This simulates LSP servers like pyrefly that don't return the hover range.
+    /// Used to test that hover popup doesn't move/duplicate when LSP doesn't
+    /// provide symbol range information.
+    pub fn spawn_without_range() -> anyhow::Result<Self> {
+        let (stop_tx, stop_rx) = mpsc::channel();
+
+        // Create a Bash script that acts as a fake LSP server WITHOUT hover range
+        let script = r#"#!/bin/bash
+
+# Function to read a message
+read_message() {
+    # Read headers
+    local content_length=0
+    while IFS=: read -r key value; do
+        key=$(echo "$key" | tr -d '\r\n')
+        value=$(echo "$value" | tr -d '\r\n ')
+        if [ "$key" = "Content-Length" ]; then
+            content_length=$value
+        fi
+        # Empty line marks end of headers
+        if [ -z "$key" ]; then
+            break
+        fi
+    done
+
+    # Read content
+    if [ $content_length -gt 0 ]; then
+        dd bs=1 count=$content_length 2>/dev/null
+    fi
+}
+
+# Function to send a message
+send_message() {
+    local message="$1"
+    local length=${#message}
+    echo -en "Content-Length: $length\r\n\r\n$message"
+}
+
+# Main loop
+while true; do
+    # Read incoming message
+    msg=$(read_message)
+
+    if [ -z "$msg" ]; then
+        break
+    fi
+
+    # Extract method from JSON
+    method=$(echo "$msg" | grep -o '"method":"[^"]*"' | cut -d'"' -f4)
+    msg_id=$(echo "$msg" | grep -o '"id":[0-9]*' | cut -d':' -f2)
+
+    case "$method" in
+    "initialize")
+        # Send initialize response
+        send_message '{"jsonrpc":"2.0","id":'$msg_id',"result":{"capabilities":{"hoverProvider":true,"textDocumentSync":1}}}'
+        ;;
+    "textDocument/hover")
+        # Send hover response WITHOUT range (like pyrefly)
+        send_message '{"jsonrpc":"2.0","id":'$msg_id',"result":{"contents":{"kind":"markdown","value":"Hover without range"}}}'
+        ;;
+    "textDocument/didOpen"|"textDocument/didChange"|"textDocument/didSave")
+        # Notifications - no response needed
+        ;;
+    "textDocument/diagnostic")
+        send_message '{"jsonrpc":"2.0","id":'$msg_id',"result":{"items":[]}}'
+        ;;
+    "textDocument/inlayHint")
+        send_message '{"jsonrpc":"2.0","id":'$msg_id',"result":[]}'
+        ;;
+    "shutdown")
+        send_message '{"jsonrpc":"2.0","id":'$msg_id',"result":null}'
+        break
+        ;;
+    esac
+done
+"#;
+
+        // Write script to a temporary file
+        let script_path = std::env::temp_dir().join("fake_lsp_server_no_range.sh");
+        std::fs::write(&script_path, script)?;
+
+        // Make it executable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script_path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms)?;
+        }
+
+        let handle = Some(thread::spawn(move || {
+            // Wait for stop signal
+            let _ = stop_rx.recv();
+        }));
+
+        Ok(Self { handle, stop_tx })
+    }
+
+    /// Get the path to the no-range fake LSP server script
+    pub fn no_range_script_path() -> std::path::PathBuf {
+        std::env::temp_dir().join("fake_lsp_server_no_range.sh")
     }
 
     /// Stop the server

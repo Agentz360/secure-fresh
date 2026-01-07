@@ -507,6 +507,13 @@ pub struct EditorConfig {
     /// Default: blinking_block
     #[serde(default)]
     pub cursor_style: CursorStyle,
+
+    /// Enable quick suggestions (VS Code-like behavior).
+    /// When enabled, completion suggestions appear automatically while typing,
+    /// not just on trigger characters (like `.` or `::`).
+    /// Default: true
+    #[serde(default = "default_true")]
+    pub quick_suggestions: bool,
 }
 
 fn default_tab_size() -> usize {
@@ -595,6 +602,7 @@ impl Default for EditorConfig {
             file_tree_poll_interval_ms: default_file_tree_poll_interval(),
             default_line_ending: LineEndingOption::default(),
             cursor_style: CursorStyle::default(),
+            quick_suggestions: true,
         }
     }
 }
