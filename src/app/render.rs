@@ -24,6 +24,19 @@ impl Editor {
 
         // Prepare all buffers for rendering (pre-load viewport data for lazy loading)
         // Each split may have a different viewport position on the same buffer
+        let mut semantic_targets = std::collections::HashSet::new();
+        let mut buffers_to_request = Vec::new();
+        for split_id in self.split_view_states.keys() {
+            if let Some(buffer_id) = self.split_manager.get_buffer_id(*split_id) {
+                if semantic_targets.insert(buffer_id) {
+                    buffers_to_request.push(buffer_id);
+                }
+            }
+        }
+        for buffer_id in buffers_to_request {
+            self.maybe_request_semantic_tokens(buffer_id);
+        }
+
         for (split_id, view_state) in &self.split_view_states {
             if let Some(buffer_id) = self.split_manager.get_buffer_id(*split_id) {
                 if let Some(state) = self.buffers.get_mut(&buffer_id) {
@@ -2862,18 +2875,15 @@ impl Editor {
     pub(super) fn toggle_comment(&mut self) {
         // Determine comment prefix from language config
         // If no language detected or no comment prefix configured, do nothing
-        let comment_prefix: String = match self
-            .buffer_metadata
-            .get(&self.active_buffer())
-            .and_then(|metadata| metadata.file_path())
-            .and_then(|path| {
-                detect_language(path, &self.config.languages).and_then(|lang_name| {
-                    self.config
-                        .languages
-                        .get(&lang_name)
-                        .and_then(|lang_config| lang_config.comment_prefix.clone())
-                })
-            }) {
+        // Determine comment prefix from language config
+        let language = &self.active_state().language;
+        let comment_prefix = self
+            .config
+            .languages
+            .get(language)
+            .and_then(|lang_config| lang_config.comment_prefix.clone());
+
+        let comment_prefix: String = match comment_prefix {
             Some(prefix) => {
                 // Ensure there's a trailing space for consistent formatting
                 if prefix.ends_with(' ') {

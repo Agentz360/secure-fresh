@@ -172,6 +172,8 @@ struct TsRuntimeState {
     process_pids: Rc<RefCell<HashMap<u64, u32>>>,
     /// Next process ID for background processes
     next_process_id: Rc<RefCell<u64>>,
+    /// Directory context for system paths
+    dir_context: crate::config_io::DirectoryContext,
 }
 
 /// Display a transient message in the editor's status bar
@@ -329,6 +331,42 @@ fn op_fresh_set_clipboard(state: &mut OpState, #[string] text: String) {
             .send(PluginCommand::SetClipboard { text: text.clone() });
     }
     tracing::debug!("TypeScript plugin set_clipboard: {} chars", text.len());
+}
+
+/// Get the user configuration directory path
+///
+/// Returns the absolute path to the directory where user config and themes are stored.
+/// e.g. ~/.config/fresh/ on Linux or ~/Library/Application Support/fresh/ on macOS.
+#[op2]
+#[string]
+fn op_fresh_get_config_dir(state: &mut OpState) -> String {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        return runtime_state
+            .dir_context
+            .config_dir
+            .to_string_lossy()
+            .to_string();
+    }
+    String::new()
+}
+
+/// Get the user themes directory path
+///
+/// Returns the absolute path to the directory where user themes are stored.
+/// e.g. ~/.config/fresh/themes/
+#[op2]
+#[string]
+fn op_fresh_get_themes_dir(state: &mut OpState) -> String {
+    if let Some(runtime_state) = state.try_borrow::<Rc<RefCell<TsRuntimeState>>>() {
+        let runtime_state = runtime_state.borrow();
+        return runtime_state
+            .dir_context
+            .themes_dir()
+            .to_string_lossy()
+            .to_string();
+    }
+    String::new()
 }
 
 /// Get the buffer ID of the focused editor pane
@@ -3653,6 +3691,8 @@ extension!(
         op_fresh_info,
         op_fresh_debug,
         op_fresh_set_clipboard,
+        op_fresh_get_config_dir,
+        op_fresh_get_themes_dir,
         op_fresh_get_active_buffer_id,
         op_fresh_get_cursor_position,
         op_fresh_get_buffer_path,
@@ -3778,16 +3818,24 @@ impl TypeScriptRuntime {
         // Create dummy state for standalone testing
         let (tx, _rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        Self::with_state(state_snapshot, tx)
+        let dir_context =
+            crate::config_io::DirectoryContext::for_testing(std::path::Path::new("/tmp"));
+        Self::with_state(state_snapshot, tx, dir_context)
     }
 
     /// Create a new TypeScript runtime with editor state
     pub fn with_state(
         state_snapshot: Arc<RwLock<EditorStateSnapshot>>,
         command_sender: std::sync::mpsc::Sender<PluginCommand>,
+        dir_context: crate::config_io::DirectoryContext,
     ) -> Result<Self> {
         let pending_responses: PendingResponses = Arc::new(std::sync::Mutex::new(HashMap::new()));
-        Self::with_state_and_responses(state_snapshot, command_sender, pending_responses)
+        Self::with_state_and_responses(
+            state_snapshot,
+            command_sender,
+            pending_responses,
+            dir_context,
+        )
     }
 
     /// Create a new TypeScript runtime with editor state and shared pending responses
@@ -3795,6 +3843,7 @@ impl TypeScriptRuntime {
         state_snapshot: Arc<RwLock<EditorStateSnapshot>>,
         command_sender: std::sync::mpsc::Sender<PluginCommand>,
         pending_responses: PendingResponses,
+        dir_context: crate::config_io::DirectoryContext,
     ) -> Result<Self> {
         tracing::debug!("TypeScriptRuntime::with_state_and_responses: initializing V8 platform");
         // Initialize V8 platform before creating JsRuntime
@@ -3813,6 +3862,7 @@ impl TypeScriptRuntime {
             cancellable_processes: Rc::new(RefCell::new(HashMap::new())),
             process_pids: Rc::new(RefCell::new(HashMap::new())),
             next_process_id: Rc::new(RefCell::new(1)),
+            dir_context,
         }));
 
         tracing::debug!(
@@ -3864,6 +3914,12 @@ impl TypeScriptRuntime {
                     },
                     getUserConfig() {
                         return core.ops.op_fresh_get_user_config();
+                    },
+                    getConfigDir() {
+                        return core.ops.op_fresh_get_config_dir();
+                    },
+                    getThemesDir() {
+                        return core.ops.op_fresh_get_themes_dir();
                     },
 
                     // Clipboard
@@ -4603,8 +4659,17 @@ impl TypeScriptPluginManager {
         // Create editor state snapshot for query API
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
 
+        // Create directory context (use system defaults or temp for testing)
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap_or_else(|_| {
+            crate::config_io::DirectoryContext::for_testing(std::path::Path::new("/tmp"))
+        });
+
         // Create TypeScript runtime with state
-        let runtime = TypeScriptRuntime::with_state(Arc::clone(&state_snapshot), command_sender)?;
+        let runtime = TypeScriptRuntime::with_state(
+            Arc::clone(&state_snapshot),
+            command_sender,
+            dir_context,
+        )?;
 
         tracing::info!("TypeScript plugin manager initialized");
 
@@ -4970,7 +5035,9 @@ mod tests {
         }
 
         // Create runtime with state
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot.clone(), tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime =
+            TypeScriptRuntime::with_state(state_snapshot.clone(), tx, dir_context).unwrap();
 
         // Test querying state from TypeScript
         let result = runtime
@@ -5167,7 +5234,9 @@ mod tests {
         }
 
         // Create runtime with state
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot.clone(), tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime =
+            TypeScriptRuntime::with_state(state_snapshot.clone(), tx, dir_context).unwrap();
 
         // Test new ops from TypeScript
         let result = runtime
@@ -5261,7 +5330,8 @@ mod tests {
     async fn test_register_command_empty_contexts() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Register command with empty contexts (available everywhere)
         let result = runtime
@@ -5294,7 +5364,8 @@ mod tests {
     async fn test_register_command_all_contexts() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Test all valid context types
         let result = runtime
@@ -5344,7 +5415,8 @@ mod tests {
     async fn test_register_command_invalid_contexts_ignored() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Invalid contexts should be silently ignored
         let result = runtime
@@ -5383,7 +5455,8 @@ mod tests {
     async fn test_open_file_with_zero_values() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Zero values should translate to None (file opening without positioning)
         let result = runtime
@@ -5412,7 +5485,8 @@ mod tests {
     async fn test_open_file_with_default_params() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Test that JavaScript default parameters work
         let result = runtime
@@ -5442,7 +5516,8 @@ mod tests {
     async fn test_open_file_with_line_only() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Open file at specific line but no column
         let result = runtime
@@ -5470,7 +5545,8 @@ mod tests {
     async fn test_register_command_case_insensitive_contexts() {
         let (tx, rx) = std::sync::mpsc::channel();
         let state_snapshot = Arc::new(RwLock::new(EditorStateSnapshot::new()));
-        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx).unwrap();
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
+        let mut runtime = TypeScriptRuntime::with_state(state_snapshot, tx, dir_context).unwrap();
 
         // Context names should be case-insensitive
         let result = runtime
@@ -6629,8 +6705,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Use the actual plugins directory which has the lib folder
         let plugins_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
@@ -6689,8 +6767,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Load the actual git_log.ts plugin
         let plugins_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
@@ -6728,8 +6808,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Load the vi_mode.ts plugin
         let plugins_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
@@ -6772,8 +6854,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Load the actual git_log.ts plugin
         let plugins_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("plugins");
@@ -6865,8 +6949,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Create a simple plugin that spawns a process
         let temp_dir = TempDir::new().unwrap();
@@ -6948,8 +7034,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Create a plugin that runs git log like the git_log plugin does
         let temp_dir = TempDir::new().unwrap();
@@ -7035,8 +7123,10 @@ mod tests {
 
         let commands = Arc::new(RwLock::new(CommandRegistry::new()));
 
+        // Create dir context
+        let dir_context = crate::config_io::DirectoryContext::from_system().unwrap();
         // Spawn the plugin thread
-        let mut handle = PluginThreadHandle::spawn(commands).unwrap();
+        let mut handle = PluginThreadHandle::spawn(commands, dir_context).unwrap();
 
         // Create a plugin that mimics git_log with debug logs
         let temp_dir = TempDir::new().unwrap();

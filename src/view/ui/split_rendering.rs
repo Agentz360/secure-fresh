@@ -320,7 +320,8 @@ struct SelectionContext {
 
 struct DecorationContext {
     highlight_spans: Vec<crate::primitives::highlighter::HighlightSpan>,
-    semantic_spans: Vec<crate::primitives::highlighter::HighlightSpan>,
+    reference_spans: Vec<crate::primitives::highlighter::HighlightSpan>,
+    semantic_token_spans: Vec<crate::primitives::highlighter::HighlightSpan>,
     viewport_overlays: Vec<(crate::view::overlay::Overlay, Range<usize>)>,
     virtual_text_lookup: HashMap<usize, Vec<crate::view::virtual_text::VirtualText>>,
     diagnostic_lines: HashSet<usize>,
@@ -333,6 +334,7 @@ struct LineRenderOutput {
     cursor: Option<(u16, u16)>,
     last_line_end: Option<LastLineEnd>,
     content_lines_rendered: usize,
+    view_line_mappings: Vec<ViewLineMapping>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -385,7 +387,8 @@ struct CharStyleContext<'a> {
     is_selected: bool,
     theme: &'a crate::view::theme::Theme,
     highlight_spans: &'a [crate::primitives::highlighter::HighlightSpan],
-    semantic_spans: &'a [crate::primitives::highlighter::HighlightSpan],
+    reference_spans: &'a [crate::primitives::highlighter::HighlightSpan],
+    semantic_token_spans: &'a [crate::primitives::highlighter::HighlightSpan],
     viewport_overlays: &'a [(crate::view::overlay::Overlay, Range<usize>)],
     primary_cursor_position: usize,
     is_active: bool,
@@ -596,14 +599,27 @@ fn compute_char_style(ctx: &CharStyleContext) -> CharStyleOutput {
         style = style.fg(highlight_color.unwrap());
     }
 
-    // Apply semantic highlighting
+    // Apply reference highlighting (word under cursor)
     if let Some(bp) = ctx.byte_pos {
-        if let Some(semantic_span) = ctx
-            .semantic_spans
+        if let Some(reference_span) = ctx
+            .reference_spans
             .iter()
             .find(|span| span.range.contains(&bp))
         {
-            style = style.bg(semantic_span.color);
+            style = style.bg(reference_span.color);
+        }
+    }
+
+    // Apply LSP semantic token foreground color when no custom token style is set.
+    if ctx.token_style.is_none() {
+        if let Some(bp) = ctx.byte_pos {
+            if let Some(token_span) = ctx
+                .semantic_token_spans
+                .iter()
+                .find(|span| span.range.contains(&bp))
+            {
+                style = style.fg(token_span.color);
+            }
         }
     }
 
@@ -2809,11 +2825,11 @@ impl SplitRenderer {
             highlight_context_bytes,
         );
 
-        // Get semantic highlights through debounced cache
-        let semantic_spans = state
-            .semantic_highlight_cache
+        // Get reference highlights through debounced cache
+        let reference_spans = state
+            .reference_highlight_cache
             .get_highlights(
-                &mut state.semantic_highlighter,
+                &mut state.reference_highlighter,
                 &state.buffer,
                 primary_cursor_position,
                 viewport_start,
@@ -2822,6 +2838,17 @@ impl SplitRenderer {
                 theme.semantic_highlight_bg,
             )
             .to_vec();
+
+        // Resolve semantic tokens for this viewport (if version matches)
+        let semantic_token_spans = if let Some(store) = &state.semantic_tokens {
+            if store.version == state.buffer.version() {
+                Self::collect_semantic_token_spans(store, viewport_start, viewport_end, theme)
+            } else {
+                Vec::new()
+            }
+        } else {
+            Vec::new()
+        };
 
         let viewport_overlays = state
             .overlays
@@ -2859,11 +2886,56 @@ impl SplitRenderer {
 
         DecorationContext {
             highlight_spans,
-            semantic_spans,
+            reference_spans,
+            semantic_token_spans,
             viewport_overlays,
             virtual_text_lookup,
             diagnostic_lines,
             line_indicators,
+        }
+    }
+
+    fn collect_semantic_token_spans(
+        store: &crate::state::SemanticTokenStore,
+        viewport_start: usize,
+        viewport_end: usize,
+        theme: &crate::view::theme::Theme,
+    ) -> Vec<crate::primitives::highlighter::HighlightSpan> {
+        store
+            .tokens
+            .iter()
+            .filter(|span| span.range.end > viewport_start && span.range.start < viewport_end)
+            .map(|span| crate::primitives::highlighter::HighlightSpan {
+                range: span.range.clone(),
+                color: Self::color_for_semantic_token(&span.token_type, &span.modifiers, theme),
+            })
+            .collect()
+    }
+
+    fn color_for_semantic_token(
+        token_type: &str,
+        modifiers: &[String],
+        theme: &crate::view::theme::Theme,
+    ) -> Color {
+        if modifiers.iter().any(|m| m == "deprecated") {
+            return theme.diagnostic_warning_fg;
+        }
+
+        match token_type {
+            "keyword" | "modifier" => theme.syntax_keyword,
+            "function" | "method" | "macro" => theme.syntax_function,
+            "parameter" | "variable" | "property" | "enumMember" | "event" | "label" => {
+                theme.syntax_variable
+            }
+            "type" | "class" | "interface" | "struct" | "typeParameter" | "namespace" | "enum" => {
+                theme.syntax_type
+            }
+            "number" => theme.syntax_constant,
+            "string" | "regexp" => theme.syntax_string,
+            "operator" => theme.syntax_operator,
+            "comment" => theme.syntax_comment,
+            "decorator" => theme.syntax_function,
+            _ => theme.syntax_variable,
         }
     }
 
@@ -2916,13 +2988,15 @@ impl SplitRenderer {
         let cursor_line = state.buffer.get_line_number(primary_cursor_position);
 
         let highlight_spans = &decorations.highlight_spans;
-        let semantic_spans = &decorations.semantic_spans;
+        let reference_spans = &decorations.reference_spans;
+        let semantic_token_spans = &decorations.semantic_token_spans;
         let viewport_overlays = &decorations.viewport_overlays;
         let virtual_text_lookup = &decorations.virtual_text_lookup;
         let diagnostic_lines = &decorations.diagnostic_lines;
         let line_indicators = &decorations.line_indicators;
 
         let mut lines = Vec::new();
+        let mut view_line_mappings = Vec::new();
         let mut lines_rendered = 0usize;
         let mut view_iter_idx = view_anchor.start_line_idx;
         let mut cursor_screen_x = 0u16;
@@ -3197,7 +3271,8 @@ impl SplitRenderer {
                         is_selected,
                         theme,
                         highlight_spans,
-                        semantic_spans,
+                        reference_spans,
+                        semantic_token_spans,
                         viewport_overlays,
                         primary_cursor_position,
                         is_active,
@@ -3235,7 +3310,9 @@ impl SplitRenderer {
                             {
                                 // Flush accumulated text before inserting virtual text
                                 span_acc.flush(&mut line_spans, &mut line_view_map);
-                                let text_with_space = format!("{} ", vtext.text);
+                                // Add extra space if at end of line (before newline)
+                                let extra_space = if ch == '\n' { " " } else { "" };
+                                let text_with_space = format!("{}{} ", extra_space, vtext.text);
                                 push_span_with_map(
                                     &mut line_spans,
                                     &mut line_view_map,
@@ -3525,6 +3602,48 @@ impl SplitRenderer {
                 }
             }
 
+            // Calculate line_end_byte for this line
+            let line_end_byte = if current_view_line.ends_with_newline {
+                // Position ON the newline - find the last source byte (the newline's position)
+                current_view_line
+                    .char_source_bytes
+                    .iter()
+                    .rev()
+                    .find_map(|m| *m)
+                    .unwrap_or(0)
+            } else {
+                // Position AFTER the last character - find last source byte and add char length
+                if let Some((char_idx, &Some(last_byte_start))) = current_view_line
+                    .char_source_bytes
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find(|(_, m)| m.is_some())
+                {
+                    // Get the character at this index to find its UTF-8 byte length
+                    if let Some(last_char) = current_view_line.text.chars().nth(char_idx) {
+                        last_byte_start + last_char.len_utf8()
+                    } else {
+                        last_byte_start
+                    }
+                } else {
+                    0
+                }
+            };
+
+            // Capture accurate view line mapping for mouse clicks
+            // Content mapping starts after the gutter
+            let content_map = if line_view_map.len() >= gutter_width {
+                line_view_map[gutter_width..].to_vec()
+            } else {
+                Vec::new()
+            };
+            view_line_mappings.push(ViewLineMapping {
+                char_source_bytes: content_map.clone(),
+                visual_to_char: (0..content_map.len()).collect(),
+                line_end_byte,
+            });
+
             // Track if line was empty before moving line_spans
             let line_was_empty = line_spans.is_empty();
             lines.push(Line::from(line_spans));
@@ -3613,6 +3732,16 @@ impl SplitRenderer {
                 lines.push(Line::from(implicit_line_spans));
                 lines_rendered += 1;
 
+                // Add mapping for implicit line
+                // It has no content, so map is empty (gutter is handled by offset in screen_to_buffer_position)
+                let buffer_len = state.buffer.len();
+
+                view_line_mappings.push(ViewLineMapping {
+                    char_source_bytes: Vec::new(),
+                    visual_to_char: Vec::new(),
+                    line_end_byte: buffer_len,
+                });
+
                 // NOTE: We intentionally do NOT update last_line_end here.
                 // The implicit empty line is a visual display aid, not an actual content line.
                 // last_line_end should track the last actual content line for cursor placement logic.
@@ -3651,6 +3780,7 @@ impl SplitRenderer {
             cursor: have_cursor.then_some((cursor_screen_x, cursor_screen_y)),
             last_line_end,
             content_lines_rendered: lines_rendered,
+            view_line_mappings,
         }
     }
 
@@ -3948,71 +4078,7 @@ impl SplitRenderer {
 
         // Extract view line mappings for mouse click handling
         // This maps screen coordinates to buffer byte positions
-        Self::extract_view_line_mappings(view_lines_to_render)
-    }
-
-    /// Extract ViewLineMapping from rendered view lines
-    /// This captures the char_source_bytes and visual_to_char from each ViewLine
-    /// for accurate mouse click positioning with O(1) lookup
-    fn extract_view_line_mappings(view_lines: &[ViewLine]) -> Vec<ViewLineMapping> {
-        tracing::trace!(
-            "extract_view_line_mappings: {} view_lines",
-            view_lines.len()
-        );
-        for (i, vl) in view_lines.iter().enumerate().take(5) {
-            let first_bytes: Vec<_> = vl.char_source_bytes.iter().take(5).collect();
-            tracing::trace!(
-                "  ViewLine {}: text={:?} (len={}), first_source_bytes={:?}",
-                i,
-                vl.text.chars().take(20).collect::<String>(),
-                vl.text.len(),
-                first_bytes
-            );
-        }
-        view_lines
-            .iter()
-            .map(|vl| {
-                // Calculate line_end_byte: where the cursor should go when clicking past end of line
-                //
-                // For lines ending with newline: position ON the newline (so clicking past
-                // "hello\n" positions at byte 5, not byte 6 which would be next line)
-                //
-                // For lines NOT ending with newline (e.g., last line of file, or wrapped segments):
-                // position AFTER the last character (so clicking past "你好" positions at byte 6)
-                let line_end_byte = if vl.ends_with_newline {
-                    // Position ON the newline - find the last source byte (the newline's position)
-                    vl.char_source_bytes
-                        .iter()
-                        .rev()
-                        .find_map(|m| *m)
-                        .unwrap_or(0)
-                } else {
-                    // Position AFTER the last character - find last source byte and add char length
-                    if let Some((char_idx, &Some(last_byte_start))) = vl
-                        .char_source_bytes
-                        .iter()
-                        .enumerate()
-                        .rev()
-                        .find(|(_, m)| m.is_some())
-                    {
-                        // Get the character at this index to find its UTF-8 byte length
-                        if let Some(last_char) = vl.text.chars().nth(char_idx) {
-                            last_byte_start + last_char.len_utf8()
-                        } else {
-                            last_byte_start
-                        }
-                    } else {
-                        0
-                    }
-                };
-
-                ViewLineMapping {
-                    char_source_bytes: vl.char_source_bytes.clone(),
-                    visual_to_char: vl.visual_to_char.clone(),
-                    line_end_byte,
-                }
-            })
-            .collect()
+        render_output.view_line_mappings
     }
 
     /// Apply styles from original line_spans to a wrapped segment
