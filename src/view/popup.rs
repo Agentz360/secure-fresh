@@ -998,6 +998,7 @@ fn apply_hyperlink_overlay(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::theme;
 
     #[test]
     fn test_popup_list_item() {
@@ -1012,7 +1013,7 @@ mod tests {
 
     #[test]
     fn test_popup_selection() {
-        let theme = crate::view::theme::Theme::dark();
+        let theme = crate::view::theme::Theme::from_name(theme::THEME_DARK).unwrap();
         let items = vec![
             PopupListItem::new("item1".to_string()),
             PopupListItem::new("item2".to_string()),
@@ -1044,7 +1045,7 @@ mod tests {
 
     #[test]
     fn test_popup_manager() {
-        let theme = crate::view::theme::Theme::dark();
+        let theme = crate::view::theme::Theme::from_name(theme::THEME_DARK).unwrap();
         let mut manager = PopupManager::new();
 
         assert!(!manager.is_visible());
@@ -1071,7 +1072,7 @@ mod tests {
 
     #[test]
     fn test_popup_area_calculation() {
-        let theme = crate::view::theme::Theme::dark();
+        let theme = crate::view::theme::Theme::from_name(theme::THEME_DARK).unwrap();
         let terminal_area = Rect {
             x: 0,
             y: 0,
@@ -1101,7 +1102,7 @@ mod tests {
 
     #[test]
     fn test_popup_fixed_position_clamping() {
-        let theme = crate::view::theme::Theme::dark();
+        let theme = crate::view::theme::Theme::from_name(theme::THEME_DARK).unwrap();
         let terminal_area = Rect {
             x: 0,
             y: 0,

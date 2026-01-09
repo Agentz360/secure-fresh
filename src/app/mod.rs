@@ -367,11 +367,9 @@ pub struct Editor {
     /// Maps panel ID (e.g., "diagnostics") to buffer ID
     panel_ids: HashMap<String, BufferId>,
 
-    /// Search history (for search and find operations)
-    search_history: crate::input::input_history::InputHistory,
-
-    /// Replace history (for replace operations)
-    replace_history: crate::input::input_history::InputHistory,
+    /// Prompt histories keyed by prompt type name (e.g., "search", "replace", "goto_line", "plugin:custom_name")
+    /// This provides a generic history system that works for all prompt types including plugin prompts.
+    prompt_histories: HashMap<String, crate::input::input_history::InputHistory>,
 
     /// LSP progress tracking (token -> progress info)
     lsp_progress: std::collections::HashMap<String, LspProgressInfo>,
@@ -674,7 +672,8 @@ impl Editor {
         let working_dir = working_dir.canonicalize().unwrap_or_else(|_| working_dir);
 
         // Load theme from config
-        let theme = crate::view::theme::Theme::from_name(&config.theme);
+        let theme = crate::view::theme::Theme::from_name(&config.theme)
+            .ok_or_else(|| anyhow::anyhow!("Theme '{:?}' not found", config.theme))?;
 
         // Set terminal cursor color to match theme
         theme.set_terminal_cursor_color();
@@ -919,25 +918,19 @@ impl Editor {
             plugin_manager,
             seen_byte_ranges: HashMap::new(),
             panel_ids: HashMap::new(),
-            search_history: {
-                // Load search history from disk if available
-                let path = dir_context.search_history_path();
-                crate::input::input_history::InputHistory::load_from_file(&path).unwrap_or_else(
-                    |e| {
-                        tracing::warn!("Failed to load search history: {}", e);
-                        crate::input::input_history::InputHistory::new()
-                    },
-                )
-            },
-            replace_history: {
-                // Load replace history from disk if available
-                let path = dir_context.replace_history_path();
-                crate::input::input_history::InputHistory::load_from_file(&path).unwrap_or_else(
-                    |e| {
-                        tracing::warn!("Failed to load replace history: {}", e);
-                        crate::input::input_history::InputHistory::new()
-                    },
-                )
+            prompt_histories: {
+                // Load prompt histories from disk if available
+                let mut histories = HashMap::new();
+                for history_name in ["search", "replace", "goto_line"] {
+                    let path = dir_context.prompt_history_path(history_name);
+                    let history = crate::input::input_history::InputHistory::load_from_file(&path)
+                        .unwrap_or_else(|e| {
+                            tracing::warn!("Failed to load {} history: {}", history_name, e);
+                            crate::input::input_history::InputHistory::new()
+                        });
+                    histories.insert(history_name.to_string(), history);
+                }
+                histories
             },
             lsp_progress: std::collections::HashMap::new(),
             lsp_server_statuses: std::collections::HashMap::new(),
@@ -1395,7 +1388,7 @@ impl Editor {
     pub fn check_semantic_highlight_timer(&self) -> bool {
         // Check all buffers for pending semantic highlight redraws
         for state in self.buffers.values() {
-            if let Some(remaining) = state.reference_highlight_cache.needs_redraw() {
+            if let Some(remaining) = state.reference_highlight_overlay.needs_redraw() {
                 if remaining.is_zero() {
                     return true;
                 }
@@ -1698,23 +1691,12 @@ impl Editor {
         // EXCEPT during interactive replace where we want to keep highlights visible
         let in_interactive_replace = self.interactive_replace_state.is_some();
 
-        if !in_interactive_replace {
-            match event {
-                Event::Insert { .. } | Event::Delete { .. } | Event::BulkEdit { .. } => {
-                    self.clear_search_highlights();
-                }
-                Event::Batch { events, .. } => {
-                    // Check if batch contains any Insert/Delete events
-                    let has_edits = events
-                        .iter()
-                        .any(|e| matches!(e, Event::Insert { .. } | Event::Delete { .. }));
-                    if has_edits {
-                        self.clear_search_highlights();
-                    }
-                }
-                _ => {}
-            }
-        }
+        // Note: We intentionally do NOT clear search overlays on buffer modification.
+        // Overlays have markers that automatically track position changes through edits,
+        // which allows F3/Shift+F3 to find matches at their updated positions.
+        // The visual highlights may be on text that no longer matches the query,
+        // but that's acceptable - user can see where original matches were.
+        let _ = in_interactive_replace; // silence unused warning
 
         // 3. Trigger plugin hooks for this event (with pre-calculated line info)
         self.trigger_plugin_hooks_for_event(event, line_info);
@@ -1826,6 +1808,16 @@ impl Editor {
         // These take precedence over implicit cursor updates from Insert/Delete
         for (cursor_id, ref mut pos, ref mut anchor) in &mut new_cursors {
             let mut found_move_cursor = false;
+            // Save original position before any modifications - needed for shift calculation
+            let original_pos = *pos;
+
+            // Check if this cursor has an Insert at its original position (auto-close pattern).
+            // For auto-close, Insert is at cursor position and MoveCursor is relative to original state.
+            // For other operations (like indent), Insert is elsewhere and MoveCursor already accounts for shifts.
+            let insert_at_cursor_pos = events.iter().any(|e| {
+                matches!(e, Event::Insert { position, cursor_id: c, .. }
+                    if *c == *cursor_id && *position == original_pos)
+            });
 
             // First pass: look for explicit MoveCursor events for this cursor
             for event in &events {
@@ -1837,7 +1829,15 @@ impl Editor {
                 } = event
                 {
                     if event_cursor == cursor_id {
-                        *pos = *new_position;
+                        // Only adjust for shifts if the Insert was at the cursor's original position
+                        // (like auto-close). For other operations (like indent where Insert is at
+                        // line start), the MoveCursor already accounts for the shift.
+                        let shift = if insert_at_cursor_pos {
+                            calc_shift(original_pos)
+                        } else {
+                            0
+                        };
+                        *pos = (*new_position as isize + shift) as usize;
                         *anchor = *new_anchor;
                         found_move_cursor = true;
                     }
@@ -1901,7 +1901,7 @@ impl Editor {
         self.sync_editor_state_to_split_view_state();
         self.invalidate_layouts_for_buffer(self.active_buffer());
         self.adjust_other_split_cursors_for_event(&bulk_edit);
-        self.clear_search_highlights();
+        // Note: Do NOT clear search overlays - markers track through edits for F3/Shift+F3
 
         Some(bulk_edit)
     }
@@ -2435,8 +2435,10 @@ impl Editor {
 
         // Determine the default text: selection > last history > empty
         let from_history = selected_text.is_none();
-        let default_text =
-            selected_text.or_else(|| self.search_history.last().map(|s| s.to_string()));
+        let default_text = selected_text.or_else(|| {
+            self.get_prompt_history("search")
+                .and_then(|h| h.last().map(|s| s.to_string()))
+        });
 
         // Start the prompt
         self.start_prompt(message, prompt_type);
@@ -2449,7 +2451,7 @@ impl Editor {
                 prompt.cursor_pos = text.len();
             }
             if from_history {
-                self.search_history.init_at_last();
+                self.get_or_create_prompt_history("search").init_at_last();
             }
             self.update_search_highlights(&text);
         }
@@ -2553,13 +2555,23 @@ impl Editor {
     /// directory loading.
     fn init_file_open_state(&mut self) {
         // Determine initial directory
-        let initial_dir = self
-            .active_state()
-            .buffer
-            .file_path()
-            .and_then(|path| path.parent())
-            .map(|p| p.to_path_buf())
-            .unwrap_or_else(|| self.working_dir.clone());
+        let buffer_id = self.active_buffer();
+
+        // For terminal buffers, use the terminal's initial CWD or fall back to project root
+        // This avoids showing the terminal backing file directory which is confusing for users
+        let initial_dir = if self.is_terminal_buffer(buffer_id) {
+            self.get_terminal_id(buffer_id)
+                .and_then(|tid| self.terminal_manager.get(tid))
+                .and_then(|handle| handle.cwd())
+                .unwrap_or_else(|| self.working_dir.clone())
+        } else {
+            self.active_state()
+                .buffer
+                .file_path()
+                .and_then(|path| path.parent())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| self.working_dir.clone())
+        };
 
         // Create the file open state with config-based show_hidden setting
         let show_hidden = self.config.file_browser.show_hidden;
@@ -2683,13 +2695,15 @@ impl Editor {
 
         // Determine prompt type and reset appropriate history navigation
         if let Some(ref prompt) = self.prompt {
+            // Reset history navigation for this prompt type
+            if let Some(key) = Self::prompt_type_to_history_key(&prompt.prompt_type) {
+                if let Some(history) = self.prompt_histories.get_mut(&key) {
+                    history.reset_navigation();
+                }
+            }
             match &prompt.prompt_type {
                 PromptType::Search | PromptType::ReplaceSearch | PromptType::QueryReplaceSearch => {
-                    self.search_history.reset_navigation();
                     self.clear_search_highlights();
-                }
-                PromptType::Replace { .. } | PromptType::QueryReplace { .. } => {
-                    self.replace_history.reset_navigation();
                 }
                 PromptType::Plugin { custom_type } => {
                     // Fire plugin hook for prompt cancellation
@@ -2735,7 +2749,7 @@ impl Editor {
     pub fn confirm_prompt(&mut self) -> Option<(String, PromptType, Option<usize>)> {
         if let Some(prompt) = self.prompt.take() {
             let selected_index = prompt.selected_suggestion;
-            // For command, file, theme, and LSP stop prompts, prefer the selected suggestion over raw input
+            // For command, file, theme, plugin, and LSP stop prompts, prefer the selected suggestion over raw input
             let final_input = if matches!(
                 prompt.prompt_type,
                 PromptType::Command
@@ -2746,12 +2760,20 @@ impl Editor {
                     | PromptType::SelectTheme { .. }
                     | PromptType::SelectLocale
                     | PromptType::SwitchToTab
+                    | PromptType::Plugin { .. }
             ) {
                 // Use the selected suggestion if any
                 if let Some(selected_idx) = prompt.selected_suggestion {
                     if let Some(suggestion) = prompt.suggestions.get(selected_idx) {
-                        // Don't confirm disabled commands
+                        // Don't confirm disabled commands, but still record usage for history
                         if suggestion.disabled {
+                            // Record usage even for disabled commands so they appear in history
+                            if matches!(prompt.prompt_type, PromptType::Command) {
+                                self.command_registry
+                                    .write()
+                                    .unwrap()
+                                    .record_usage(&suggestion.text);
+                            }
                             self.set_status_message(
                                 t!(
                                     "error.command_not_available",
@@ -2790,18 +2812,10 @@ impl Editor {
             }
 
             // Add to appropriate history based on prompt type
-            match prompt.prompt_type {
-                PromptType::Search | PromptType::ReplaceSearch | PromptType::QueryReplaceSearch => {
-                    self.search_history.push(final_input.clone());
-                    // Reset navigation state
-                    self.search_history.reset_navigation();
-                }
-                PromptType::Replace { .. } | PromptType::QueryReplace { .. } => {
-                    self.replace_history.push(final_input.clone());
-                    // Reset navigation state
-                    self.replace_history.reset_navigation();
-                }
-                _ => {}
+            if let Some(key) = Self::prompt_type_to_history_key(&prompt.prompt_type) {
+                let history = self.get_or_create_prompt_history(&key);
+                history.push(final_input.clone());
+                history.reset_navigation();
             }
 
             Some((final_input, prompt.prompt_type, selected_index))
@@ -2813,6 +2827,37 @@ impl Editor {
     /// Check if currently in prompt mode
     pub fn is_prompting(&self) -> bool {
         self.prompt.is_some()
+    }
+
+    /// Get or create a prompt history for the given key
+    fn get_or_create_prompt_history(
+        &mut self,
+        key: &str,
+    ) -> &mut crate::input::input_history::InputHistory {
+        self.prompt_histories
+            .entry(key.to_string())
+            .or_insert_with(crate::input::input_history::InputHistory::new)
+    }
+
+    /// Get a prompt history for the given key (immutable)
+    fn get_prompt_history(&self, key: &str) -> Option<&crate::input::input_history::InputHistory> {
+        self.prompt_histories.get(key)
+    }
+
+    /// Get the history key for a prompt type
+    fn prompt_type_to_history_key(prompt_type: &crate::view::prompt::PromptType) -> Option<String> {
+        use crate::view::prompt::PromptType;
+        match prompt_type {
+            PromptType::Search | PromptType::ReplaceSearch | PromptType::QueryReplaceSearch => {
+                Some("search".to_string())
+            }
+            PromptType::Replace { .. } | PromptType::QueryReplace { .. } => {
+                Some("replace".to_string())
+            }
+            PromptType::GotoLine => Some("goto_line".to_string()),
+            PromptType::Plugin { custom_type } => Some(format!("plugin:{}", custom_type)),
+            _ => None,
+        }
     }
 
     /// Get the current global editor mode (e.g., "vi-normal", "vi-insert")
@@ -2905,17 +2950,32 @@ impl Editor {
                 // Update incremental search highlights as user types
                 self.update_search_highlights(&input);
                 // Reset history navigation when user types - allows Up to navigate history
-                self.search_history.reset_navigation();
+                if let Some(history) = self.prompt_histories.get_mut("search") {
+                    history.reset_navigation();
+                }
             }
             PromptType::Replace { .. } | PromptType::QueryReplace { .. } => {
                 // Reset history navigation when user types - allows Up to navigate history
-                self.replace_history.reset_navigation();
+                if let Some(history) = self.prompt_histories.get_mut("replace") {
+                    history.reset_navigation();
+                }
+            }
+            PromptType::GotoLine => {
+                // Reset history navigation when user types - allows Up to navigate history
+                if let Some(history) = self.prompt_histories.get_mut("goto_line") {
+                    history.reset_navigation();
+                }
             }
             PromptType::OpenFile | PromptType::SwitchProject | PromptType::SaveFileAs => {
                 // For OpenFile/SwitchProject/SaveFileAs, update the file browser filter (native implementation)
                 self.update_file_open_filter();
             }
             PromptType::Plugin { custom_type } => {
+                // Reset history navigation when user types - allows Up to navigate history
+                let key = format!("plugin:{}", custom_type);
+                if let Some(history) = self.prompt_histories.get_mut(&key) {
+                    history.reset_navigation();
+                }
                 // Fire plugin hook for prompt input change
                 use crate::services::plugins::hooks::HookArgs;
                 self.plugin_manager.run_hook(
@@ -3244,13 +3304,48 @@ impl Editor {
                 }
                 AsyncMessage::TerminalExited { terminal_id } => {
                     tracing::info!("Terminal {:?} exited", terminal_id);
-                    // Find and close the buffer associated with this terminal
+                    // Find the buffer associated with this terminal
                     if let Some((&buffer_id, _)) = self
                         .terminal_buffers
                         .iter()
                         .find(|(_, &tid)| tid == terminal_id)
                     {
+                        // Exit terminal mode if this is the active buffer
+                        if self.active_buffer() == buffer_id && self.terminal_mode {
+                            self.terminal_mode = false;
+                            self.key_context = crate::input::keybindings::KeyContext::Normal;
+                        }
+
+                        // Sync terminal content to buffer (final screen state)
+                        self.sync_terminal_to_buffer(buffer_id);
+
+                        // Append exit message to the backing file and reload
+                        let exit_msg = "\n[Terminal process exited]\n";
+
+                        if let Some(backing_path) =
+                            self.terminal_backing_files.get(&terminal_id).cloned()
+                        {
+                            if let Ok(mut file) =
+                                std::fs::OpenOptions::new().append(true).open(&backing_path)
+                            {
+                                use std::io::Write;
+                                let _ = file.write_all(exit_msg.as_bytes());
+                            }
+
+                            // Force reload buffer from file to pick up the exit message
+                            let _ = self.revert_buffer_by_id(buffer_id, &backing_path);
+                        }
+
+                        // Ensure buffer remains read-only with no line numbers
+                        if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                            state.editing_disabled = true;
+                            state.margins.set_line_numbers(false);
+                            state.buffer.set_modified(false);
+                        }
+
+                        // Remove from terminal_buffers so it's no longer treated as a terminal
                         self.terminal_buffers.remove(&buffer_id);
+
                         self.set_status_message(
                             t!("terminal.exited", id = terminal_id.0).to_string(),
                         );

@@ -91,8 +91,13 @@ impl Editor {
 
         // Apply runtime changes
         if old_theme != self.config.theme {
-            self.theme = crate::view::theme::Theme::from_name(&self.config.theme);
-            tracing::info!("Theme changed to '{}'", self.config.theme.0);
+            if let Some(theme) = crate::view::theme::Theme::from_name(&self.config.theme) {
+                self.theme = theme;
+                tracing::info!("Theme changed to '{}'", self.config.theme.0);
+            } else {
+                tracing::error!("Theme '{}' not found", self.config.theme.0);
+                self.set_status_message(format!("Theme '{}' not found", self.config.theme.0));
+            }
         }
 
         // Apply locale change at runtime

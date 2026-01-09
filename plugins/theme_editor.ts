@@ -197,7 +197,6 @@ function getThemeSections(): ThemeSection[] {
 // =============================================================================
 
 interface ThemeEditorState {
-  isOpen: boolean;
   bufferId: number | null;
   splitId: number | null;
   sourceSplitId: number | null;
@@ -228,8 +227,33 @@ interface ThemeEditorState {
   savedCursorPath: string | null;
 }
 
+/**
+ * Check if the theme editor is currently open.
+ * Uses a stateless approach by checking if the buffer actually exists.
+ * This handles cases where the buffer was closed externally (e.g., Ctrl+W).
+ */
+function isThemeEditorOpen(): boolean {
+  if (state.bufferId === null) {
+    return false;
+  }
+  // Check if the buffer actually exists
+  const buffers = editor.listBuffers();
+  const exists = buffers.some(b => b.id === state.bufferId);
+
+  // If buffer doesn't exist, reset our stale state
+  if (!exists) {
+    editor.debug(`Theme editor buffer ${state.bufferId} no longer exists, resetting state`);
+    state.bufferId = null;
+    state.splitId = null;
+    state.themeData = {};
+    state.originalThemeData = {};
+    state.hasChanges = false;
+  }
+
+  return exists;
+}
+
 const state: ThemeEditorState = {
-  isOpen: false,
   bufferId: null,
   splitId: null,
   sourceSplitId: null,
@@ -455,29 +479,27 @@ function findThemesDir(): string {
  * Load list of available built-in themes
  */
 async function loadBuiltinThemes(): Promise<string[]> {
-  const themesDir = findThemesDir();
   try {
-    const entries = editor.readDir(themesDir);
-    return entries
-      .filter(e => e.is_file && e.name.endsWith(".json"))
-      .map(e => e.name.replace(".json", ""));
-  } catch {
-    return ["dark", "light", "high-contrast", "dracula", "nord", "solarized-dark"];
+    const builtinThemes = editor.getBuiltinThemes();
+    return Object.keys(builtinThemes);
+  } catch (e) {
+    editor.debug(`Failed to load built-in themes list: ${e}`);
+    throw e;
   }
 }
 
 /**
- * Load a theme file from built-in themes directory
+ * Load a theme file from built-in themes
  */
 async function loadThemeFile(name: string): Promise<Record<string, unknown> | null> {
-  const themesDir = findThemesDir();
-  const themePath = editor.pathJoin(themesDir, `${name}.json`);
-
   try {
-    const content = await editor.readFile(themePath);
-    return JSON.parse(content);
-  } catch {
-    editor.debug(`Failed to load theme: ${name}`);
+    const builtinThemes = editor.getBuiltinThemes();
+    if (name in builtinThemes) {
+      return JSON.parse(builtinThemes[name]);
+    }
+    return null;
+  } catch (e) {
+    editor.debug(`Failed to load theme data for '${name}': ${e}`);
     return null;
   }
 }
@@ -1401,7 +1423,6 @@ globalThis.onThemeEditorBufferClosed = function(data: {
 }): void {
   if (state.bufferId !== null && data.buffer_id === state.bufferId) {
     // Reset state when our buffer is closed
-    state.isOpen = false;
     state.bufferId = null;
     state.splitId = null;
     state.themeData = {};
@@ -1617,7 +1638,9 @@ globalThis.theme_editor_nav_prev_section = function(): void {
  * Open the theme editor - prompts user to select theme first
  */
 globalThis.open_theme_editor = async function(): Promise<void> {
-  if (state.isOpen) {
+  if (isThemeEditorOpen()) {
+    // Focus the existing theme editor buffer
+    editor.focusBuffer(state.bufferId!);
     editor.setStatus(editor.t("status.already_open"));
     return;
   }
@@ -1690,7 +1713,6 @@ async function doOpenThemeEditor(): Promise<void> {
   });
 
   if (bufferId !== null) {
-    state.isOpen = true;
     state.bufferId = bufferId;
     state.splitId = null;
 
@@ -1705,7 +1727,7 @@ async function doOpenThemeEditor(): Promise<void> {
  * Close the theme editor
  */
 globalThis.theme_editor_close = function(): void {
-  if (!state.isOpen) return;
+  if (!isThemeEditorOpen()) return;
 
   if (state.hasChanges) {
     // Show confirmation prompt before closing with unsaved changes
@@ -1731,7 +1753,6 @@ function doCloseEditor(): void {
   }
 
   // Reset state
-  state.isOpen = false;
   state.bufferId = null;
   state.splitId = null;
   state.themeData = {};
@@ -1980,10 +2001,10 @@ globalThis.onThemeDeletePromptConfirmed = async function(args: {
 
   const value = args.input.trim();
   if (value === "delete" || value === editor.t("prompt.delete_yes")) {
-    if (state.themePath) {
+    if (state.themeName) {
       try {
-        // Delete the theme file
-        await editor.deleteFile(state.themePath);
+        // Delete the theme file by name
+        await editor.deleteTheme(state.themeName);
         const deletedName = state.themeName;
 
         // Reset to default theme

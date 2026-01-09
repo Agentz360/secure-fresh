@@ -320,7 +320,6 @@ struct SelectionContext {
 
 struct DecorationContext {
     highlight_spans: Vec<crate::primitives::highlighter::HighlightSpan>,
-    reference_spans: Vec<crate::primitives::highlighter::HighlightSpan>,
     semantic_token_spans: Vec<crate::primitives::highlighter::HighlightSpan>,
     viewport_overlays: Vec<(crate::view::overlay::Overlay, Range<usize>)>,
     virtual_text_lookup: HashMap<usize, Vec<crate::view::virtual_text::VirtualText>>,
@@ -387,7 +386,6 @@ struct CharStyleContext<'a> {
     is_selected: bool,
     theme: &'a crate::view::theme::Theme,
     highlight_spans: &'a [crate::primitives::highlighter::HighlightSpan],
-    reference_spans: &'a [crate::primitives::highlighter::HighlightSpan],
     semantic_token_spans: &'a [crate::primitives::highlighter::HighlightSpan],
     viewport_overlays: &'a [(crate::view::overlay::Overlay, Range<usize>)],
     primary_cursor_position: usize,
@@ -599,16 +597,8 @@ fn compute_char_style(ctx: &CharStyleContext) -> CharStyleOutput {
         style = style.fg(highlight_color.unwrap());
     }
 
-    // Apply reference highlighting (word under cursor)
-    if let Some(bp) = ctx.byte_pos {
-        if let Some(reference_span) = ctx
-            .reference_spans
-            .iter()
-            .find(|span| span.range.contains(&bp))
-        {
-            style = style.bg(reference_span.color);
-        }
-    }
+    // Note: Reference highlighting (word under cursor) is now handled via overlays
+    // in the "Apply overlay styles" section below
 
     // Apply LSP semantic token foreground color when no custom token style is set.
     if ctx.token_style.is_none() {
@@ -653,12 +643,15 @@ fn compute_char_style(ctx: &CharStyleContext) -> CharStyleOutput {
             .bg(ctx.theme.selection_bg);
     }
 
-    // Apply cursor styling - make secondary cursors visible with reversed colors
-    // Don't apply REVERSED to primary cursor to preserve terminal cursor visibility
-    // For inactive splits, ALL cursors use a less pronounced color (no hardware cursor)
+    // Apply cursor styling - make all cursors visible with reversed colors
+    // For active splits: apply REVERSED to ensure character under cursor is visible
+    // (especially important for block cursors where white-on-white would be invisible)
+    // For inactive splits: use a less pronounced background color (no hardware cursor)
     let is_secondary_cursor = ctx.is_cursor && ctx.byte_pos != Some(ctx.primary_cursor_position);
     if ctx.is_active {
-        if is_secondary_cursor {
+        if ctx.is_cursor {
+            // Apply REVERSED to all cursor positions (primary and secondary)
+            // This ensures the character under the cursor is always visible
             style = style.add_modifier(Modifier::REVERSED);
         }
     } else if ctx.is_cursor {
@@ -2825,19 +2818,18 @@ impl SplitRenderer {
             highlight_context_bytes,
         );
 
-        // Get reference highlights through debounced cache
-        let reference_spans = state
-            .reference_highlight_cache
-            .get_highlights(
-                &mut state.reference_highlighter,
-                &state.buffer,
-                primary_cursor_position,
-                viewport_start,
-                viewport_end,
-                highlight_context_bytes,
-                theme.semantic_highlight_bg,
-            )
-            .to_vec();
+        // Update reference highlight overlays (debounced, creates overlays that auto-adjust)
+        state.reference_highlight_overlay.update(
+            &state.buffer,
+            &mut state.overlays,
+            &mut state.marker_list,
+            &mut state.reference_highlighter,
+            primary_cursor_position,
+            viewport_start,
+            viewport_end,
+            highlight_context_bytes,
+            theme.semantic_highlight_bg,
+        );
 
         // Resolve semantic tokens for this viewport (if version matches)
         let semantic_token_spans = if let Some(store) = &state.semantic_tokens {
@@ -2886,7 +2878,6 @@ impl SplitRenderer {
 
         DecorationContext {
             highlight_spans,
-            reference_spans,
             semantic_token_spans,
             viewport_overlays,
             virtual_text_lookup,
@@ -2988,7 +2979,6 @@ impl SplitRenderer {
         let cursor_line = state.buffer.get_line_number(primary_cursor_position);
 
         let highlight_spans = &decorations.highlight_spans;
-        let reference_spans = &decorations.reference_spans;
         let semantic_token_spans = &decorations.semantic_token_spans;
         let viewport_overlays = &decorations.viewport_overlays;
         let virtual_text_lookup = &decorations.virtual_text_lookup;
@@ -3182,8 +3172,9 @@ impl SplitRenderer {
                             // IMPORTANT: If the cursor is on this ANSI byte, track it
                             if let Some(bp) = byte_pos {
                                 if bp == primary_cursor_position && !have_cursor {
-                                    cursor_screen_x =
-                                        gutter_width as u16 + visible_char_count as u16;
+                                    // Account for horizontal scrolling by using col_offset - left_col
+                                    cursor_screen_x = gutter_width as u16
+                                        + col_offset.saturating_sub(left_col) as u16;
                                     cursor_screen_y = lines_rendered.saturating_sub(1) as u16;
                                     have_cursor = true;
                                 }
@@ -3271,7 +3262,6 @@ impl SplitRenderer {
                         is_selected,
                         theme,
                         highlight_spans,
-                        reference_spans,
                         semantic_token_spans,
                         viewport_overlays,
                         primary_cursor_position,
@@ -3488,11 +3478,14 @@ impl SplitRenderer {
                     if is_primary_at_end && last_seg_y.is_some() {
                         // Cursor position now includes gutter width (consistent with main cursor tracking)
                         // For empty lines, cursor is at gutter width (right after gutter)
-                        // For non-empty lines without newline, cursor is after the last character
+                        // For non-empty lines without newline, cursor is after the last visible character
+                        // Account for horizontal scrolling by using col_offset - left_col
                         cursor_screen_x = if line_len_chars == 0 {
                             gutter_width as u16
                         } else {
-                            gutter_width as u16 + line_len_chars as u16
+                            // col_offset is the visual column after the last character
+                            // Subtract left_col to get the screen position after horizontal scroll
+                            gutter_width as u16 + col_offset.saturating_sub(left_col) as u16
                         };
                         cursor_screen_y = last_seg_y.unwrap();
                         have_cursor = true;
@@ -4174,6 +4167,7 @@ mod tests {
     use super::*;
     use crate::model::buffer::Buffer;
     use crate::primitives::display_width::str_width;
+    use crate::view::theme;
     use crate::view::theme::Theme;
     use crate::view::viewport::Viewport;
 
@@ -4228,7 +4222,7 @@ mod tests {
             content.len().max(1),
             visible_count,
         );
-        let theme = Theme::default();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let decorations = SplitRenderer::decoration_context(
             &mut state,
             viewport_start,
@@ -4322,13 +4316,14 @@ mod tests {
     // Helper to count all cursor positions in rendered output
     // Cursors can appear as:
     // 1. Primary cursor in output.cursor (hardware cursor position)
-    // 2. Visual spans with REVERSED modifier (secondary cursors)
+    // 2. Visual spans with REVERSED modifier (secondary cursors, or primary cursor with contrast fix)
     // 3. Visual spans with special background color (inactive cursors)
     fn count_all_cursors(output: &LineRenderOutput) -> Vec<(u16, u16)> {
         let mut cursor_positions = Vec::new();
 
         // Check for primary cursor in output.cursor field
-        if let Some(cursor_pos) = output.cursor {
+        let primary_cursor = output.cursor;
+        if let Some(cursor_pos) = primary_cursor {
             cursor_positions.push(cursor_pos);
         }
 
@@ -4342,8 +4337,12 @@ mod tests {
                     .add_modifier
                     .contains(ratatui::style::Modifier::REVERSED)
                 {
-                    // Found a visual cursor - record its position
-                    cursor_positions.push((col, line_idx as u16));
+                    let pos = (col, line_idx as u16);
+                    // Only add if this is not the primary cursor position
+                    // (primary cursor may also have REVERSED for contrast)
+                    if primary_cursor != Some(pos) {
+                        cursor_positions.push(pos);
+                    }
                 }
                 // Count the visual width of this span's content
                 col += str_width(&span.content) as u16;

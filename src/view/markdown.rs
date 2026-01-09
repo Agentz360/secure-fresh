@@ -571,6 +571,7 @@ pub fn parse_markdown(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::view::theme;
     use crate::view::theme::Theme;
 
     fn get_line_text(line: &StyledLine) -> String {
@@ -585,7 +586,7 @@ mod tests {
 
     #[test]
     fn test_plain_text() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("Hello world", &theme, None);
 
         assert_eq!(lines.len(), 1);
@@ -594,7 +595,7 @@ mod tests {
 
     #[test]
     fn test_bold_text() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("This is **bold** text", &theme, None);
 
         assert_eq!(lines.len(), 1);
@@ -615,7 +616,7 @@ mod tests {
 
     #[test]
     fn test_italic_text() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("This is *italic* text", &theme, None);
 
         assert_eq!(lines.len(), 1);
@@ -635,7 +636,7 @@ mod tests {
 
     #[test]
     fn test_strikethrough_text() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("This is ~~deleted~~ text", &theme, None);
 
         assert_eq!(lines.len(), 1);
@@ -655,7 +656,7 @@ mod tests {
 
     #[test]
     fn test_inline_code() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("Use `println!` to print", &theme, None);
 
         assert_eq!(lines.len(), 1);
@@ -672,7 +673,7 @@ mod tests {
 
     #[test]
     fn test_code_block() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("```rust\nfn main() {}\n```", &theme, None);
 
         // Code block should have content with background
@@ -691,7 +692,7 @@ mod tests {
 
     #[test]
     fn test_code_block_syntax_highlighting() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let registry = GrammarRegistry::load();
         // Rust code with keywords and strings that should get different colors
         let markdown = "```rust\nfn main() {\n    println!(\"Hello\");\n}\n```";
@@ -731,7 +732,7 @@ mod tests {
 
     #[test]
     fn test_code_block_unknown_language_fallback() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         // Unknown language should fallback to uniform styling
         let markdown = "```unknownlang\nsome code here\n```";
         let lines = parse_markdown(markdown, &theme, None);
@@ -763,7 +764,7 @@ mod tests {
 
     #[test]
     fn test_heading() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("# Heading\n\nContent", &theme, None);
 
         // Heading should be bold
@@ -777,7 +778,7 @@ mod tests {
 
     #[test]
     fn test_link() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("Click [here](https://example.com) for more", &theme, None);
 
         assert_eq!(lines.len(), 1);
@@ -796,7 +797,7 @@ mod tests {
 
     #[test]
     fn test_link_url_stored() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("Click [here](https://example.com) for more", &theme, None);
 
         assert_eq!(lines.len(), 1);
@@ -822,7 +823,7 @@ mod tests {
 
     #[test]
     fn test_link_at_column() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("Click [here](https://example.com) for more", &theme, None);
 
         assert_eq!(lines.len(), 1);
@@ -863,7 +864,7 @@ mod tests {
 
     #[test]
     fn test_unordered_list() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("- Item 1\n- Item 2\n- Item 3", &theme, None);
 
         // Each item should be on its own line
@@ -877,7 +878,7 @@ mod tests {
 
     #[test]
     fn test_paragraph_separation() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("First paragraph.\n\nSecond paragraph.", &theme, None);
 
         // Should have 3 lines: first para, blank line, second para
@@ -898,7 +899,7 @@ mod tests {
 
     #[test]
     fn test_soft_break_becomes_space() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         // Single newline in markdown is a soft break
         let lines = parse_markdown("Line one\nLine two", &theme, None);
 
@@ -917,7 +918,7 @@ mod tests {
 
     #[test]
     fn test_hard_break() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         // Two spaces before newline creates a hard break
         let lines = parse_markdown("Line one  \nLine two", &theme, None);
 
@@ -927,7 +928,7 @@ mod tests {
 
     #[test]
     fn test_horizontal_rule() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("Above\n\n---\n\nBelow", &theme, None);
 
         // Should have a line with horizontal rule characters
@@ -937,7 +938,7 @@ mod tests {
 
     #[test]
     fn test_nested_formatting() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("This is ***bold and italic*** text", &theme, None);
 
         assert_eq!(lines.len(), 1);
@@ -960,7 +961,7 @@ mod tests {
     #[test]
     fn test_lsp_hover_docstring() {
         // Real-world example from Python LSP hover
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let markdown = "```python\n(class) Path\n```\n\nPurePath subclass that can make system calls.\n\nPath represents a filesystem path.";
 
         let lines = parse_markdown(markdown, &theme, None);
@@ -982,7 +983,7 @@ mod tests {
 
     #[test]
     fn test_empty_input() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("", &theme, None);
 
         // Empty input should produce empty or minimal output
@@ -994,7 +995,7 @@ mod tests {
 
     #[test]
     fn test_only_whitespace() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("   \n\n   ", &theme, None);
 
         // Whitespace-only should produce empty or minimal output
@@ -1105,7 +1106,7 @@ mod tests {
     #[test]
     fn test_wrap_styled_lines_long_hover_content() {
         // Test that long hover lines get wrapped correctly
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
 
         // Simulate a long LSP hover response (e.g., a function signature that's too long)
         let long_text = "def very_long_function_name(param1: str, param2: int, param3: float, param4: list, param5: dict) -> tuple[str, int, float]";
@@ -1163,7 +1164,7 @@ mod tests {
 
     #[test]
     fn test_wrap_styled_lines_preserves_style() {
-        let theme = Theme::dark();
+        let theme = Theme::from_name(theme::THEME_DARK).unwrap();
         let lines = parse_markdown("**bold text that is quite long**", &theme, None);
 
         let wrapped = wrap_styled_lines(&lines, 15);

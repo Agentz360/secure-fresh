@@ -2,6 +2,9 @@
 
 use crate::common::fake_lsp::FakeLspServer;
 use crate::common::harness::EditorTestHarness;
+
+use fresh::view::theme;
+
 use crossterm::event::{KeyCode, KeyModifiers};
 
 /// Test that completion popup text is not mangled
@@ -1574,7 +1577,7 @@ fn test_lsp_typing_performance_with_many_diagnostics() -> anyhow::Result<()> {
     fresh::services::lsp::diagnostics::apply_diagnostics_to_state(
         state,
         &diag_params.diagnostics,
-        &fresh::view::theme::Theme::dark(),
+        &fresh::view::theme::Theme::from_name(theme::THEME_DARK).unwrap(),
     );
 
     let apply_duration = start.elapsed();
@@ -1610,7 +1613,7 @@ fn test_lsp_typing_performance_with_many_diagnostics() -> anyhow::Result<()> {
         fresh::services::lsp::diagnostics::apply_diagnostics_to_state_cached(
             state,
             &diag_params.diagnostics,
-            &fresh::view::theme::Theme::dark(),
+            &fresh::view::theme::Theme::from_name(theme::THEME_DARK).unwrap(),
         );
         let reapply_duration = start.elapsed();
         total_reapply_time += reapply_duration;
