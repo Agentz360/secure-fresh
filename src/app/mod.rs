@@ -241,6 +241,12 @@ pub struct Editor {
     /// This is the runtime value that can be modified by dragging the border
     file_explorer_width_percent: f32,
 
+    /// Pending show_hidden setting to apply when file explorer is initialized (from session restore)
+    pending_file_explorer_show_hidden: Option<bool>,
+
+    /// Pending show_gitignored setting to apply when file explorer is initialized (from session restore)
+    pending_file_explorer_show_gitignored: Option<bool>,
+
     /// Whether menu bar is visible
     menu_bar_visible: bool,
 
@@ -693,11 +699,13 @@ impl Editor {
         let mut event_logs = HashMap::new();
 
         let buffer_id = BufferId(0);
-        let state = EditorState::new(
+        let mut state = EditorState::new(
             width,
             height,
             config.editor.large_file_threshold_bytes as usize,
         );
+        // Apply line_numbers default from config (fixes #539)
+        state.margins.set_line_numbers(config.editor.line_numbers);
         // Note: line_wrap_enabled is now stored in SplitViewState.viewport
         tracing::info!("EditorState created for buffer {:?}", buffer_id);
         buffers.insert(buffer_id, state);
@@ -880,6 +888,8 @@ impl Editor {
             file_explorer_visible: false,
             file_explorer_sync_in_progress: false,
             file_explorer_width_percent: file_explorer_width,
+            pending_file_explorer_show_hidden: None,
+            pending_file_explorer_show_gitignored: None,
             menu_bar_visible: show_menu_bar,
             menu_bar_auto_shown: false,
             tab_bar_visible: show_tab_bar,
