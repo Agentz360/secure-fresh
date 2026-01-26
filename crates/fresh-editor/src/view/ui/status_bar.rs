@@ -584,11 +584,17 @@ impl StatusBarRenderer {
 
         // Build left status (file info, position, diagnostics, messages)
         // Line and column are 0-indexed internally, but displayed as 1-indexed (standard editor convention)
-        let base_status = format!(
-            "{filename}{modified} | Ln {}, Col {}{diagnostics_summary}{cursor_count_indicator}",
-            line + 1,
-            col + 1
-        );
+        // For virtual buffers with hidden cursors, don't show line/column info
+        let base_status = if state.show_cursors {
+            format!(
+                "{filename}{modified} | Ln {}, Col {}{diagnostics_summary}{cursor_count_indicator}",
+                line + 1,
+                col + 1
+            )
+        } else {
+            // Virtual buffer - just show filename and modified indicator
+            format!("{filename}{modified}{diagnostics_summary}")
+        };
 
         // Track where the message starts for click detection
         let base_and_chord_width = str_width(&base_status) + str_width(&chord_display);
