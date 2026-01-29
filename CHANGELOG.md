@@ -1,5 +1,256 @@
 # Release Notes
 
+## 0.1.95
+
+### Bug Fixes
+
+* Fixed data corruption issue when saving a large file multiple times (#882)
+
+* Fixed hidden menus showing up when using left/right arrow keys to move between menus
+
+* Fixed language pack plugins not being loaded properly in some cases
+
+## 0.1.94
+
+### Documentation
+
+* **New documentation site**: @radiorambo contributed a complete restructure and build for a documentation section in the website. Kudos, awesome work!
+
+See [getfresh.dev/docs](https://getfresh.dev/docs)
+
+### Features
+
+* **Event Debug Dialog**: New diagnostic tool for troubleshooting keyboard and terminal issues. Shows raw key codes and modifiers as they are received, helping diagnose keybinding problems. Access via Command Palette → "Event Debug".
+
+* **File Explorer Keybindings**: Reorganized the keys and updated the docs. Ctrl+E now toggles focus between file explorer and editor. Ctrl+B toggles sidebar visibility. Single-click opens files without leaving explorer; double-click or Enter opens and focuses editor (#748).
+
+### Bug Fixes
+
+* **Case Conversion Enhancement**: To Upper (Alt+U) and To Lower (Alt+L) now automatically select the current word when no text is selected, matching common editor behavior.
+
+* **Block Selection Copy**: Fixed Ctrl+C copying entire lines instead of the rectangular region. Block selection (Alt+Shift+Arrow) now correctly copies only the characters within the column bounds for each line.
+
+* **Block Selection Editing**: Block selection now converts to multiple cursors for editing actions (typing, delete, backspace), enabling proper rectangular editing.
+
+* **Dropdown Menu Position**: Fixed Help menu dropdown appearing at wrong position when Explorer menu was hidden. Menu position calculation now correctly skips hidden menus.
+
+* **Settings Access**: Moved Settings to Edit menu and removed broken Ctrl+, keybinding which doesn't work reliably in terminals. Settings remain accessible via Edit → Settings... and Command Palette.
+
+* **Block Selection Rendering**: Fixed double rendering of block selections that could cause visual artifacts.
+
+### Internal
+
+* **Remote Save Optimization**: SSH remote editing now uses recipe-based patched saves. For large files with small edits, only the changed portions are transferred instead of the entire file. A 10MB file with a 100-byte edit now transfers ~200 bytes instead of 10MB.
+
+---
+
+## 0.1.93
+
+### Experimental
+
+* **SSH Remote Editing**: Edit files on remote machines via SSH using `fresh user@host:path`. Supports password/key auth, sudo save, and file explorer integration.
+
+### Features
+
+* **Bracket Matching**: Highlight matching brackets with rainbow colors based on nesting depth. Configurable via `highlight_matching_brackets` and `rainbow_brackets`.
+* **Whitespace Cleanup**: New `trim_trailing_whitespace_on_save` and `ensure_final_newline_on_save` options, plus manual commands.
+* **Shift+Click Selection**: Extend selection to clicked position with Shift+click or Ctrl+click.
+* **Terminal Mouse Forwarding**: Mouse events forwarded to terminal in alternate screen mode (vim, htop, etc.) (#853).
+* **Tab Bar Scroll Buttons**: Click `<`/`>` buttons to scroll through tabs.
+* **Library Files Protection**: Files outside project root are read-only and have LSP disabled.
+* **Buffer Focus History**: Closing a buffer returns to previously focused buffer instead of adjacent tab.
+
+### Bug Fixes
+
+* **Multi-Cursor Cut**: Fixed cut not deleting all selections with multiple cursors.
+* **Tab Scroll**: Fixed tab scroll buttons and active tab visibility.
+
+### Packaging
+
+* **AUR aarch64**: Added aarch64 support for Arch Linux ARM (#856).
+
+### Internal
+
+* Nix: Switched to `flake.parts`, added `shell.nix`/`default.nix` compatibility (@drupol).
+
+---
+
+## 0.1.90
+
+### Features
+
+* **Package Manager**: Browse, install, and uninstall plugins, themes, and language packs from the [official registry](https://github.com/sinelaw/fresh-plugins-registry). Features search, package validation, background registry sync with local caching, and automatic theme reloading after install.
+  - **Language packs** bundle syntax highlighting (`.sublime-syntax`), language settings, and LSP server configuration
+  - Filter by package type: Plugins, Themes, Languages
+  - See [fresh-plugins](https://github.com/sinelaw/fresh-plugins) for example packages
+
+* **Command Palette** (Ctrl+P): Unified prompt for navigating files, commands, buffers, and lines. Use prefix characters to switch modes:
+  - No prefix: fuzzy file finder
+  - `>` prefix: commands
+  - `#` prefix: switch open buffers by name
+  - `:` prefix: go to line number
+
+  Includes hints line showing available prefixes and Tab completion.
+
+* **Status Message Log**: Click status bar messages to view full message history.
+
+* **Package Scaffolding (`--init`)**: Create new plugin, theme, or language pack projects with `fresh --init`. Interactive wizard generates package.json, entry files, and proper directory structure.
+
+* **Theme Schema**: JSON Schema for theme validation. Use `scripts/validate-theme.sh` or any JSON Schema validator.
+
+### Bug Fixes
+
+* **Bracket Expansion**: Pressing Enter between matching brackets expands them with proper indentation (#629).
+* **Ctrl+D Word Selection**: Ctrl+D selects the entire word when no selection exists.
+* **Ctrl+Right Word Jump**: Ctrl+Right jumps to word end, matching Ctrl+Shift+Right behavior.
+* **Alt+N/P Search**: Search invalidates when cursor moves manually, preventing stale matches.
+* **Theme Fallback**: Falls back to default theme when configured theme is not found.
+* **Cross-Platform Theme Paths**: Theme path handling works correctly on Windows.
+
+### Internal
+
+* Moved calculator, color-highlighter, todo-highlighter plugins to external repository (installable via package manager).
+* Moved catppuccin and xscriptor themes to external repository (installable via package manager).
+* Added WASM feature flag for shared editor core modules.
+* Italian translation update (#839).
+
+---
+
+## 0.1.88
+
+### Features
+
+* **Status Bar Language Indicator**: Click the language name in the status bar to change syntax highlighting. Supports mouse wheel scrolling and type-to-filter.
+* **VS Code-like Completion UX**: Debounced completion triggers, Tab accepts completion, uppercase letters work in type-to-filter.
+* **Per-Language LSP Root URI**: LSP servers can now have per-language root URI detection. Includes automatic C# project root detection via `.csproj` files.
+* **Settings UI Improvements**: Settings organized by topic sections, improved focus colors, search navigates to setting, better Map control navigation.
+
+### Bug Fixes
+
+* **Tab Bar Mouse Events**: Fixed clicks on tabs not working when menu bar is hidden (#832).
+* **LSP Deadlock**: Fixed deadlock when LSP server sends requests while client is awaiting a response.
+* **LSP Root URI**: Include `root_uri` in LSP initialize params for server compatibility.
+* **Terminal Scrollback**: Fixed race condition truncating terminal backing file when PTY already wrote content.
+* **Plugin i18n**: Fixed placeholder format to use `%{variable}` syntax.
+* **Settings UI**: Fixed confirm dialog mouse clicks/Tab navigation, dropdown option selection, search result navigation, and content bleeding into footer.
+
+### Packaging
+
+* **Winget**: Added Windows Package Manager (winget) publishing to release pipeline.
+
+### Internal
+
+* **FileSystem Trait**: New IO abstraction layer enabling different backends (local, remote, WASM). All filesystem operations now use injectable `FileSystem` trait.
+
+---
+
+## 0.1.87
+
+### Features
+
+* **Language Support**: Added LSP configurations and syntax highlighting for Zig, Java, LaTeX, Markdown, and Templ.
+* **Git File Highlighting**: Syntax highlighting for git-related files (.gitignore, .gitattributes, .gitmodules).
+* **Plugin Type Safety**: TypeScript type definitions for plugin API with compile-time validation.
+
+### Bug Fixes
+
+* **Hover Popup**: Fixed scrolling to bottom, dismiss on click outside, block clicks inside popup.
+* **Settings UI**: Fixed overwriting manual config.json edits when saving from Settings UI (#806).
+* **Windows Terminal**: Fixed truecolor detection and 256-color grayscale conversion overflow.
+* **Composite Buffers**: Fixed mouse click sync, deserialization errors, and cursor positioning.
+* **Plugin Stability**: Plugin thread panics now propagate to main thread for proper error handling.
+* **Review Diff Plugin**: Fixed side-by-side diff commands not appearing in command palette.
+
+---
+
+## 0.1.86
+
+### Features
+
+* **Popup Text Selection**: Select and copy text from LSP hover popups and tooltips. Click and drag to select, Ctrl+C to copy.
+* **File Explorer Status Tooltips**: Hover over git status indicators (M, U, A) to see detailed explanations and diff stats. Directory tooltips show list of modified files.
+* **Terminal Background Transparency**: New `use_terminal_bg` config option allows terminal transparency or custom backgrounds to show through the editor (#640).
+* **Vi Mode Improvements**: Added `:w filename` to save to path, `:wq filename` to save and quit, `:q!` to force quit without saving. Added Ctrl+P (command palette) and Ctrl+Q (quit) to all vi modes.
+
+### Bug Fixes
+
+* **Settings UI Add Button**: Fixed "Add New" button not appearing for LSP and Languages maps in Settings UI.
+* **LSP Hover Markdown**: Improved markdown rendering - soft breaks now create newlines (fixing Python docstring formatting), inline code rendered without visible backticks.
+* **Symlink Directories**: Fixed symlinks to directories not showing expand marker and causing "Is a directory" error when opened (#787).
+* **Live Grep Preview**: Fixed preview not updating when navigating through search results (#636).
+* **Terminal Keyboard State**: Fixed arrow keys and Enter not working after exiting the editor due to Kitty keyboard protocol cleanup issue (#773).
+* **Plugin Commands Visibility**: Fixed many plugin commands (Toggle Vi Mode, Git Blame, Diagnostics Panel, etc.) not appearing in command palette.
+
+### UI Changes
+
+* **File Explorer Layout**: Git status indicators moved to rightmost column, matching VS Code's layout. Removed file size and item count for cleaner appearance.
+* **Quieter Startup**: Removed plugin "ready/loaded" status messages that cluttered the status bar on startup.
+
+### Internal
+
+* Separated I/O from pure types in theme and grammar modules for better testability and future WASM compatibility.
+* Fixed workspace crate dependencies for crates.io publishing.
+* Improved install.sh reliability for containers and edge cases.
+
+---
+
+## 0.1.83
+
+### Breaking Changes
+
+* **QuickJS Plugin Runtime**: Replaced Deno with QuickJS for the plugin system. Each plugin now runs in its own isolated context.
+
+### Features
+
+* **Cargo Workspace Architecture**: Refactored into modular crates (fresh-core, fresh-editor, fresh-languages, fresh-parser-js, fresh-plugin-runtime, fresh-plugin-api-macros).
+
+### Bug Fixes
+
+* **Toggle Comment YAML**: Fixed toggle comment not working for YAML files by falling back to config-based language detection (#774).
+* **Undo History Panic**: Fixed panic when undoing past a save point and making new edits caused out-of-bounds slice access (#776).
+* **Sudo Save Prompt**: Fixed permission denied crash when saving files owned by another user; now shows sudo prompt correctly (#775).
+* **Musl Plugin Support**: Plugins now work on musl target builds (x86_64/aarch64-unknown-linux-musl).
+* **LSP Server Requests**: Fixed LSP server-to-client request handling not being dispatched to plugins.
+* **Git Find File Selection**: Fixed race condition causing wrong file selection when pressing Enter quickly.
+* **Plugin Cache**: Embedded plugins now cached in XDG cache dir instead of leaking temp directories.
+
+### Internal
+
+* Improved compile times via LLVM optimization flag.
+* Cross-platform path handling fixes for Windows.
+* Test reliability improvements.
+
+---
+
+## 0.1.77
+
+### Documentation
+
+* **macOS Terminal Tips**: Added keyboard enhancement flags configuration guide.
+
+### Features
+
+* **LSP Semantic Highlighting** (@Asuka-Minato).
+* **macOS Keybinding Display**: Native symbols (⌃, ⌥, ⇧) instead of Ctrl+/Alt+/Shift+.
+* **Odin Language Support**: Syntax highlighting (sublime-syntax from @Tetralux) and OLS LSP configuration (@xoxorwr).
+* **File Explorer Git Indicators**: Shows modified/added status for files and folders via new plugin (#526) (@Asuka-Minato).
+* **Keyboard Enhancement Flags Config**: New config options for more granular control over kitty protocol usage (`keyboard_disambiguate_escape_codes`, `keyboard_report_event_types`, `keyboard_report_alternate_keys`, `keyboard_report_all_keys_as_escape_codes`).
+
+### Bug Fixes
+
+* **Menu Keybinding Display**: Consistent keybinding symbols in menus on macOS (#703).
+* **Git Find File Popup**: Smart path truncation preserving filename (#707).
+* **File Owner Preservation**: Preserve owner when saving files with group write privileges (#743).
+
+### Internal
+
+* Telemetry and update checks now debounce to once per day.
+* Terminal mode handling refactored into dedicated module.
+* Resolved ~300+ clippy warnings.
+* Bumped url (2.5.8), libc (0.2.180) (@dependabot).
+
+---
+
 ## 0.1.76
 
 ### Features

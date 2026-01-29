@@ -40,9 +40,10 @@ Fresh is engineered for speed. It delivers a low-latency experience, with text a
 - **Plugins & Extensibility**: TypeScript plugins, color highlighter, TODO highlighter, merge conflicts, path complete, keymaps
 - **Internationalization**: Multiple language support (see [`locales/`](locales/) for available languages), plugin translation system
 
-![Fresh Screenshot](docs/screenshot1.png)
-![Fresh Screenshot](docs/screenshot2.png)
-![Fresh Screenshot](docs/screenshot3.png)
+![Fresh Demo](docs/fresh-demo2.gif)
+![Fresh Screenshot](docs/public/images/screenshot1.png)
+![Fresh Screenshot](docs/public/images/screenshot2.png)
+![Fresh Screenshot](docs/public/images/screenshot3.png)
 
 ## Installation
 
@@ -70,6 +71,8 @@ Or, pick your preferred method:
 ### Brew
 
 On macOS and some linux distros (Bazzite/Bluefin/Aurora):
+
+> **Note:** On macOS, see [macOS Terminal Tips](docs/USER_GUIDE.md#macos-terminal-tips) for recommended terminal configuration.
 
 ```bash
 brew tap sinelaw/fresh
@@ -216,10 +219,10 @@ cargo build --release
 
 ## Documentation
 
-- [User Guide](docs/USER_GUIDE.md)
-- [macOS Tips](docs/USER_GUIDE.md#macos-terminal-tips) - Terminal configuration, keyboard shortcuts, and troubleshooting for Mac users
-- [Plugin Development](docs/PLUGIN_DEVELOPMENT.md)
-- [Architecture](docs/ARCHITECTURE.md)
+- [User Guide](https://sinelaw.github.io/fresh/docs/guide/)
+- [macOS Tips](https://sinelaw.github.io/fresh/docs/guide/keyboard#macos-terminal-configuration) - Terminal configuration, keyboard shortcuts, and troubleshooting for Mac users
+- [Plugin Development](https://sinelaw.github.io/fresh/docs/development/plugin-development)
+- [Architecture](https://sinelaw.github.io/fresh/docs/development/architecture)
 
 ## Contributing
 
@@ -238,6 +241,13 @@ Thanks for contributing!
 6. **Cross-Platform Consistency**: Avoid hard-coding newline or CRLF related logic, consider the buffer mode.
 
 7. **LSP**: Ensure LSP interactions follow the correct lifecycle (e.g., `didOpen` must always precede other requests to avoid server-side errors). Use the appropriate existing helpers for this pattern.
+
+8. **Regenerate plugin types and schemas**: After modifying the plugin API or config types:
+   - **TypeScript definitions** (`plugins/lib/fresh.d.ts`): Auto-generated from Rust types with `#[derive(TS)]`. Run: `cargo test -p fresh-plugin-runtime write_fresh_dts_file -- --ignored`
+   - **JSON schemas** (`plugins/config-schema.json`, `plugins/schemas/theme.schema.json`): Auto-generated from Rust types with `#[derive(JsonSchema)]`. Run: `./scripts/gen_schema.sh`
+   - **Package schema** (`plugins/schemas/package.schema.json`): Manually maintained - edit directly when adding new language pack fields
+
+9. **Type check plugins**: Run `crates/fresh-editor/plugins/check-types.sh` (requires `tsc`)
 
 **Tip**: You can use tmux + send-keys + render-pane to script ad-hoc tests on the UI, for example when trying to reproduce an issue.
 

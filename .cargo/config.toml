@@ -1,0 +1,5 @@
+[build]
+# Speed up the build:
+# "sink-common=false" tells LLVM: "Don't try to merge common code in huge switch statements."
+# This prevents the O(N^2) behavior in SimplifyCFG.
+rustflags = ["-C", "llvm-args=-simplifycfg-sink-common=false"]
