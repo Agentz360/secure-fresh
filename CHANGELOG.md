@@ -1,5 +1,15 @@
 # Release Notes
 
+## 0.1.95
+
+### Bug Fixes
+
+* Fixed data corruption issue when saving a large file multiple times (#882)
+
+* Fixed hidden menus showing up when using left/right arrow keys to move between menus
+
+* Fixed language pack plugins not being loaded properly in some cases
+
 ## 0.1.94
 
 ### Documentation
