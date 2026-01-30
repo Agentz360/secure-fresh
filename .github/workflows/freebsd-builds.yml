@@ -1,0 +1,58 @@
+name: FreeBSD Builds
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+jobs:
+  build-freebsd:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Build in FreeBSD
+        id: build
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          # rsync is the default, ensuring target/ and archives come back to the host
+          sync: rsync
+          prepare: |
+            pkg install -y rust pkgconf llvm
+          run: |
+            set -e  # Exit immediately on any error
+
+            # 1. Build project
+            cargo build --release --locked
+
+            # Verify binary was built
+            ls -la target/release/fresh
+
+            # 2. Setup Variables
+            TARGET="x86_64-unknown-freebsd"
+            ARCHIVE_NAME="fresh-editor-${TARGET}"
+            mkdir -p "${ARCHIVE_NAME}"
+
+            # 3. Package assets
+            cp target/release/fresh "${ARCHIVE_NAME}/"
+            cp README.md LICENSE CHANGELOG.md "${ARCHIVE_NAME}/" || true
+            cp -r crates/fresh-editor/plugins "${ARCHIVE_NAME}/" || true
+            cp -r crates/fresh-editor/themes "${ARCHIVE_NAME}/" || true
+
+            # 4. Create Archive
+            tar -cJvf "${ARCHIVE_NAME}.tar.xz" "${ARCHIVE_NAME}"
+            sha256 -q "${ARCHIVE_NAME}.tar.xz" > "${ARCHIVE_NAME}.tar.xz.sha256"
+
+            # Verify archive contents
+            echo "Archive contents:"
+            tar -tJf "${ARCHIVE_NAME}.tar.xz" | grep -E '(fresh|README)' | head -5
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: artifacts-x86_64-unknown-freebsd
+          path: |
+            fresh-editor-x86_64-unknown-freebsd.tar.xz
+            fresh-editor-x86_64-unknown-freebsd.tar.xz.sha256

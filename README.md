@@ -72,7 +72,7 @@ Or, pick your preferred method:
 
 On macOS and some linux distros (Bazzite/Bluefin/Aurora):
 
-> **Note:** On macOS, see [macOS Terminal Tips](docs/USER_GUIDE.md#macos-terminal-tips) for recommended terminal configuration.
+> **Note:** On macOS, see [macOS Terminal Tips](https://getfresh.dev/docs/configuration/keyboard#macos-terminal-tips) for recommended terminal configuration.
 
 ```bash
 brew tap sinelaw/fresh
@@ -219,10 +219,9 @@ cargo build --release
 
 ## Documentation
 
-- [User Guide](https://sinelaw.github.io/fresh/docs/guide/)
-- [macOS Tips](https://sinelaw.github.io/fresh/docs/guide/keyboard#macos-terminal-configuration) - Terminal configuration, keyboard shortcuts, and troubleshooting for Mac users
-- [Plugin Development](https://sinelaw.github.io/fresh/docs/development/plugin-development)
-- [Architecture](https://sinelaw.github.io/fresh/docs/development/architecture)
+- [User Guide](https://getfresh.dev/docs)
+- [macOS Tips](https://getfresh.dev/docs/configuration/keyboard#macos-terminal-tips) - Terminal configuration, keyboard shortcuts, and troubleshooting for Mac users
+- [Plugin Development](https://getfresh.dev/docs/plugins/development)
 
 ## Contributing
 

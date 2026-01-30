@@ -1742,6 +1742,77 @@ pub fn action_to_events(
             }
         }
 
+        Action::SelectToParagraphUp => {
+            // Jump to previous empty line while extending selection
+            for (cursor_id, cursor) in state.cursors.iter() {
+                let anchor = cursor.anchor.unwrap_or(cursor.position);
+                let mut iter = state
+                    .buffer
+                    .line_iterator(cursor.position, estimated_line_length);
+
+                // Move to previous line first
+                let mut found_pos = None;
+                while let Some((line_start, line_content)) = iter.prev() {
+                    // Check if this is an empty line (only whitespace/newline)
+                    let trimmed = line_content.trim_end_matches(|c| c == '\n' || c == '\r');
+                    if trimmed.is_empty() || trimmed.chars().all(char::is_whitespace) {
+                        found_pos = Some(line_start);
+                        break;
+                    }
+                }
+
+                // If no empty line found, go to start of buffer
+                let new_pos = found_pos.unwrap_or(0);
+
+                events.push(Event::MoveCursor {
+                    cursor_id,
+                    old_position: cursor.position,
+                    new_position: new_pos,
+                    old_anchor: cursor.anchor,
+                    new_anchor: Some(anchor),
+                    old_sticky_column: cursor.sticky_column,
+                    new_sticky_column: 0,
+                });
+            }
+        }
+
+        Action::SelectToParagraphDown => {
+            // Jump to next empty line while extending selection
+            for (cursor_id, cursor) in state.cursors.iter() {
+                let anchor = cursor.anchor.unwrap_or(cursor.position);
+                let mut iter = state
+                    .buffer
+                    .line_iterator(cursor.position, estimated_line_length);
+
+                // Skip current line
+                iter.next_line();
+
+                // Find next empty line
+                let mut found_pos = None;
+                while let Some((line_start, line_content)) = iter.next_line() {
+                    // Check if this is an empty line (only whitespace/newline)
+                    let trimmed = line_content.trim_end_matches(|c| c == '\n' || c == '\r');
+                    if trimmed.is_empty() || trimmed.chars().all(char::is_whitespace) {
+                        found_pos = Some(line_start);
+                        break;
+                    }
+                }
+
+                // If no empty line found, go to end of buffer
+                let new_pos = found_pos.unwrap_or(state.buffer.len());
+
+                events.push(Event::MoveCursor {
+                    cursor_id,
+                    old_position: cursor.position,
+                    new_position: new_pos,
+                    old_anchor: cursor.anchor,
+                    new_anchor: Some(anchor),
+                    old_sticky_column: cursor.sticky_column,
+                    new_sticky_column: 0,
+                });
+            }
+        }
+
         Action::SelectLineStart => {
             for (cursor_id, cursor) in state.cursors.iter() {
                 let mut iter = state
@@ -2240,6 +2311,49 @@ pub fn action_to_events(
 
         Action::ToLowerCase => {
             transform_case(state, &mut events, |s| s.to_lowercase());
+        }
+
+        Action::SortLines => {
+            // Sort selected lines alphabetically
+            // Process cursors in reverse order to avoid position shifts
+            let line_ending = state.buffer.line_ending().as_str();
+            let mut selections: Vec<_> = state
+                .cursors
+                .iter()
+                .filter_map(|(cursor_id, cursor)| {
+                    cursor.selection_range().map(|range| (cursor_id, range))
+                })
+                .collect();
+            selections.sort_by_key(|(_, range)| std::cmp::Reverse(range.start));
+
+            for (cursor_id, range) in selections {
+                let text = state.get_text_range(range.start, range.end);
+                // Split into lines, preserving the original line ending style
+                let mut lines: Vec<&str> = text.lines().collect();
+                // Check if original text ends with a newline
+                let ends_with_newline = text.ends_with('\n') || text.ends_with("\r\n");
+
+                if lines.len() > 1 {
+                    lines.sort();
+                    let mut sorted_text = lines.join(line_ending);
+                    if ends_with_newline {
+                        sorted_text.push_str(line_ending);
+                    }
+
+                    if sorted_text != text {
+                        events.push(Event::Delete {
+                            range: range.clone(),
+                            deleted_text: text,
+                            cursor_id,
+                        });
+                        events.push(Event::Insert {
+                            position: range.start,
+                            text: sorted_text,
+                            cursor_id,
+                        });
+                    }
+                }
+            }
         }
 
         Action::OpenLine => {

@@ -1,5 +1,21 @@
 # Release Notes
 
+## 0.1.96
+
+### Features
+
+* **Visual Line Movement**: Up/Down arrows now move by visual lines when line wrap is enabled, matching expected behavior in wrapped text.
+
+### Bug Fixes
+
+* Fixed excessive filesystem polling during render, especially on remote filesystems like rclone mounts (#886).
+
+### Packaging
+
+* **FreeBSD Release**: FreeBSD x86_64 binaries now included in releases (#887).
+
+---
+
 ## 0.1.95
 
 ### Bug Fixes
