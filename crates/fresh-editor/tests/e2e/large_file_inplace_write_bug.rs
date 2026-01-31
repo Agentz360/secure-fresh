@@ -333,3 +333,332 @@ fn test_large_file_inplace_write_multiple_edits() {
     assert!(saved.contains("Line 0300"), "Line 300 should survive");
     assert!(saved.contains("Line 0499"), "Line 499 should survive");
 }
+
+/// A filesystem wrapper that simulates a crash during the streaming phase.
+/// It fails on the first write to the destination file (simulating crash mid-stream).
+struct CrashDuringStreamFileSystem {
+    inner: Arc<dyn FileSystem>,
+    /// Path to the destination file (writes to this path will fail)
+    dest_path: PathBuf,
+}
+
+impl CrashDuringStreamFileSystem {
+    fn new(inner: Arc<dyn FileSystem>, dest_path: PathBuf) -> Self {
+        Self { inner, dest_path }
+    }
+}
+
+/// A file writer that simulates crash by failing on write
+struct CrashingFileWriter {
+    inner: Box<dyn FileWriter>,
+    should_crash: bool,
+}
+
+impl std::io::Write for CrashingFileWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.should_crash {
+            // Simulate crash on write to destination
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "simulated crash during write",
+            ));
+        }
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+impl FileWriter for CrashingFileWriter {
+    fn sync_all(&self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl FileSystem for CrashDuringStreamFileSystem {
+    fn is_owner(&self, _path: &Path) -> bool {
+        false // Force in-place write
+    }
+
+    fn open_file_for_write(&self, path: &Path) -> io::Result<Box<dyn FileWriter>> {
+        let inner = self.inner.open_file_for_write(path)?;
+        if path == self.dest_path {
+            // Wrap with crashing writer for destination file
+            Ok(Box::new(CrashingFileWriter {
+                inner,
+                should_crash: true,
+            }))
+        } else {
+            Ok(inner)
+        }
+    }
+
+    // Delegate all other methods to inner filesystem
+    fn read_file(&self, path: &Path) -> io::Result<Vec<u8>> {
+        self.inner.read_file(path)
+    }
+
+    fn read_range(&self, path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        self.inner.read_range(path, offset, len)
+    }
+
+    fn write_file(&self, path: &Path, data: &[u8]) -> io::Result<()> {
+        self.inner.write_file(path, data)
+    }
+
+    fn create_file(&self, path: &Path) -> io::Result<Box<dyn FileWriter>> {
+        self.inner.create_file(path)
+    }
+
+    fn open_file(&self, path: &Path) -> io::Result<Box<dyn FileReader>> {
+        self.inner.open_file(path)
+    }
+
+    fn open_file_for_append(&self, path: &Path) -> io::Result<Box<dyn FileWriter>> {
+        self.inner.open_file_for_append(path)
+    }
+
+    fn set_file_length(&self, path: &Path, len: u64) -> io::Result<()> {
+        self.inner.set_file_length(path, len)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.inner.rename(from, to)
+    }
+
+    fn copy(&self, from: &Path, to: &Path) -> io::Result<u64> {
+        self.inner.copy(from, to)
+    }
+
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        self.inner.remove_file(path)
+    }
+
+    fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        self.inner.remove_dir(path)
+    }
+
+    fn metadata(&self, path: &Path) -> io::Result<FileMetadata> {
+        self.inner.metadata(path)
+    }
+
+    fn symlink_metadata(&self, path: &Path) -> io::Result<FileMetadata> {
+        self.inner.symlink_metadata(path)
+    }
+
+    fn is_dir(&self, path: &Path) -> io::Result<bool> {
+        self.inner.is_dir(path)
+    }
+
+    fn is_file(&self, path: &Path) -> io::Result<bool> {
+        self.inner.is_file(path)
+    }
+
+    fn set_permissions(&self, path: &Path, permissions: &FilePermissions) -> io::Result<()> {
+        self.inner.set_permissions(path, permissions)
+    }
+
+    fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
+        self.inner.read_dir(path)
+    }
+
+    fn create_dir(&self, path: &Path) -> io::Result<()> {
+        self.inner.create_dir(path)
+    }
+
+    fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        self.inner.create_dir_all(path)
+    }
+
+    fn canonicalize(&self, path: &Path) -> io::Result<PathBuf> {
+        self.inner.canonicalize(path)
+    }
+
+    fn current_uid(&self) -> u32 {
+        self.inner.current_uid()
+    }
+
+    fn sudo_write(
+        &self,
+        path: &Path,
+        data: &[u8],
+        mode: u32,
+        uid: u32,
+        gid: u32,
+    ) -> io::Result<()> {
+        self.inner.sudo_write(path, data, mode, uid, gid)
+    }
+}
+
+/// Test that crash during in-place write streaming leaves recovery files intact.
+///
+/// This test verifies the crash recovery mechanism:
+/// 1. Create a large file and open it with a filesystem that simulates crash
+/// 2. Make edits and attempt to save (will fail during streaming)
+/// 3. Verify that the temp file and recovery metadata exist
+/// 4. Verify that the temp file contains the correct (complete) content
+/// 5. Verify that RecoveryStorage can find the orphaned in-place write
+#[test]
+#[cfg(unix)]
+fn test_inplace_write_crash_recovery() {
+    use std::fs;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("crash_test.txt");
+
+    // Create a large file with recognizable content
+    let mut content = String::new();
+    for i in 0..500 {
+        content.push_str(&format!(
+            "Line {:04}: Original content that should be recoverable\n",
+            i
+        ));
+    }
+    let original_len = content.len();
+    fs::write(&file_path, &content).unwrap();
+
+    // Create filesystem that crashes during streaming
+    let crash_fs = Arc::new(CrashDuringStreamFileSystem::new(
+        Arc::new(StdFileSystem),
+        file_path.clone(),
+    ));
+
+    // Open with large file mode
+    let threshold = 1024;
+    let mut buffer = TextBuffer::load_from_file(&file_path, threshold, crash_fs).unwrap();
+
+    assert!(buffer.is_large_file(), "Should be in large file mode");
+
+    // Make an edit
+    buffer.insert_bytes(0, b"EDITED: ".to_vec());
+
+    // Save should fail due to simulated crash
+    let save_result = buffer.save();
+    assert!(
+        save_result.is_err(),
+        "Save should fail due to simulated crash"
+    );
+
+    // Verify recovery files exist directly (can't use list_inplace_write_recoveries
+    // because it filters out entries from still-running processes - i.e., this test)
+    let recovery_dir = fresh::services::recovery::RecoveryStorage::get_recovery_dir().unwrap();
+    let hash = fresh::services::recovery::path_hash(&file_path);
+    let meta_path = recovery_dir.join(format!("{}.inplace.json", hash));
+
+    assert!(
+        meta_path.exists(),
+        "Recovery metadata should exist at {:?}",
+        meta_path
+    );
+
+    // Read and parse the recovery metadata
+    let meta_content = fs::read_to_string(&meta_path).unwrap();
+    let recovery: fresh::services::recovery::InplaceWriteRecovery =
+        serde_json::from_str(&meta_content).unwrap();
+
+    // Verify temp file exists and has correct content
+    assert!(
+        recovery.temp_path.exists(),
+        "Temp file should exist at {:?}",
+        recovery.temp_path
+    );
+
+    let temp_content = fs::read_to_string(&recovery.temp_path).unwrap();
+    let expected_len = original_len + 8; // "EDITED: " is 8 bytes
+
+    assert_eq!(
+        temp_content.len(),
+        expected_len,
+        "Temp file should have complete content ({} bytes), got {} bytes",
+        expected_len,
+        temp_content.len()
+    );
+
+    assert!(
+        temp_content.starts_with("EDITED: Line 0000"),
+        "Temp file should start with our edit"
+    );
+
+    assert!(
+        temp_content.contains("Line 0250"),
+        "Temp file should contain middle content"
+    );
+
+    assert!(
+        temp_content.contains("Line 0499"),
+        "Temp file should contain end content"
+    );
+
+    // Verify recovery metadata has correct information
+    assert_eq!(
+        recovery.dest_path, file_path,
+        "Recovery should point to correct destination"
+    );
+
+    // Clean up the recovery entry manually
+    let _ = fs::remove_file(&recovery.temp_path);
+    let _ = fs::remove_file(&meta_path);
+
+    // Verify cleanup worked
+    assert!(
+        !recovery.temp_path.exists(),
+        "Temp file should be deleted after cleanup"
+    );
+    assert!(
+        !meta_path.exists(),
+        "Metadata file should be deleted after cleanup"
+    );
+}
+
+/// Test that successful in-place write cleans up recovery files
+#[test]
+#[cfg(unix)]
+fn test_successful_inplace_write_cleans_up_recovery() {
+    use fresh::services::recovery::RecoveryStorage;
+    use std::fs;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("success_test.txt");
+
+    // Create a large file
+    let mut content = String::new();
+    for i in 0..500 {
+        content.push_str(&format!("Line {:04}: Test content\n", i));
+    }
+    fs::write(&file_path, &content).unwrap();
+
+    // Use NotOwnerFileSystem (doesn't crash, just forces in-place write)
+    let not_owner_fs = Arc::new(NotOwnerFileSystem::new(Arc::new(StdFileSystem)));
+
+    let threshold = 1024;
+    let mut buffer = TextBuffer::load_from_file(&file_path, threshold, not_owner_fs).unwrap();
+
+    assert!(buffer.is_large_file());
+
+    // Make an edit
+    buffer.insert_bytes(0, b"SUCCESS: ".to_vec());
+
+    // Save should succeed
+    buffer.save().unwrap();
+
+    // Verify NO recovery files remain for this path
+    let recovery_storage = RecoveryStorage::default();
+    let inplace_recoveries = recovery_storage.list_inplace_write_recoveries().unwrap();
+
+    let our_recovery = inplace_recoveries.iter().find(|r| r.dest_path == file_path);
+
+    assert!(
+        our_recovery.is_none(),
+        "Successful save should clean up recovery files. Found: {:?}",
+        our_recovery
+    );
+
+    // Verify the file was saved correctly
+    let saved = fs::read_to_string(&file_path).unwrap();
+    assert!(
+        saved.starts_with("SUCCESS: Line 0000"),
+        "File should have been saved correctly"
+    );
+}
