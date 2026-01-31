@@ -1,5 +1,33 @@
 # Release Notes
 
+## 0.1.98
+
+### Features
+
+* **File Explorer Quick Search**: Type to filter files/directories with fuzzy matching. ESC or Backspace clears the search (#892).
+
+* **Sort Lines Command**: New command to alphabetically sort selected lines.
+
+* **Paragraph Selection**: Ctrl+Shift+Up/Down extends selection to previous/next empty line.
+
+* **Local Package Install**: Package manager now supports installing plugins/themes from local file paths (e.g., `/path/to/package`, `~/repos/plugin`).
+
+* **Plugin API**: Added `setLineWrap` for plugins to control line wrapping.
+
+### Bug Fixes
+
+* Fixed data corruption when saving large files with in-place writes.
+
+* Fixed UI hang when loading shortcuts in Open File dialog (#903).
+
+* Fixed file explorer failing to open at root path "/" (#902).
+
+* Fixed Settings UI search results not scrolling properly (#905).
+
+* Fixed multi-cursor cut operations not batching undo correctly.
+
+---
+
 ## 0.1.96
 
 ### Features
