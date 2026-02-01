@@ -55,7 +55,8 @@ pub mod types;
 pub use storage::RecoveryStorage;
 pub use types::{
     generate_buffer_id, path_hash, ChunkMeta, ChunkedRecoveryData, ChunkedRecoveryIndex,
-    RecoveryChunk, RecoveryEntry, RecoveryMetadata, RecoveryResult, SessionInfo, MAX_CHUNK_SIZE,
+    InplaceWriteRecovery, RecoveryChunk, RecoveryEntry, RecoveryMetadata, RecoveryResult,
+    SessionInfo, MAX_CHUNK_SIZE,
 };
 
 use std::collections::HashMap;

@@ -576,6 +576,75 @@ impl RecoveryStorage {
     }
 
     // ========================================================================
+    // In-place write recovery
+    // ========================================================================
+
+    /// List all in-place write recovery entries that need attention.
+    ///
+    /// Returns entries where:
+    /// - The process that created them is no longer running (crash occurred)
+    /// - The temp file still exists (has data to recover)
+    pub fn list_inplace_write_recoveries(
+        &self,
+    ) -> io::Result<Vec<super::types::InplaceWriteRecovery>> {
+        if !self.recovery_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut entries = Vec::new();
+
+        for entry in fs::read_dir(&self.recovery_dir)? {
+            let entry = entry?;
+            let path = entry.path();
+
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.ends_with(".inplace.json") {
+                    // Try to parse the metadata
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        if let Ok(recovery) =
+                            serde_json::from_str::<super::types::InplaceWriteRecovery>(&content)
+                        {
+                            // Only include if:
+                            // 1. The creating process is not running (crashed)
+                            // 2. The temp file still exists
+                            if !recovery.is_in_progress() && recovery.temp_path.exists() {
+                                entries.push(recovery);
+                            } else if !recovery.temp_path.exists() {
+                                // Clean up orphaned metadata (temp file was deleted)
+                                let _ = fs::remove_file(&path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort by start time (oldest first)
+        entries.sort_by_key(|e| e.started_at);
+        Ok(entries)
+    }
+
+    /// Clean up an in-place write recovery entry and its temp file.
+    pub fn cleanup_inplace_write_recovery(
+        &self,
+        recovery: &super::types::InplaceWriteRecovery,
+    ) -> io::Result<()> {
+        // Delete the temp file
+        if recovery.temp_path.exists() {
+            fs::remove_file(&recovery.temp_path)?;
+        }
+
+        // Delete the metadata file
+        let hash = path_hash(&recovery.dest_path);
+        let meta_path = self.recovery_dir.join(format!("{}.inplace.json", hash));
+        if meta_path.exists() {
+            fs::remove_file(&meta_path)?;
+        }
+
+        Ok(())
+    }
+
+    // ========================================================================
     // Helper methods
     // ========================================================================
 

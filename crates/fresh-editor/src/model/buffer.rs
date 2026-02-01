@@ -614,6 +614,90 @@ impl TextBuffer {
         }
     }
 
+    /// Create a temporary file in the recovery directory for in-place writes.
+    /// This allows recovery if a crash occurs during the in-place write operation.
+    fn create_recovery_temp_file(
+        &self,
+        dest_path: &Path,
+    ) -> io::Result<(PathBuf, Box<dyn crate::model::filesystem::FileWriter>)> {
+        // Get recovery directory: $XDG_DATA_HOME/fresh/recovery or ~/.local/share/fresh/recovery
+        let recovery_dir = crate::input::input_history::get_data_dir()
+            .map(|d| d.join("recovery"))
+            .unwrap_or_else(|_| std::env::temp_dir());
+
+        // Ensure directory exists
+        self.fs.create_dir_all(&recovery_dir)?;
+
+        // Create unique filename based on destination file and timestamp
+        let file_name = dest_path
+            .file_name()
+            .unwrap_or_else(|| std::ffi::OsStr::new("fresh-save"));
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let pid = std::process::id();
+
+        let temp_name = format!(
+            ".inplace-{}-{}-{}.tmp",
+            file_name.to_string_lossy(),
+            pid,
+            timestamp
+        );
+        let temp_path = recovery_dir.join(temp_name);
+
+        let file = self.fs.create_file(&temp_path)?;
+        Ok((temp_path, file))
+    }
+
+    /// Get the path for in-place write recovery metadata.
+    /// Uses the same recovery directory as temp files.
+    fn inplace_recovery_meta_path(&self, dest_path: &Path) -> PathBuf {
+        let recovery_dir = crate::input::input_history::get_data_dir()
+            .map(|d| d.join("recovery"))
+            .unwrap_or_else(|_| std::env::temp_dir());
+
+        let hash = crate::services::recovery::path_hash(dest_path);
+        recovery_dir.join(format!("{}.inplace.json", hash))
+    }
+
+    /// Write in-place recovery metadata using self.fs.
+    /// This is called before the dangerous streaming step so we can recover on crash.
+    fn write_inplace_recovery_meta(
+        &self,
+        meta_path: &Path,
+        dest_path: &Path,
+        temp_path: &Path,
+        original_metadata: &Option<FileMetadata>,
+    ) -> io::Result<()> {
+        #[cfg(unix)]
+        let (uid, gid, mode) = original_metadata
+            .as_ref()
+            .map(|m| {
+                (
+                    m.uid.unwrap_or(0),
+                    m.gid.unwrap_or(0),
+                    m.permissions.as_ref().map(|p| p.mode()).unwrap_or(0o644),
+                )
+            })
+            .unwrap_or((0, 0, 0o644));
+        #[cfg(not(unix))]
+        let (uid, gid, mode) = (0u32, 0u32, 0o644u32);
+
+        let recovery = crate::services::recovery::InplaceWriteRecovery::new(
+            dest_path.to_path_buf(),
+            temp_path.to_path_buf(),
+            uid,
+            gid,
+            mode,
+        );
+
+        let json = serde_json::to_string_pretty(&recovery)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        self.fs.write_file(meta_path, json.as_bytes())
+    }
+
     /// Save the buffer to a specific file
     ///
     /// Uses the write recipe approach for both local and remote filesystems:
@@ -691,6 +775,14 @@ impl TextBuffer {
     ///
     /// This is used when the file is owned by a different user and we need
     /// to write directly to the existing file to preserve its ownership.
+    ///
+    /// The approach:
+    /// 1. Write the recipe to a temp file first (reads from original, writes to temp)
+    /// 2. Stream the temp file content to the destination file (truncates and writes)
+    /// 3. Delete the temp file
+    ///
+    /// This avoids the bug where truncating the destination before reading Copy chunks
+    /// would corrupt the file. It also works for huge files since we stream in chunks.
     fn save_with_inplace_write(
         &self,
         dest_path: &Path,
@@ -698,34 +790,107 @@ impl TextBuffer {
     ) -> anyhow::Result<()> {
         let original_metadata = self.fs.metadata_if_exists(dest_path);
 
+        // Optimization: if no Copy ops, we can write directly without a temp file
+        // (same as the non-inplace path for small files)
+        if !recipe.has_copy_ops() {
+            let data = recipe.flatten_inserts();
+            return self.write_data_inplace(dest_path, &data, original_metadata);
+        }
+
+        // Step 1: Write recipe to a temp file in the recovery directory
+        // This reads Copy chunks from the original file (still intact) and writes to temp.
+        // Using the recovery directory allows crash recovery if the operation fails.
+        let (temp_path, mut temp_file) = self.create_recovery_temp_file(dest_path)?;
+        if let Err(e) = self.write_recipe_to_file(&mut temp_file, recipe) {
+            let _ = self.fs.remove_file(&temp_path);
+            return Err(e.into());
+        }
+        temp_file.sync_all()?;
+        drop(temp_file);
+
+        // Step 1.5: Save recovery metadata before the dangerous step
+        // If we crash during step 2, this metadata + temp file allows recovery
+        let recovery_meta_path = self.inplace_recovery_meta_path(dest_path);
+        // Best effort - don't fail the save if we can't write recovery metadata
+        let _ = self.write_inplace_recovery_meta(
+            &recovery_meta_path,
+            dest_path,
+            &temp_path,
+            &original_metadata,
+        );
+
+        // Step 2: Stream temp file content to destination
+        // Now it's safe to truncate the destination since all data is in temp
         match self.fs.open_file_for_write(dest_path) {
             Ok(mut out_file) => {
-                // Write recipe content directly to file
-                self.write_recipe_to_file(&mut out_file, recipe)?;
+                if let Err(e) = self.stream_file_to_writer(&temp_path, &mut out_file) {
+                    // Don't delete temp file or recovery metadata - allow recovery
+                    return Err(e.into());
+                }
+                out_file.sync_all()?;
+                // Success! Clean up temp file and recovery metadata
+                let _ = self.fs.remove_file(&temp_path);
+                let _ = self.fs.remove_file(&recovery_meta_path);
+                Ok(())
+            }
+            Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
+                // Can't write to destination - trigger sudo fallback
+                // Keep temp file for sudo to use, clean up recovery metadata
+                let _ = self.fs.remove_file(&recovery_meta_path);
+                Err(self.make_sudo_error(temp_path, dest_path, original_metadata))
+            }
+            Err(e) => {
+                // Don't delete temp file or recovery metadata - allow recovery
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Write data directly to a file in-place, with sudo fallback on permission denied.
+    fn write_data_inplace(
+        &self,
+        dest_path: &Path,
+        data: &[u8],
+        original_metadata: Option<FileMetadata>,
+    ) -> anyhow::Result<()> {
+        match self.fs.open_file_for_write(dest_path) {
+            Ok(mut out_file) => {
+                out_file.write_all(data)?;
                 out_file.sync_all()?;
                 Ok(())
             }
             Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-                // Fall back to atomic write, which will likely also fail
-                // and trigger sudo fallback
-                let ops = recipe.to_write_ops();
-                let src_for_patch = recipe.src_path.as_deref().unwrap_or(dest_path);
-
-                match self.fs.write_patched(src_for_patch, dest_path, &ops) {
-                    Ok(()) => Ok(()),
-                    Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-                        // Create temp file for sudo fallback
-                        let (temp_path, mut temp_file) = self.create_temp_file(dest_path)?;
-                        self.write_recipe_to_file(&mut temp_file, recipe)?;
-                        temp_file.sync_all()?;
-                        drop(temp_file);
-                        Err(self.make_sudo_error(temp_path, dest_path, original_metadata))
-                    }
-                    Err(e) => Err(e.into()),
-                }
+                // Create temp file for sudo fallback
+                let (temp_path, mut temp_file) = self.create_temp_file(dest_path)?;
+                temp_file.write_all(data)?;
+                temp_file.sync_all()?;
+                drop(temp_file);
+                Err(self.make_sudo_error(temp_path, dest_path, original_metadata))
             }
             Err(e) => Err(e.into()),
         }
+    }
+
+    /// Stream a file's content to a writer in chunks to avoid memory issues with large files.
+    fn stream_file_to_writer(
+        &self,
+        src_path: &Path,
+        out_file: &mut Box<dyn crate::model::filesystem::FileWriter>,
+    ) -> io::Result<()> {
+        const CHUNK_SIZE: usize = 1024 * 1024; // 1MB chunks
+
+        let file_size = self.fs.metadata(src_path)?.size as u64;
+        let mut offset = 0u64;
+
+        while offset < file_size {
+            let remaining = file_size - offset;
+            let chunk_len = std::cmp::min(remaining, CHUNK_SIZE as u64) as usize;
+            let chunk = self.fs.read_range(src_path, offset, chunk_len)?;
+            out_file.write_all(&chunk)?;
+            offset += chunk_len as u64;
+        }
+
+        Ok(())
     }
 
     /// Write the recipe content to a file writer.

@@ -400,6 +400,64 @@ pub fn generate_buffer_id() -> String {
     format!("unsaved_{:x}", now)
 }
 
+/// Metadata for an in-place write operation that can be recovered after a crash.
+///
+/// When doing an in-place write (to preserve file ownership), we write the content
+/// to a temp file first, then stream it to the destination. If a crash occurs
+/// during the streaming phase, the destination file may be corrupted but the
+/// temp file contains the good data.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InplaceWriteRecovery {
+    /// The destination file path that was being written to
+    pub dest_path: PathBuf,
+
+    /// The temp file containing the complete new content
+    pub temp_path: PathBuf,
+
+    /// Original file owner (UID) - for restoring ownership after recovery
+    #[serde(default)]
+    pub uid: u32,
+
+    /// Original file group (GID)
+    #[serde(default)]
+    pub gid: u32,
+
+    /// Original file permissions (mode)
+    #[serde(default)]
+    pub mode: u32,
+
+    /// Unix timestamp when the in-place write started
+    pub started_at: u64,
+
+    /// Process ID that was performing the write
+    pub pid: u32,
+}
+
+impl InplaceWriteRecovery {
+    /// Create new in-place write recovery metadata
+    pub fn new(dest_path: PathBuf, temp_path: PathBuf, uid: u32, gid: u32, mode: u32) -> Self {
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        Self {
+            dest_path,
+            temp_path,
+            uid,
+            gid,
+            mode,
+            started_at: now,
+            pid: std::process::id(),
+        }
+    }
+
+    /// Check if the process that created this is still running
+    pub fn is_in_progress(&self) -> bool {
+        is_process_running(self.pid)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

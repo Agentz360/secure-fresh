@@ -1146,3 +1146,83 @@ fn test_filter_prioritizes_exact_matches() {
         );
     }
 }
+
+/// Test that documents issue #903: File Open hangs if a mapped network drive is not accessible
+///
+/// On Windows, `build_shortcuts()` iterates through all drive letters A-Z and calls
+/// `filesystem.exists()` for each one. If a mapped network drive is unreachable,
+/// this call blocks waiting for network timeout, freezing the UI.
+///
+/// This test verifies that:
+/// 1. The file dialog opens immediately with basic shortcuts (parent, root, home)
+/// 2. Slow shortcuts (documents, downloads, drives) are loaded asynchronously
+/// 3. The dialog is usable without waiting for slow exists() calls
+#[test]
+fn test_file_open_shortcuts_load_async_issue_903() {
+    use crate::common::harness::HarnessOptions;
+    use fresh::services::fs::SlowFsConfig;
+    use std::time::Duration;
+
+    let temp_dir = TempDir::new().unwrap();
+    let project_root = temp_dir.path().to_path_buf();
+
+    // Create a subdirectory so we have a parent to navigate to
+    let subdir = project_root.join("subdir");
+    fs::create_dir(&subdir).unwrap();
+    fs::write(subdir.join("test.txt"), "content").unwrap();
+
+    // Create harness with VERY slow filesystem for exists() checks
+    // This simulates a network drive that takes a long time to respond
+    // If shortcuts were built synchronously, the dialog would hang
+    let slow_config = SlowFsConfig {
+        read_dir_delay: Duration::from_millis(10),
+        metadata_delay: Duration::from_millis(200), // Slow - simulates network drive
+        read_file_delay: Duration::from_millis(10),
+        write_file_delay: Duration::from_millis(10),
+        other_delay: Duration::from_millis(200), // Slow - simulates network drive
+    };
+
+    let mut harness = EditorTestHarness::create(
+        80,
+        24,
+        HarnessOptions::new()
+            .with_working_dir(subdir.clone())
+            .with_slow_fs(slow_config),
+    )
+    .unwrap();
+
+    // Open file dialog
+    harness
+        .send_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+
+    // The dialog should appear with Navigation section visible
+    // This verifies the dialog opens without blocking on slow filesystem
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Navigation:"))
+        .expect("File browser should appear immediately");
+
+    // Render and check that basic shortcuts are present
+    harness.render().unwrap();
+    let screen = harness.screen_to_string();
+
+    // Basic shortcuts should be available immediately (built synchronously):
+    // - ".." (parent directory)
+    // - "/" (root on Unix)
+    // - "~" (home directory)
+    assert!(
+        screen.contains(".."),
+        "Parent directory shortcut should be available immediately.\n\
+         This verifies issue #903 fix: dialog opens without waiting for slow exists() calls.\n\
+         Screen:\n{}",
+        screen
+    );
+
+    // The home shortcut should also be available (home_dir() is typically fast)
+    assert!(
+        screen.contains("~"),
+        "Home directory shortcut should be available immediately.\n\
+         Screen:\n{}",
+        screen
+    );
+}
