@@ -54,7 +54,7 @@ fn test_format_on_save() {
     );
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_dir).unwrap();
 
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
@@ -117,7 +117,7 @@ fn test_on_save_linter_style() {
     );
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_dir).unwrap();
 
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
@@ -180,7 +180,7 @@ fn test_on_save_action_failure() {
     );
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_dir).unwrap();
 
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
@@ -252,7 +252,7 @@ fn test_on_save_file_placeholder() {
     );
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_dir).unwrap();
 
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
@@ -318,7 +318,7 @@ fn test_formatter_stdin_mode() {
     );
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_dir).unwrap();
 
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
@@ -391,7 +391,7 @@ fn test_on_save_stops_on_failure() {
     );
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_dir).unwrap();
 
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
@@ -426,7 +426,7 @@ fn test_on_save_no_actions_configured() {
     let config = Config::default();
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_dir).unwrap();
 
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
@@ -485,7 +485,7 @@ fn test_formatter_not_found_shows_message() {
     );
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_dir).unwrap();
 
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
@@ -522,7 +522,7 @@ fn test_trim_trailing_whitespace_on_save() {
     config.editor.trim_trailing_whitespace_on_save = true;
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_dir).unwrap();
 
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
@@ -556,7 +556,7 @@ fn test_ensure_final_newline_on_save() {
     config.editor.ensure_final_newline_on_save = true;
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_dir).unwrap();
 
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
@@ -591,7 +591,7 @@ fn test_whitespace_cleanup_combined() {
     config.editor.ensure_final_newline_on_save = true;
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_dir).unwrap();
 
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
@@ -626,7 +626,7 @@ fn test_whitespace_cleanup_no_change_needed() {
     config.editor.ensure_final_newline_on_save = true;
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_dir).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_dir).unwrap();
 
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();

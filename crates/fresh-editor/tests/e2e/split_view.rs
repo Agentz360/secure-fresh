@@ -5,7 +5,7 @@ use portable_pty::{native_pty_system, PtySize};
 /// Test basic split view creation (horizontal)
 #[test]
 fn test_split_horizontal() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Type some text in the first buffer
     harness.type_text("Buffer 1").unwrap();
@@ -32,7 +32,7 @@ fn test_split_horizontal() {
 /// Test basic split view creation (vertical)
 #[test]
 fn test_split_vertical() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Type some text in the first buffer
     harness.type_text("Buffer 1").unwrap();
@@ -59,7 +59,7 @@ fn test_split_vertical() {
 /// Test navigation between splits
 #[test]
 fn test_split_navigation() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Create a vertical split via command palette
     harness.type_text("First buffer").unwrap();
@@ -114,7 +114,7 @@ fn test_split_navigation() {
 /// Test closing a split
 #[test]
 fn test_close_split() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Create a split via command palette
     harness
@@ -145,7 +145,7 @@ fn test_close_split() {
 /// Test cannot close last split
 #[test]
 fn test_cannot_close_last_split() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Try to close the only split via command palette
     harness
@@ -169,7 +169,7 @@ fn test_cannot_close_last_split() {
 #[test]
 #[ignore]
 fn test_split_size_adjustment() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Create a split
     harness

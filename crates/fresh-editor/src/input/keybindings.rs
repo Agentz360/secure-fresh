@@ -492,6 +492,7 @@ pub enum Action {
     // Buffer settings (per-buffer overrides)
     SetTabSize,
     SetLineEnding,
+    SetEncoding,
     SetLanguage,
     ToggleIndentationStyle,
     ToggleTabIndicators,
@@ -817,6 +818,7 @@ impl Action {
             // Buffer settings
             "set_tab_size" => Self::SetTabSize,
             "set_line_ending" => Self::SetLineEnding,
+            "set_encoding" => Self::SetEncoding,
             "toggle_indentation_style" => Self::ToggleIndentationStyle,
             "toggle_tab_indicators" => Self::ToggleTabIndicators,
             "reset_buffer_settings" => Self::ResetBufferSettings,
@@ -1838,6 +1840,7 @@ impl KeybindingResolver {
             Action::SetBackgroundBlend => t!("action.set_background_blend"),
             Action::SetTabSize => t!("action.set_tab_size"),
             Action::SetLineEnding => t!("action.set_line_ending"),
+            Action::SetEncoding => t!("action.set_encoding"),
             Action::SetLanguage => t!("action.set_language"),
             Action::ToggleIndentationStyle => t!("action.toggle_indentation_style"),
             Action::ToggleTabIndicators => t!("action.toggle_tab_indicators"),

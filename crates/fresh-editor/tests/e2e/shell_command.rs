@@ -18,7 +18,7 @@ fn test_shell_command_to_new_buffer() {
     let file_path = temp_dir.path().join("unsorted.txt");
     std::fs::write(&file_path, "cherry\napple\nbanana\n").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -60,7 +60,7 @@ fn test_shell_command_replace_buffer() {
     let file_path = temp_dir.path().join("unsorted.txt");
     std::fs::write(&file_path, "cherry\napple\nbanana\n").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -105,7 +105,7 @@ fn test_shell_command_on_selection() {
     // First line should not be sorted, only the selected portion
     std::fs::write(&file_path, "header\ncherry\napple\nbanana\nfooter\n").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -194,7 +194,7 @@ fn test_shell_command_tr_transform() {
     let file_path = temp_dir.path().join("lowercase.txt");
     std::fs::write(&file_path, "hello world\n").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -227,7 +227,7 @@ fn test_shell_command_tr_transform() {
 #[test]
 #[cfg_attr(not(unix), ignore = "Shell commands require Unix-like environment")]
 fn test_shell_command_replace_undo() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // Type original content in a new buffer (to have clean undo history)
@@ -277,7 +277,7 @@ fn test_shell_command_cat_identity() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "line 1\nline 2\nline 3\n").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -313,7 +313,7 @@ fn test_shell_command_wc() {
     let file_path = temp_dir.path().join("words.txt");
     std::fs::write(&file_path, "one two three\nfour five\n").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -349,7 +349,7 @@ fn test_shell_command_replace_preserves_cursor_position() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "hello world\nfoo bar\nbaz qux\n").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -417,7 +417,7 @@ fn test_shell_command_replace_clamps_cursor_when_buffer_shrinks() {
     )
     .unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 

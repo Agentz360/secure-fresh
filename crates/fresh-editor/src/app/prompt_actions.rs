@@ -370,6 +370,9 @@ impl Editor {
             PromptType::SetLineEnding => {
                 self.handle_set_line_ending(&input);
             }
+            PromptType::SetEncoding => {
+                self.handle_set_encoding(&input);
+            }
             PromptType::SetLanguage => {
                 self.handle_set_language(&input);
             }
@@ -586,6 +589,38 @@ impl Editor {
             }
             None => {
                 self.set_status_message(t!("error.unknown_line_ending", input = input).to_string());
+            }
+        }
+    }
+
+    /// Handle SetEncoding prompt confirmation.
+    fn handle_set_encoding(&mut self, input: &str) {
+        use crate::model::buffer::Encoding;
+
+        let trimmed = input.trim();
+
+        // First try to match the full input against encoding display names
+        // This handles multi-word names like "UTF-16 LE" and "UTF-8 BOM"
+        let encoding = Encoding::all()
+            .iter()
+            .find(|enc| enc.display_name().eq_ignore_ascii_case(trimmed))
+            .copied()
+            .or_else(|| {
+                // If no match, try extracting before the parenthesis (e.g., "UTF-8" from "UTF-8 (Unicode)")
+                let before_paren = trimmed.split('(').next().unwrap_or(trimmed).trim();
+                Encoding::all()
+                    .iter()
+                    .find(|enc| enc.display_name().eq_ignore_ascii_case(before_paren))
+                    .copied()
+            });
+
+        match encoding {
+            Some(enc) => {
+                self.active_state_mut().buffer.set_encoding(enc);
+                self.set_status_message(format!("Encoding set to {}", enc.display_name()));
+            }
+            None => {
+                self.set_status_message(format!("Unknown encoding: {}", input));
             }
         }
     }

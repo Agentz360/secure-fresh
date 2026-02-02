@@ -5,7 +5,7 @@ use crate::common::harness::EditorTestHarness;
 #[test]
 fn test_command_palette_trigger() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger Quick Open with Ctrl+P (defaults to command mode with > prefix)
     harness
@@ -26,7 +26,7 @@ fn test_command_palette_trigger() {
 #[test]
 fn test_command_palette_autocomplete() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -47,7 +47,7 @@ fn test_command_palette_autocomplete() {
 #[test]
 fn test_command_palette_navigation() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -71,7 +71,7 @@ fn test_command_palette_navigation() {
 #[test]
 fn test_command_palette_tab_completion() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -94,7 +94,7 @@ fn test_command_palette_tab_completion() {
 #[test]
 fn test_command_palette_cancel() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -116,7 +116,7 @@ fn test_command_palette_cancel() {
 #[test]
 fn test_command_palette_execute() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // Verify line numbers are shown initially (default config)
@@ -144,7 +144,7 @@ fn test_command_palette_execute() {
 #[test]
 fn test_command_palette_fuzzy_matching() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -162,7 +162,7 @@ fn test_command_palette_fuzzy_matching() {
 #[test]
 fn test_command_palette_tab_skip_disabled() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -185,7 +185,7 @@ fn test_command_palette_tab_skip_disabled() {
 #[test]
 fn test_command_palette_tab_on_disabled() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -236,7 +236,7 @@ fn test_command_palette_tab_on_disabled() {
 #[test]
 fn test_command_palette_tab_all_disabled() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -267,7 +267,7 @@ fn test_command_palette_tab_all_disabled() {
 #[test]
 fn test_command_palette_enter_uses_selection() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -305,7 +305,7 @@ fn test_command_palette_enter_partial_match() {
     let file_path = temp_dir.path().join("partial_match.txt");
     std::fs::write(&file_path, "hello").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -335,7 +335,7 @@ fn test_command_palette_enter_partial_match() {
 #[test]
 fn test_command_palette_scroll_beyond_visible() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -378,7 +378,7 @@ fn test_command_palette_new_file_switches_buffer() {
 
     let fixture = TestFixture::new("test.txt", "Original content\nLine 2\nLine 3").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Open the fixture file
     harness.open_file(&fixture.path).unwrap();
@@ -428,7 +428,7 @@ fn test_command_palette_new_file_switches_buffer() {
 #[test]
 fn test_command_palette_toggle_line_wrap() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -447,7 +447,7 @@ fn test_command_palette_toggle_line_wrap() {
 #[test]
 fn test_command_palette_file_explorer_toggles() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -479,7 +479,7 @@ fn test_command_palette_file_explorer_toggles() {
 #[test]
 fn test_command_palette_from_file_explorer() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Open file explorer (Ctrl+E)
     harness
@@ -525,7 +525,7 @@ fn test_command_palette_from_file_explorer() {
 #[test]
 fn test_command_palette_up_no_wraparound() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -559,7 +559,7 @@ fn test_command_palette_up_no_wraparound() {
 #[test]
 fn test_command_palette_down_no_wraparound() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -596,7 +596,7 @@ fn test_command_palette_down_no_wraparound() {
 #[test]
 fn test_command_palette_pageup_no_wraparound() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -636,7 +636,7 @@ fn test_command_palette_pageup_no_wraparound() {
 #[test]
 fn test_command_palette_pagedown_no_wraparound() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness
@@ -925,7 +925,7 @@ fn test_command_palette_description_fuzzy_matching() {
 #[test]
 fn test_command_palette_select_cursor_style() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the command palette
     harness

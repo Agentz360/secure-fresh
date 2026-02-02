@@ -6,7 +6,7 @@ use fresh::config::{Config, LocaleName};
 
 #[test]
 fn test_default_locale_shows_english_search_options() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // Open search with Ctrl+F
@@ -28,7 +28,7 @@ fn test_locale_from_config_spanish_search_options() {
         ..Default::default()
     };
 
-    let mut harness = EditorTestHarness::with_config(80, 24, config).unwrap();
+    let mut harness = EditorTestHarness::with_config(100, 24, config).unwrap();
     harness.render().unwrap();
 
     // Open search with Ctrl+F
@@ -49,7 +49,7 @@ fn test_locale_from_config_german_search_options() {
         ..Default::default()
     };
 
-    let mut harness = EditorTestHarness::with_config(80, 24, config).unwrap();
+    let mut harness = EditorTestHarness::with_config(100, 24, config).unwrap();
     harness.render().unwrap();
 
     // Open search with Ctrl+F
@@ -69,7 +69,7 @@ fn test_locale_from_config_french_search_options() {
         ..Default::default()
     };
 
-    let mut harness = EditorTestHarness::with_config(80, 24, config).unwrap();
+    let mut harness = EditorTestHarness::with_config(100, 24, config).unwrap();
     harness.render().unwrap();
 
     // Open search with Ctrl+F
@@ -89,7 +89,7 @@ fn test_locale_from_config_japanese_buffer_name() {
         ..Default::default()
     };
 
-    let mut harness = EditorTestHarness::with_config(80, 24, config).unwrap();
+    let mut harness = EditorTestHarness::with_config(100, 24, config).unwrap();
     harness.render().unwrap();
 
     // Japanese locale should show Japanese buffer name for unnamed buffer
@@ -104,7 +104,7 @@ fn test_locale_from_config_chinese_buffer_name() {
         ..Default::default()
     };
 
-    let mut harness = EditorTestHarness::with_config(80, 24, config).unwrap();
+    let mut harness = EditorTestHarness::with_config(100, 24, config).unwrap();
     harness.render().unwrap();
 
     // Chinese locale should show Chinese buffer name for unnamed buffer
@@ -114,7 +114,7 @@ fn test_locale_from_config_chinese_buffer_name() {
 
 #[test]
 fn test_locale_switch_via_command_palette() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // Open search to verify initial English locale
@@ -186,7 +186,7 @@ fn test_invalid_locale_falls_back_to_english() {
         ..Default::default()
     };
 
-    let mut harness = EditorTestHarness::with_config(80, 24, config).unwrap();
+    let mut harness = EditorTestHarness::with_config(100, 24, config).unwrap();
     harness.render().unwrap();
 
     // Open search with Ctrl+F
@@ -206,7 +206,7 @@ fn test_locale_switch_updates_search_cancelled_message() {
         ..Default::default()
     };
 
-    let mut harness = EditorTestHarness::with_config(80, 24, config).unwrap();
+    let mut harness = EditorTestHarness::with_config(100, 24, config).unwrap();
     harness.render().unwrap();
 
     // Open search with Ctrl+F
@@ -225,7 +225,7 @@ fn test_locale_switch_updates_search_cancelled_message() {
 
 #[test]
 fn test_locale_switch_updates_menu_labels() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // Open File menu with Alt+F to verify initial English labels
@@ -311,7 +311,7 @@ fn test_multiple_locales_can_be_loaded() {
             ..Default::default()
         };
 
-        let mut harness = EditorTestHarness::with_config(80, 24, config).unwrap();
+        let mut harness = EditorTestHarness::with_config(100, 24, config).unwrap();
         harness.render().unwrap();
 
         // Open search
@@ -363,7 +363,7 @@ fn switch_locale(harness: &mut EditorTestHarness, locale: &str, search_command: 
 fn test_locale_switch_affects_file_browser_columns() {
     // Test that file browser column headers are properly localized when switching locales
     // on a live editor instance
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // Verify English file browser columns first
@@ -406,7 +406,7 @@ fn test_locale_switch_affects_file_browser_columns() {
 #[test]
 fn test_locale_switch_affects_clipboard_messages() {
     // Test that clipboard status messages are properly localized when switching locales
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // Type some text
@@ -456,7 +456,7 @@ fn test_locale_switch_affects_clipboard_messages() {
 #[test]
 fn test_locale_switch_affects_file_browser_show_hidden() {
     // Test that "Show Hidden" checkbox label is properly localized when switching locales
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // Verify English "Show Hidden" label
@@ -481,7 +481,7 @@ fn test_locale_switch_affects_file_browser_show_hidden() {
 
 #[test]
 fn test_locale_switch_affects_command_palette_commands() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // 1. Open command palette and search for "Open File"

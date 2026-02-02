@@ -597,6 +597,14 @@ pub fn get_all_commands() -> Vec<Command> {
             source: CommandSource::Builtin,
         },
         Command {
+            name: t!("cmd.set_encoding").to_string(),
+            description: t!("cmd.set_encoding_desc").to_string(),
+            action: Action::SetEncoding,
+            contexts: vec![KeyContext::Normal],
+            custom_contexts: vec![],
+            source: CommandSource::Builtin,
+        },
+        Command {
             name: t!("cmd.set_language").to_string(),
             description: t!("cmd.set_language_desc").to_string(),
             action: Action::SetLanguage,

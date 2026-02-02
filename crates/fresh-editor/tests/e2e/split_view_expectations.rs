@@ -62,7 +62,7 @@ fn close_split(harness: &mut EditorTestHarness) {
 /// Test that horizontal split creates two views of the SAME buffer
 #[test]
 fn test_horizontal_split_shares_same_buffer() {
-    let mut harness = EditorTestHarness::new(80, 40).unwrap();
+    let mut harness = EditorTestHarness::new(100, 40).unwrap();
 
     // Type text in first buffer
     harness.type_text("Original content").unwrap();
@@ -96,7 +96,7 @@ fn test_horizontal_split_shares_same_buffer() {
 /// Test that vertical split creates two views of the SAME buffer
 #[test]
 fn test_vertical_split_shares_same_buffer() {
-    let mut harness = EditorTestHarness::new(80, 40).unwrap();
+    let mut harness = EditorTestHarness::new(100, 40).unwrap();
 
     // Type text in first buffer
     harness.type_text("Buffer content").unwrap();
@@ -325,7 +325,7 @@ fn test_split_navigation_circular() {
 /// Test that closing a split expands the remaining split
 #[test]
 fn test_close_split_expands_remaining() {
-    let mut harness = EditorTestHarness::new(80, 40).unwrap();
+    let mut harness = EditorTestHarness::new(100, 40).unwrap();
 
     // Create content
     harness.type_text("Buffer content").unwrap();
@@ -595,8 +595,8 @@ fn test_cursor_movement_isolated_to_active_split() {
 /// Test creating a split with minimal height (edge case)
 #[test]
 fn test_split_with_minimal_height() {
-    // Use a small terminal height
-    let mut harness = EditorTestHarness::new(80, 12).unwrap();
+    // Use a small terminal height but wider to fit status bar
+    let mut harness = EditorTestHarness::new(100, 12).unwrap();
 
     harness.type_text("Small terminal").unwrap();
 

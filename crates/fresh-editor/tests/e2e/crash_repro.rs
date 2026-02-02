@@ -127,7 +127,7 @@ fn test_issue_562_delete_folder_crash_scroll_offset() {
 /// a replace-all operation.
 #[test]
 fn test_issue_564_replace_all_hang() {
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_root = harness.project_dir().unwrap();
 
     // Create a CSV-like file with many occurrences of "Wii"
@@ -236,7 +236,7 @@ fn test_issue_564_replace_all_hang() {
 /// This checks for edge cases that could cause infinite loops.
 #[test]
 fn test_replace_all_overlapping_pattern() {
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_root = harness.project_dir().unwrap();
 
     // Create a file with a pattern that could cause issues if not handled correctly
@@ -367,7 +367,7 @@ fn test_issue_562_rapid_folder_deletion() {
 #[test]
 #[ignore] // This test reproduces the actual hang - ignore for CI but run manually
 fn test_issue_564_query_replace_all_hang_large_file() {
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_root = harness.project_dir().unwrap();
 
     // Create a file similar to the actual vgsales-new.csv
@@ -501,7 +501,7 @@ fn test_issue_580_tab_size_zero_causes_panic() {
 
     // Create harness with this config
     let mut harness =
-        EditorTestHarness::with_config(80, 24, config).expect("Should create harness");
+        EditorTestHarness::with_config(100, 24, config).expect("Should create harness");
 
     // Open the file
     harness.open_file(&file_path).expect("Should open cpp file");
@@ -545,7 +545,7 @@ fn test_saved_at_index_out_of_bounds_after_undo_and_edit() {
 
     // Create a test file
     let fixture = TestFixture::new("test_save_index_oob.txt", "start").unwrap();
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Open the file
     harness.open_file(&fixture.path).unwrap();
@@ -615,7 +615,7 @@ fn test_issue_580_global_tab_size_zero_causes_panic() {
 
     // Create harness with this config
     let mut harness =
-        EditorTestHarness::with_config(80, 24, config).expect("Should create harness");
+        EditorTestHarness::with_config(100, 24, config).expect("Should create harness");
 
     // Open the file
     harness

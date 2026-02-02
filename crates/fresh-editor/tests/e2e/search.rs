@@ -14,7 +14,7 @@ fn test_basic_search_forward() {
     // Create a test file with searchable content
     std::fs::write(&file_path, "hello world\nfoo bar\nhello again\nbaz").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -69,7 +69,7 @@ fn test_find_previous_with_ctrl_shift_n() {
     // Create a test file with searchable content
     std::fs::write(&file_path, "hello world\nfoo bar\nhello again\nhello final").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -128,7 +128,7 @@ fn test_find_next_prefills_from_selection() {
     let file_path = temp_dir.path().join("search_selection.txt");
     std::fs::write(&file_path, "alpha word beta word gamma").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
 
     harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
@@ -195,7 +195,7 @@ fn test_find_in_selection_command() {
     let file_path = temp_dir.path().join("search_selection.txt");
     std::fs::write(&file_path, "alpha word beta word gamma").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
 
     harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
@@ -269,7 +269,7 @@ fn test_incremental_search_highlighting() {
     )
     .unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -313,7 +313,7 @@ fn test_search_highlighting_visible_only() {
     }
     std::fs::write(&file_path, &content).unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -361,7 +361,7 @@ fn test_search_highlighting_visible_only() {
 /// Test interactive replace wrap-around behavior
 #[test]
 fn test_interactive_replace_wrap_around() {
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
     let file_path = project_dir.join("test.txt");
 
@@ -478,7 +478,7 @@ fn test_interactive_replace_wrap_around() {
 /// Test interactive replace stops at starting position after wrap
 #[test]
 fn test_interactive_replace_wrap_stops_at_start() {
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
     let file_path = project_dir.join("test.txt");
 
@@ -553,7 +553,7 @@ fn test_search_highlights_update_on_scroll() {
     }
     std::fs::write(&file_path, &content).unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -625,7 +625,7 @@ fn test_search_history_navigation() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "hello world\nfoo bar\ntest content").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -712,7 +712,7 @@ fn test_search_history_preserves_current_input() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "content here").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -761,7 +761,7 @@ fn test_replace_history_separate_from_search() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "hello world\nfoo bar").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -834,7 +834,7 @@ fn test_search_history_skips_empty_and_duplicates() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "test content").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -912,7 +912,7 @@ fn test_history_updates_incremental_highlights() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "hello world\nfoo bar\ntest content").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -978,7 +978,7 @@ fn test_incremental_highlighting_on_second_search() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "hello world\nfoo bar\ntest content").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1048,7 +1048,7 @@ fn test_highlights_clear_when_query_becomes_empty() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "hello world\nfoo bar\ntest content").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1094,7 +1094,7 @@ fn test_highlights_clear_on_history_to_empty() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "hello world\nfoo bar").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1178,7 +1178,7 @@ fn test_search_options_bar_appears() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "hello world").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1237,7 +1237,7 @@ fn test_toggle_case_sensitive_in_search() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "Hello HELLO hello").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1284,7 +1284,7 @@ fn test_toggle_whole_word_in_search() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "test testing tested").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1331,7 +1331,7 @@ fn test_search_options_bar_in_replace() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "hello world").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1364,7 +1364,7 @@ fn test_status_bar_hidden_during_suggestions() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "hello world").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1413,7 +1413,7 @@ fn test_find_selection_next_from_word_under_cursor() {
     // Create a test file with searchable content
     std::fs::write(&file_path, "hello world\nfoo bar\nhello again\nhello final").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1462,7 +1462,7 @@ fn test_find_selection_previous_from_word_under_cursor() {
     // Create a test file with searchable content
     std::fs::write(&file_path, "hello world\nfoo bar\nhello again\nhello final").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1500,7 +1500,7 @@ fn test_find_selection_next_with_selection() {
     // Create a test file with "foo" appearing multiple times
     std::fs::write(&file_path, "foo bar baz\nfoo test\nanother foo here").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1538,7 +1538,7 @@ fn test_find_selection_next_wraps_around() {
     // Create a test file with "hello" at the start and cursor at the end
     std::fs::write(&file_path, "hello world\ntest").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1575,7 +1575,7 @@ fn test_f3_continues_after_find_selection() {
     // Create a test file with "hello" appearing multiple times
     std::fs::write(&file_path, "hello world\nhello again\nhello final").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1628,7 +1628,7 @@ fn test_find_selection_keeps_search_term() {
     )
     .unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1705,7 +1705,7 @@ fn test_find_selection_invalidates_on_cursor_move() {
     //  ^0    ^6     ^12   ^18
     std::fs::write(&file_path, "hello world hello world").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -1815,7 +1815,7 @@ fn test_search_in_large_file() {
     );
 
     // Create harness and open the large file
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
 
     // Verify the buffer is in large file mode
@@ -2003,7 +2003,7 @@ fn test_f3_search_finds_matches_outside_viewport() {
 
     std::fs::write(&file_path, &content).unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -2080,7 +2080,7 @@ fn test_f3_search_finds_matches_outside_viewport() {
 /// and the search state should be preserved (showing "Match X of Y").
 #[test]
 fn test_f3_continues_searching_after_buffer_modification() {
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
     let file_path = project_dir.join("test.txt");
 
@@ -2240,7 +2240,7 @@ fn test_search_double_underscore() {
     let content = "def __init__(self):\n    self.__name__ = 'test'\n    __special__ = True\n";
     std::fs::write(&file_path, content).unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -2282,7 +2282,7 @@ fn test_search_double_underscore_prefix() {
     let content = "__init__, __name__, __file__\n";
     std::fs::write(&file_path, content).unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -2321,7 +2321,7 @@ fn test_search_angle_bracket() {
     let content = "let x: Vec<String> = Vec::new();\nlet y: Option<i32> = None;\n";
     std::fs::write(&file_path, content).unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -2358,7 +2358,7 @@ fn test_search_with_closing_angle_bracket() {
     let content = "plugin_name<T>\nplugin_name<U>\n";
     std::fs::write(&file_path, content).unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
@@ -2394,7 +2394,7 @@ fn test_esc_clears_search_highlights() {
     let file_path = temp_dir.path().join("test.txt");
     std::fs::write(&file_path, "hello world\nfoo bar\nhello again\nbaz").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 

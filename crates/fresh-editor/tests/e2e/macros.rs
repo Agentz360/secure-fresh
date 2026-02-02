@@ -5,7 +5,7 @@ use crate::common::harness::EditorTestHarness;
 #[test]
 fn test_macro_record_and_play_last() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // Open command palette and start recording macro on register 0
@@ -95,7 +95,7 @@ fn test_macro_record_and_play_last() {
 #[test]
 fn test_macro_with_multiple_cursors_no_overflow() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // Add some initial lines of text
@@ -213,7 +213,7 @@ fn test_macro_with_multiple_cursors_no_overflow() {
 #[test]
 fn test_play_last_macro_when_none_recorded() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // Try to play last macro when none has been recorded
@@ -241,7 +241,7 @@ fn test_play_last_macro_when_none_recorded() {
 #[test]
 fn test_macro_playback_is_undoable() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
     // Start recording macro on register 0

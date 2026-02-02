@@ -4,7 +4,7 @@ use crate::common::harness::EditorTestHarness;
 #[test]
 fn test_prompt_rendering() {
     use crossterm::event::{KeyCode, KeyModifiers};
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the open file prompt with Ctrl+O
     harness
@@ -36,7 +36,7 @@ fn test_prompt_rendering() {
 fn test_prompt_input_handling() {
     use crossterm::event::{KeyCode, KeyModifiers};
     // Use harness with temp project so file paths are relative
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
 
     // Trigger the open file prompt with Ctrl+O
     harness
@@ -79,7 +79,7 @@ fn test_prompt_input_handling() {
 fn test_prompt_cancel() {
     use crossterm::event::{KeyCode, KeyModifiers};
     // Use harness with temp project so file paths are relative
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
 
     // Trigger the open file prompt
     harness
@@ -114,7 +114,7 @@ fn test_open_file_workflow() {
     let file_path = temp_dir.path().join("test_prompt.txt");
     fs::write(&file_path, "Hello from prompt test!").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Trigger the open file prompt
     harness
@@ -148,7 +148,7 @@ fn test_open_file_workflow() {
 #[test]
 fn test_open_nonexistent_file() {
     // Use harness with temp project so file paths are relative
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
     let new_file_path = project_dir.join("new_file.txt");
 
@@ -175,7 +175,7 @@ fn test_open_nonexistent_file_edit_and_save() {
     use std::fs;
 
     // Use harness with temp project so file paths are relative
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
     let new_file_path = project_dir.join("created_file.txt");
 
@@ -221,7 +221,7 @@ fn test_spawn_with_nonexistent_file() {
     // Verify file doesn't exist
     assert!(!new_file_path.exists());
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Open non-existent file directly (simulating CLI spawn)
     harness.open_file(&new_file_path).unwrap();
@@ -256,7 +256,7 @@ fn test_open_file_dialog_create_new_file() {
     use std::fs;
 
     // Use harness with temp project
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
 
     // Create an existing file for initial context
@@ -315,7 +315,7 @@ fn test_save_as_functionality() {
     let original_path = temp_dir.path().join("original.txt");
     fs::write(&original_path, "Original content").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Open the original file
     harness.open_file(&original_path).unwrap();
@@ -388,7 +388,7 @@ fn test_save_as_tilde_expansion() {
     let original_path = temp_dir.path().join("original.txt");
     fs::write(&original_path, "Test content").unwrap();
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Open the original file
     harness.open_file(&original_path).unwrap();
@@ -465,7 +465,7 @@ fn test_save_as_relative_path() {
 
     eprintln!("[TEST] Starting test_save_as_relative_path");
 
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
     eprintln!("[TEST] Project dir: {:?}", project_dir);
 
@@ -559,7 +559,7 @@ fn test_save_as_relative_path() {
 fn test_save_as_nested_path() {
     use crossterm::event::{KeyCode, KeyModifiers};
 
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
 
     // Start with new buffer
@@ -607,7 +607,7 @@ fn test_save_as_overwrite_confirmation() {
     use std::fs;
 
     // Use with_temp_project to get a working directory with short relative paths
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
 
     // Create two files in the project directory
@@ -675,7 +675,7 @@ fn test_save_as_overwrite_confirmed() {
     use std::fs;
 
     // Use with_temp_project to get a working directory with short relative paths
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
 
     // Create two files in the project directory
@@ -743,7 +743,7 @@ fn test_save_as_same_file_no_confirmation() {
     use std::fs;
 
     // Use with_temp_project to get a working directory with short relative paths
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
 
     // Create a file in the project directory

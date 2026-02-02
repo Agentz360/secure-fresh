@@ -1127,6 +1127,27 @@ impl EditorTestHarness {
         );
     }
 
+    /// Find the position of text on screen, returning (col, row) of the first match.
+    /// Returns None if text is not found.
+    pub fn find_text_on_screen(&self, text: &str) -> Option<(u16, u16)> {
+        let buffer = self.buffer();
+        let (width, height) = (buffer.area.width, buffer.area.height);
+
+        for y in 0..height {
+            let mut row_text = String::new();
+            for x in 0..width {
+                let pos = buffer.index_of(x, y);
+                if let Some(cell) = buffer.content.get(pos) {
+                    row_text.push_str(cell.symbol());
+                }
+            }
+            if let Some(col) = row_text.find(text) {
+                return Some((col as u16, y));
+            }
+        }
+        None
+    }
+
     /// Assert that no plugin errors have occurred
     /// This checks the accumulated error messages from plugin execution
     /// Call this at key points in tests to catch plugin errors early

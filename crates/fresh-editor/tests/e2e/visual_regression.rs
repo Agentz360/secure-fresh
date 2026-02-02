@@ -291,7 +291,7 @@ fn test_lsp_rename_undo_restores_all() {
     writeln!(file, "}}").unwrap();
     drop(file);
 
-    let mut harness = EditorTestHarness::new(80, 30).unwrap();
+    let mut harness = EditorTestHarness::new(100, 30).unwrap();
 
     // Open the temporary file
     harness.open_file(&test_file).unwrap();

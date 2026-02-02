@@ -1,5 +1,6 @@
 /// Text buffer that uses PieceTree with integrated line tracking
 /// Architecture where the tree is the single source of truth for text and line information
+use crate::model::encoding;
 use crate::model::filesystem::{FileMetadata, FileSystem, WriteOp};
 use crate::model::piece_tree::{
     BufferData, BufferLocation, Cursor, PieceInfo, PieceRangeIter, PieceTree, Position,
@@ -13,6 +14,9 @@ use std::io::{self, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+// Re-export Encoding for backward compatibility
+pub use encoding::Encoding;
 
 /// Error returned when a file save operation requires elevated privileges.
 ///
@@ -43,6 +47,38 @@ impl std::fmt::Display for SudoSaveRequired {
 }
 
 impl std::error::Error for SudoSaveRequired {}
+
+/// Error returned when a large file has a non-resynchronizable encoding
+/// and requires user confirmation before loading the entire file into memory.
+///
+/// Non-resynchronizable encodings (like Shift-JIS, GB18030, GBK, EUC-KR) cannot
+/// determine character boundaries when jumping into the middle of a file.
+/// This means the entire file must be loaded and decoded sequentially.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LargeFileEncodingConfirmation {
+    /// Path to the file
+    pub path: PathBuf,
+    /// Size of the file in bytes
+    pub file_size: usize,
+    /// The detected encoding that requires full loading
+    pub encoding: Encoding,
+}
+
+impl std::fmt::Display for LargeFileEncodingConfirmation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let size_mb = self.file_size as f64 / (1024.0 * 1024.0);
+        write!(
+            f,
+            "Large file ({:.1} MB) uses {} encoding which requires loading the entire file into memory. \
+             This encoding cannot be streamed because character boundaries cannot be determined \
+             from the middle of the file. Continue?",
+            size_mb,
+            self.encoding.display_name()
+        )
+    }
+}
+
+impl std::error::Error for LargeFileEncodingConfirmation {}
 
 // Large file support configuration
 /// Default threshold for considering a file "large" (100 MB)
@@ -229,6 +265,13 @@ pub struct TextBuffer {
     /// changed the line ending format and needs conversion on save.
     original_line_ending: LineEnding,
 
+    /// Text encoding format detected from the file (or default for new files)
+    encoding: Encoding,
+
+    /// Original encoding when file was loaded (used for conversion on save)
+    /// Similar to original_line_ending, tracks what the file had when loaded.
+    original_encoding: Encoding,
+
     /// The file size on disk after the last save.
     /// Used for chunked recovery to know the original file size for reconstruction.
     /// Updated when loading from file or after saving.
@@ -244,6 +287,7 @@ impl TextBuffer {
     pub fn new(_large_file_threshold: usize, fs: Arc<dyn FileSystem + Send + Sync>) -> Self {
         let piece_tree = PieceTree::empty();
         let line_ending = LineEnding::default();
+        let encoding = Encoding::default();
         TextBuffer {
             fs,
             saved_root: piece_tree.root(),
@@ -257,6 +301,8 @@ impl TextBuffer {
             is_binary: false,
             line_ending,
             original_line_ending: line_ending,
+            encoding,
+            original_encoding: encoding,
             saved_file_size: None,
             version: 0,
         }
@@ -289,11 +335,12 @@ impl TextBuffer {
         self.bump_version();
     }
 
-    /// Create a text buffer from initial content with the given filesystem.
-    pub fn from_bytes(content: Vec<u8>, fs: Arc<dyn FileSystem + Send + Sync>) -> Self {
+    /// Create a text buffer from raw bytes WITHOUT encoding conversion.
+    /// Used for binary files where we want to preserve the exact bytes.
+    fn from_bytes_raw(content: Vec<u8>, fs: Arc<dyn FileSystem + Send + Sync>) -> Self {
         let bytes = content.len();
 
-        // Auto-detect line ending format from content
+        // For binary files, detect line ending but don't convert encoding
         let line_ending = Self::detect_line_ending(&content);
 
         // Create initial StringBuffer with ID 0
@@ -312,6 +359,50 @@ impl TextBuffer {
             fs,
             line_ending,
             original_line_ending: line_ending,
+            encoding: Encoding::Utf8, // Binary files treated as raw bytes (no conversion)
+            original_encoding: Encoding::Utf8,
+            piece_tree,
+            saved_root,
+            buffers: vec![buffer],
+            next_buffer_id: 1,
+            file_path: None,
+            modified: false,
+            recovery_pending: false,
+            large_file: false,
+            is_binary: true,
+            saved_file_size: Some(bytes),
+            version: 0,
+        }
+    }
+
+    /// Create a text buffer from initial content with the given filesystem.
+    pub fn from_bytes(content: Vec<u8>, fs: Arc<dyn FileSystem + Send + Sync>) -> Self {
+        // Auto-detect encoding and convert to UTF-8 if needed
+        let (encoding, utf8_content) = Self::detect_and_convert_encoding(&content);
+
+        let bytes = utf8_content.len();
+
+        // Auto-detect line ending format from content
+        let line_ending = Self::detect_line_ending(&utf8_content);
+
+        // Create initial StringBuffer with ID 0
+        let buffer = StringBuffer::new(0, utf8_content);
+        let line_feed_cnt = buffer.line_feed_count();
+
+        let piece_tree = if bytes > 0 {
+            PieceTree::new(BufferLocation::Stored(0), 0, bytes, line_feed_cnt)
+        } else {
+            PieceTree::empty()
+        };
+
+        let saved_root = piece_tree.root();
+
+        TextBuffer {
+            fs,
+            line_ending,
+            original_line_ending: line_ending,
+            encoding,
+            original_encoding: encoding,
             piece_tree,
             saved_root,
             buffers: vec![buffer],
@@ -340,6 +431,7 @@ impl TextBuffer {
         let piece_tree = PieceTree::empty();
         let saved_root = piece_tree.root();
         let line_ending = LineEnding::default();
+        let encoding = Encoding::default();
         TextBuffer {
             fs,
             piece_tree,
@@ -353,6 +445,8 @@ impl TextBuffer {
             is_binary: false,
             line_ending,
             original_line_ending: line_ending,
+            encoding,
+            original_encoding: encoding,
             saved_file_size: None,
             version: 0,
         }
@@ -389,36 +483,157 @@ impl TextBuffer {
     fn load_small_file(path: &Path, fs: Arc<dyn FileSystem + Send + Sync>) -> anyhow::Result<Self> {
         let contents = fs.read_file(path)?;
 
-        // Detect if this is a binary file
-        let is_binary = Self::detect_binary(&contents);
+        // Use unified encoding/binary detection
+        let (encoding, is_binary) = Self::detect_encoding_or_binary(&contents);
 
-        // Detect line ending format (CRLF/LF/CR) - used for Enter key insertion
-        let line_ending = Self::detect_line_ending(&contents);
-
-        // Keep original line endings - the view layer handles CRLF display
-        let mut buffer = Self::from_bytes(contents, fs);
+        // For binary files, skip encoding conversion to preserve raw bytes
+        let mut buffer = if is_binary {
+            Self::from_bytes_raw(contents, fs)
+        } else {
+            // from_bytes handles encoding detection/conversion and line ending detection
+            Self::from_bytes(contents, fs)
+        };
         buffer.file_path = Some(path.to_path_buf());
         buffer.modified = false;
         buffer.large_file = false;
         buffer.is_binary = is_binary;
-        buffer.line_ending = line_ending;
-        buffer.original_line_ending = line_ending;
+        // For binary files, ensure encoding matches detection
+        if is_binary {
+            buffer.encoding = encoding;
+            buffer.original_encoding = encoding;
+        }
+        // Note: line_ending and encoding are already set by from_bytes/from_bytes_raw
         Ok(buffer)
     }
 
+    /// Check if loading a large file requires user confirmation due to encoding.
+    ///
+    /// Some encodings (like Shift-JIS, GB18030, GBK, EUC-KR) cannot be "resynchronized" -
+    /// meaning you cannot determine character boundaries when jumping into the middle
+    /// of a file. These encodings require loading the entire file into memory.
+    ///
+    /// Returns `Some(confirmation)` if user confirmation is needed, `None` if the file
+    /// can be loaded with lazy/streaming loading.
+    pub fn check_large_file_encoding(
+        path: impl AsRef<Path>,
+        fs: Arc<dyn FileSystem + Send + Sync>,
+    ) -> anyhow::Result<Option<LargeFileEncodingConfirmation>> {
+        let path = path.as_ref();
+        let metadata = fs.metadata(path)?;
+        let file_size = metadata.size as usize;
+
+        // Only check for large files
+        if file_size < DEFAULT_LARGE_FILE_THRESHOLD {
+            return Ok(None);
+        }
+
+        // Read a sample to detect encoding
+        let sample_size = file_size.min(8 * 1024);
+        let sample = fs.read_range(path, 0, sample_size)?;
+        let (encoding, is_binary) = Self::detect_encoding_or_binary(&sample);
+
+        // Binary files don't need confirmation (loaded as-is)
+        if is_binary {
+            return Ok(None);
+        }
+
+        // Check if the encoding requires full file loading
+        if encoding.requires_full_file_load() {
+            return Ok(Some(LargeFileEncodingConfirmation {
+                path: path.to_path_buf(),
+                file_size,
+                encoding,
+            }));
+        }
+
+        Ok(None)
+    }
+
     /// Load a large file with unloaded buffer (no line indexing, lazy loading)
+    ///
+    /// If `force_full_load` is true, loads the entire file regardless of encoding.
+    /// This should be set to true after user confirms loading a non-resynchronizable encoding.
     fn load_large_file(
         path: &Path,
         file_size: usize,
         fs: Arc<dyn FileSystem + Send + Sync>,
     ) -> anyhow::Result<Self> {
+        Self::load_large_file_internal(path, file_size, fs, false)
+    }
+
+    /// Load a large file, optionally forcing full load for non-resynchronizable encodings.
+    ///
+    /// Called with `force_full_load=true` after user confirms the warning about
+    /// non-resynchronizable encodings requiring full file loading.
+    pub fn load_large_file_confirmed(
+        path: impl AsRef<Path>,
+        fs: Arc<dyn FileSystem + Send + Sync>,
+    ) -> anyhow::Result<Self> {
+        let path = path.as_ref();
+        let metadata = fs.metadata(path)?;
+        let file_size = metadata.size as usize;
+        Self::load_large_file_internal(path, file_size, fs, true)
+    }
+
+    /// Internal implementation for loading large files.
+    fn load_large_file_internal(
+        path: &Path,
+        file_size: usize,
+        fs: Arc<dyn FileSystem + Send + Sync>,
+        force_full_load: bool,
+    ) -> anyhow::Result<Self> {
         use crate::model::piece_tree::{BufferData, BufferLocation};
 
-        // Read a sample of the file to detect if it's binary and line ending format
-        // We read the first 8KB for both binary and line ending detection
+        // Read a sample of the file to detect encoding and whether it's binary
+        // We read the first 8KB for detection
         let sample_size = file_size.min(8 * 1024);
         let sample = fs.read_range(path, 0, sample_size)?;
-        let is_binary = Self::detect_binary(&sample);
+
+        // Use unified encoding/binary detection
+        let (encoding, is_binary) = Self::detect_encoding_or_binary(&sample);
+
+        // Binary files skip encoding conversion to preserve raw bytes
+        if is_binary {
+            tracing::info!("Large binary file detected, loading without encoding conversion");
+            let contents = fs.read_file(path)?;
+            let mut buffer = Self::from_bytes_raw(contents, fs);
+            buffer.file_path = Some(path.to_path_buf());
+            buffer.modified = false;
+            buffer.large_file = true;
+            buffer.encoding = encoding;
+            buffer.original_encoding = encoding;
+            return Ok(buffer);
+        }
+
+        // Check if encoding requires full file loading
+        let requires_full_load = encoding.requires_full_file_load();
+
+        // For non-resynchronizable encodings, require confirmation unless forced
+        if requires_full_load && !force_full_load {
+            anyhow::bail!(LargeFileEncodingConfirmation {
+                path: path.to_path_buf(),
+                file_size,
+                encoding,
+            });
+        }
+
+        // For encodings that require full load (non-resynchronizable or non-UTF-8),
+        // load the entire file and convert
+        if !matches!(encoding, Encoding::Utf8 | Encoding::Ascii) {
+            tracing::info!(
+                "Large file with non-UTF-8 encoding ({:?}), loading fully for conversion",
+                encoding
+            );
+            let contents = fs.read_file(path)?;
+            let mut buffer = Self::from_bytes(contents, fs);
+            buffer.file_path = Some(path.to_path_buf());
+            buffer.modified = false;
+            buffer.large_file = true; // Still mark as large file for UI purposes
+            buffer.is_binary = is_binary;
+            return Ok(buffer);
+        }
+
+        // UTF-8/ASCII files can use lazy loading
         let line_ending = Self::detect_line_ending(&sample);
 
         // Create an unloaded buffer that references the entire file
@@ -459,6 +674,8 @@ impl TextBuffer {
             is_binary,
             line_ending,
             original_line_ending: line_ending,
+            encoding,
+            original_encoding: encoding,
             saved_file_size: Some(file_size),
             version: 0,
         })
@@ -502,16 +719,34 @@ impl TextBuffer {
         // 1. We have a source file path
         // 2. The source file exists
         // 3. No line ending conversion is needed
-        let needs_conversion = self.line_ending != self.original_line_ending;
+        // 4. No encoding conversion is needed
+        let needs_line_ending_conversion = self.line_ending != self.original_line_ending;
+        // We need encoding conversion if:
+        // - NOT a binary file (binary files preserve raw bytes), AND
+        // - Either the encoding changed from the original, OR
+        // - The target encoding isn't plain UTF-8/ASCII (since internal storage is UTF-8)
+        // For example: UTF-8 BOM files are stored as UTF-8, so we need to add BOM on save
+        let needs_encoding_conversion = !self.is_binary
+            && (self.encoding != self.original_encoding
+                || !matches!(self.encoding, Encoding::Utf8 | Encoding::Ascii));
+        let needs_conversion = needs_line_ending_conversion || needs_encoding_conversion;
+
         let src_path_for_copy: Option<&Path> = if needs_conversion {
             None
         } else {
             self.file_path.as_deref().filter(|p| self.fs.exists(p))
         };
         let target_ending = self.line_ending;
+        let target_encoding = self.encoding;
 
         let mut insert_data: Vec<Vec<u8>> = Vec::new();
         let mut actions: Vec<RecipeAction> = Vec::new();
+
+        // Add BOM as the first piece if the target encoding has one
+        if let Some(bom) = target_encoding.bom_bytes() {
+            insert_data.push(bom.to_vec());
+            actions.push(RecipeAction::Insert { index: 0 });
+        }
 
         for piece_view in self.piece_tree.iter_pieces_in_range(0, total) {
             let buffer_id = piece_view.location.buffer_id();
@@ -533,7 +768,7 @@ impl TextBuffer {
                     // - This is a Stored piece (original file content)
                     // - We have a valid source for copying
                     // - This buffer is from that source
-                    // - No line ending conversion
+                    // - No line ending or encoding conversion needed
                     let can_copy = matches!(piece_view.location, BufferLocation::Stored(_))
                         && src_path_for_copy.is_some_and(|src| file_path == src);
 
@@ -547,15 +782,22 @@ impl TextBuffer {
                     }
 
                     // Need to load and send this unloaded region
-                    // This happens when: different source file, or line ending conversion
+                    // This happens when: different source file, or conversion needed
                     let data = self.fs.read_range(
                         file_path,
                         (*file_offset + piece_view.buffer_offset) as u64,
                         piece_view.bytes,
                     )?;
 
-                    let data = if needs_conversion {
+                    let data = if needs_line_ending_conversion {
                         Self::convert_line_endings_to(&data, target_ending)
+                    } else {
+                        data
+                    };
+
+                    // Convert encoding if needed
+                    let data = if needs_encoding_conversion {
+                        Self::convert_to_encoding(&data, target_encoding)
                     } else {
                         data
                     };
@@ -571,10 +813,17 @@ impl TextBuffer {
                     let end = start + piece_view.bytes;
                     let chunk = &data[start..end];
 
-                    let chunk = if needs_conversion {
+                    let chunk = if needs_line_ending_conversion {
                         Self::convert_line_endings_to(chunk, target_ending)
                     } else {
                         chunk.to_vec()
+                    };
+
+                    // Convert encoding if needed
+                    let chunk = if needs_encoding_conversion {
+                        Self::convert_to_encoding(&chunk, target_encoding)
+                    } else {
+                        chunk
                     };
 
                     let index = insert_data.len();
@@ -934,6 +1183,7 @@ impl TextBuffer {
 
         self.mark_saved_snapshot();
         self.original_line_ending = self.line_ending;
+        self.original_encoding = self.encoding;
         Ok(())
     }
 
@@ -950,6 +1200,7 @@ impl TextBuffer {
 
         self.mark_saved_snapshot();
         self.original_line_ending = self.line_ending;
+        self.original_encoding = self.encoding;
         Ok(())
     }
 
@@ -1985,71 +2236,27 @@ impl TextBuffer {
         self.original_line_ending = line_ending;
     }
 
-    /// Detect if the given bytes contain binary content.
+    /// Get the encoding format for this buffer
+    pub fn encoding(&self) -> Encoding {
+        self.encoding
+    }
+
+    /// Set the encoding format for this buffer
     ///
-    /// Binary content is detected by looking for:
-    /// - Null bytes (0x00)
-    /// - Non-printable control characters (except common ones like tab, newline, CR)
+    /// This marks the buffer as modified since the encoding format has changed.
+    /// On save, the buffer content will be converted to the new encoding.
+    pub fn set_encoding(&mut self, encoding: Encoding) {
+        self.encoding = encoding;
+        self.mark_content_modified();
+    }
+
+    /// Set the default encoding format for a new/empty buffer
     ///
-    /// ANSI escape sequences (ESC [ ...) are treated as text, not binary.
-    pub fn detect_binary(bytes: &[u8]) -> bool {
-        // Only check the first 8KB for binary detection
-        let check_len = bytes.len().min(8 * 1024);
-        let sample = &bytes[..check_len];
-
-        let mut i = 0;
-        while i < sample.len() {
-            let byte = sample[i];
-
-            // Check for ANSI escape sequence (ESC [ or ESC ])
-            // These are common in text files and should not trigger binary detection
-            if byte == 0x1B && i + 1 < sample.len() {
-                let next = sample[i + 1];
-                if next == b'[' || next == b']' {
-                    // Skip the escape sequence - find the terminator
-                    i += 2;
-                    while i < sample.len() {
-                        let c = sample[i];
-                        // ANSI sequences end with a letter (0x40-0x7E for CSI)
-                        if (0x40..=0x7E).contains(&c) {
-                            break;
-                        }
-                        i += 1;
-                    }
-                    i += 1;
-                    continue;
-                }
-            }
-
-            // Null byte is a strong indicator of binary content
-            if byte == 0x00 {
-                return true;
-            }
-
-            // Check for non-printable control characters
-            // Allow: tab (0x09), newline (0x0A), carriage return (0x0D)
-            // Also allow: form feed (0x0C), vertical tab (0x0B) - sometimes used in text
-            // ESC (0x1B) is handled above for ANSI sequences
-            if byte < 0x20
-                && byte != 0x09
-                && byte != 0x0A
-                && byte != 0x0D
-                && byte != 0x0C
-                && byte != 0x0B
-                && byte != 0x1B
-            {
-                return true;
-            }
-
-            // DEL character (0x7F) is also a control character
-            if byte == 0x7F {
-                return true;
-            }
-
-            i += 1;
-        }
-
-        false
+    /// Unlike `set_encoding`, this does NOT mark the buffer as modified.
+    /// This should be used when initializing a new buffer with a configured default.
+    pub fn set_default_encoding(&mut self, encoding: Encoding) {
+        self.encoding = encoding;
+        self.original_encoding = encoding;
     }
 
     /// Detect the line ending format from a sample of bytes
@@ -2093,6 +2300,42 @@ impl TextBuffer {
             // Default to LF if no clear winner or if LF wins
             LineEnding::LF
         }
+    }
+
+    /// Detect the text encoding from a sample of bytes
+    ///
+    /// Delegates to the encoding module. Use `detect_encoding_or_binary`
+    /// when you need to know if the content should be treated as binary.
+    pub fn detect_encoding(bytes: &[u8]) -> Encoding {
+        encoding::detect_encoding(bytes)
+    }
+
+    /// Detect the text encoding and whether content is binary.
+    ///
+    /// Returns (Encoding, is_binary) where:
+    /// - Encoding is the detected encoding (or default if binary)
+    /// - is_binary is true if the content should be treated as raw binary
+    ///
+    /// Delegates to the encoding module for detection logic.
+    pub fn detect_encoding_or_binary(bytes: &[u8]) -> (Encoding, bool) {
+        encoding::detect_encoding_or_binary(bytes)
+    }
+
+    /// Detect encoding and convert bytes to UTF-8
+    ///
+    /// Returns the detected encoding and the UTF-8 converted content.
+    /// This is the core function for normalizing file content to UTF-8 on load.
+    pub fn detect_and_convert_encoding(bytes: &[u8]) -> (Encoding, Vec<u8>) {
+        encoding::detect_and_convert(bytes)
+    }
+
+    /// Convert UTF-8 content to the specified encoding for saving
+    ///
+    /// Used when saving files to convert internal UTF-8 representation
+    /// back to the original (or user-selected) encoding.
+    /// Note: This does NOT add BOM - the BOM is handled separately in build_write_recipe.
+    pub fn convert_to_encoding(utf8_bytes: &[u8], target_encoding: Encoding) -> Vec<u8> {
+        encoding::convert_from_utf8(utf8_bytes, target_encoding)
     }
 
     /// Normalize line endings in the given bytes to LF only
@@ -4593,6 +4836,94 @@ mod tests {
             Ok(())
         }
     }
+
+    mod large_file_encoding_tests {
+        use super::*;
+
+        #[test]
+        fn test_large_file_encoding_confirmation_display() {
+            let confirmation = LargeFileEncodingConfirmation {
+                path: PathBuf::from("/test/file.txt"),
+                file_size: 150 * 1024 * 1024, // 150 MB
+                encoding: Encoding::ShiftJis,
+            };
+
+            let display = format!("{}", confirmation);
+            assert!(display.contains("150.0 MB"));
+            assert!(display.contains("Shift-JIS"));
+            assert!(display.contains("entire file into memory"));
+        }
+
+        #[test]
+        fn test_large_file_encoding_confirmation_equality() {
+            let a = LargeFileEncodingConfirmation {
+                path: PathBuf::from("/test/file.txt"),
+                file_size: 100 * 1024 * 1024,
+                encoding: Encoding::Gb18030,
+            };
+            let b = LargeFileEncodingConfirmation {
+                path: PathBuf::from("/test/file.txt"),
+                file_size: 100 * 1024 * 1024,
+                encoding: Encoding::Gb18030,
+            };
+            let c = LargeFileEncodingConfirmation {
+                path: PathBuf::from("/test/other.txt"),
+                file_size: 100 * 1024 * 1024,
+                encoding: Encoding::Gb18030,
+            };
+
+            assert_eq!(a, b);
+            assert_ne!(a, c);
+        }
+
+        #[test]
+        fn test_encoding_requires_confirmation() {
+            // Resynchronizable encodings should NOT require confirmation
+            assert!(!Encoding::Utf8.requires_full_file_load());
+            assert!(!Encoding::Utf8Bom.requires_full_file_load());
+            assert!(!Encoding::Ascii.requires_full_file_load());
+            assert!(!Encoding::Latin1.requires_full_file_load());
+            assert!(!Encoding::Windows1252.requires_full_file_load());
+            assert!(!Encoding::Utf16Le.requires_full_file_load());
+            assert!(!Encoding::Utf16Be.requires_full_file_load());
+
+            // Non-resynchronizable CJK encodings SHOULD require confirmation
+            assert!(Encoding::Gb18030.requires_full_file_load());
+            assert!(Encoding::Gbk.requires_full_file_load());
+            assert!(Encoding::ShiftJis.requires_full_file_load());
+            assert!(Encoding::EucKr.requires_full_file_load());
+        }
+
+        #[test]
+        fn test_check_large_file_encoding_small_file() {
+            use tempfile::NamedTempFile;
+
+            // Create a small file (well under threshold)
+            let temp = NamedTempFile::new().unwrap();
+            std::fs::write(temp.path(), b"hello world").unwrap();
+
+            let result = TextBuffer::check_large_file_encoding(temp.path(), test_fs()).unwrap();
+            assert!(
+                result.is_none(),
+                "Small files should not require confirmation"
+            );
+        }
+
+        #[test]
+        fn test_large_file_encoding_error_downcast() {
+            // Verify that LargeFileEncodingConfirmation can be used as an anyhow error
+            let confirmation = LargeFileEncodingConfirmation {
+                path: PathBuf::from("/test/file.txt"),
+                file_size: 200 * 1024 * 1024,
+                encoding: Encoding::EucKr,
+            };
+
+            let error: anyhow::Error = confirmation.clone().into();
+            let downcast = error.downcast_ref::<LargeFileEncodingConfirmation>();
+            assert!(downcast.is_some());
+            assert_eq!(downcast.unwrap().encoding, Encoding::EucKr);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -4943,33 +5274,38 @@ mod property_tests {
         output
     }
 
+    /// Helper to check if bytes are detected as binary
+    fn is_detected_as_binary(bytes: &[u8]) -> bool {
+        TextBuffer::detect_encoding_or_binary(bytes).1
+    }
+
     #[test]
     fn test_detect_binary_text_files() {
         // Plain text should not be detected as binary
-        assert!(!TextBuffer::detect_binary(b"Hello, world!"));
-        assert!(!TextBuffer::detect_binary(b"Line 1\nLine 2\nLine 3"));
-        assert!(!TextBuffer::detect_binary(b"Tabs\tand\tnewlines\n"));
-        assert!(!TextBuffer::detect_binary(b"Carriage return\r\n"));
+        assert!(!is_detected_as_binary(b"Hello, world!"));
+        assert!(!is_detected_as_binary(b"Line 1\nLine 2\nLine 3"));
+        assert!(!is_detected_as_binary(b"Tabs\tand\tnewlines\n"));
+        assert!(!is_detected_as_binary(b"Carriage return\r\n"));
 
         // Empty content is not binary
-        assert!(!TextBuffer::detect_binary(b""));
+        assert!(!is_detected_as_binary(b""));
 
         // ANSI CSI escape sequences should be treated as text
-        assert!(!TextBuffer::detect_binary(b"\x1b[31mRed text\x1b[0m"));
+        assert!(!is_detected_as_binary(b"\x1b[31mRed text\x1b[0m"));
     }
 
     #[test]
     fn test_detect_binary_binary_files() {
         // Null bytes indicate binary
-        assert!(TextBuffer::detect_binary(b"Hello\x00World"));
-        assert!(TextBuffer::detect_binary(b"\x00"));
+        assert!(is_detected_as_binary(b"Hello\x00World"));
+        assert!(is_detected_as_binary(b"\x00"));
 
         // Non-printable control characters (except tab, newline, CR, form feed, vertical tab)
-        assert!(TextBuffer::detect_binary(b"Text with \x01 control char"));
-        assert!(TextBuffer::detect_binary(b"\x02\x03\x04"));
+        assert!(is_detected_as_binary(b"Text with \x01 control char"));
+        assert!(is_detected_as_binary(b"\x02\x03\x04"));
 
         // DEL character (0x7F)
-        assert!(TextBuffer::detect_binary(b"Text with DEL\x7F"));
+        assert!(is_detected_as_binary(b"Text with DEL\x7F"));
     }
 
     #[test]
@@ -4977,19 +5313,19 @@ mod property_tests {
         // PNG file signature: 89 50 4E 47 0D 0A 1A 0A
         // The 0x1A byte (substitute character) is a control character that triggers binary detection
         let png_header: &[u8] = &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        assert!(TextBuffer::detect_binary(png_header));
+        assert!(is_detected_as_binary(png_header));
 
         // Simulate a PNG file with more data after header
         let mut png_data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         png_data.extend_from_slice(b"\x00\x00\x00\x0DIHDR"); // IHDR chunk with null bytes
-        assert!(TextBuffer::detect_binary(&png_data));
+        assert!(is_detected_as_binary(&png_data));
     }
 
     #[test]
     fn test_detect_binary_other_image_formats() {
         // JPEG signature: FF D8 FF
         let jpeg_header: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
-        assert!(TextBuffer::detect_binary(jpeg_header));
+        assert!(is_detected_as_binary(jpeg_header));
 
         // GIF signature: GIF89a or GIF87a - contains valid ASCII but typically followed by binary
         // GIF header is ASCII but the LSD (Logical Screen Descriptor) contains binary
@@ -5001,26 +5337,26 @@ mod property_tests {
             0x00, // Pixel aspect ratio
         ];
         // The null bytes in the dimensions trigger binary detection
-        assert!(TextBuffer::detect_binary(gif_data));
+        assert!(is_detected_as_binary(gif_data));
 
         // BMP signature: BM followed by file size (usually contains null bytes)
         let bmp_header: &[u8] = &[0x42, 0x4D, 0x00, 0x00, 0x00, 0x00];
-        assert!(TextBuffer::detect_binary(bmp_header));
+        assert!(is_detected_as_binary(bmp_header));
     }
 
     #[test]
     fn test_detect_binary_executable_formats() {
         // ELF signature (Linux executables)
         let elf_header: &[u8] = &[0x7F, 0x45, 0x4C, 0x46, 0x02, 0x01, 0x01, 0x00];
-        assert!(TextBuffer::detect_binary(elf_header));
+        assert!(is_detected_as_binary(elf_header));
 
         // Mach-O signature (macOS executables) - magic + cpu type/subtype contain null bytes
         let macho_header: &[u8] = &[0xCF, 0xFA, 0xED, 0xFE, 0x07, 0x00, 0x00, 0x01];
-        assert!(TextBuffer::detect_binary(macho_header));
+        assert!(is_detected_as_binary(macho_header));
 
         // PE/COFF (Windows executables) - MZ header
         let pe_header: &[u8] = &[0x4D, 0x5A, 0x90, 0x00, 0x03, 0x00];
-        assert!(TextBuffer::detect_binary(pe_header));
+        assert!(is_detected_as_binary(pe_header));
     }
 }
 

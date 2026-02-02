@@ -12,6 +12,7 @@ pub mod crash_repro;
 pub mod crlf_rendering;
 pub mod document_model;
 pub mod emacs_actions;
+pub mod encoding;
 pub mod explorer_menu;
 pub mod file_browser;
 pub mod file_explorer;

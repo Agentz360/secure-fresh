@@ -66,7 +66,7 @@ editor.setStatus("Test i18n plugin loaded");
     config.locale = fresh::config::LocaleName(Some("en".to_string()));
 
     let mut harness =
-        EditorTestHarness::with_config_and_working_dir(80, 24, config, project_root).unwrap();
+        EditorTestHarness::with_config_and_working_dir(100, 24, config, project_root).unwrap();
 
     // Semantic wait for plugin to load and initialize
     println!("Waiting for plugin load...");

@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 /// Test that saving an unnamed buffer triggers SaveAs prompt (fix for issue #154)
 #[test]
 fn test_save_unnamed_buffer_shows_save_as_prompt() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Create a new empty buffer
     harness.new_buffer().unwrap();
@@ -31,7 +31,7 @@ fn test_save_unnamed_buffer_shows_save_as_prompt() {
 /// Test that quitting with modified buffers shows confirmation and doesn't quit immediately
 #[test]
 fn test_quit_with_modified_buffers_shows_confirmation() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Type some text to modify the buffer
     harness.type_text("Modified content").unwrap();
@@ -53,7 +53,7 @@ fn test_quit_with_modified_buffers_shows_confirmation() {
 /// Test that quitting without modified buffers works immediately
 #[test]
 fn test_quit_without_modified_buffers() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Don't type anything - buffer is not modified
 
@@ -73,7 +73,7 @@ fn test_quit_without_modified_buffers() {
 /// Test that quitting with confirmation (discard) works
 #[test]
 fn test_quit_with_confirmation_discard() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Modify buffer
     harness.type_text("Modified").unwrap();
@@ -101,7 +101,7 @@ fn test_quit_with_confirmation_discard() {
 /// Test that quitting with confirmation (cancel) cancels quit
 #[test]
 fn test_quit_with_confirmation_cancel() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Modify buffer
     harness.type_text("Modified").unwrap();
@@ -132,7 +132,7 @@ fn test_quit_with_confirmation_cancel() {
 /// Test that undo restores non-dirty status when undoing all changes
 #[test]
 fn test_undo_restores_non_dirty_status() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Buffer should not show modified indicator initially
     harness.render().unwrap();
@@ -175,7 +175,7 @@ fn test_undo_restores_non_dirty_status() {
 /// Test that save then undo correctly tracks modified status
 #[test]
 fn test_undo_after_save_modified_status() {
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
 
     // Create a file and open it
@@ -239,7 +239,7 @@ fn test_undo_after_save_modified_status() {
 /// Test that tabs show the X close button
 #[test]
 fn test_tabs_show_close_button() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Render
     harness.render().unwrap();
@@ -257,7 +257,7 @@ fn test_tabs_show_close_button() {
 fn test_click_tab_close_button() {
     use crate::common::harness::layout;
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Create two temp files
     let temp_dir = tempfile::TempDir::new().unwrap();
@@ -322,7 +322,7 @@ fn test_click_tab_close_button() {
 fn test_click_tab_close_button_modified_buffer() {
     use crate::common::harness::layout;
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Create a second buffer
     harness.new_buffer().unwrap();
@@ -369,7 +369,7 @@ fn test_click_tab_close_button_modified_buffer() {
 fn test_click_tab_close_modified_discard() {
     use crate::common::harness::layout;
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Create a second buffer
     harness.new_buffer().unwrap();
@@ -421,7 +421,7 @@ fn test_click_tab_close_modified_discard() {
 fn test_click_tab_close_modified_cancel() {
     use crate::common::harness::layout;
 
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Create a second buffer
     harness.new_buffer().unwrap();
@@ -479,7 +479,7 @@ fn test_next_buffer_skips_hidden_buffers() {
     use fresh::services::plugins::api::PluginCommand;
     use std::collections::HashMap;
 
-    let mut harness = EditorTestHarness::with_temp_project(80, 24).unwrap();
+    let mut harness = EditorTestHarness::with_temp_project(100, 24).unwrap();
     let project_dir = harness.project_dir().unwrap();
 
     // Create two visible files
@@ -586,7 +586,7 @@ fn test_next_buffer_skips_hidden_buffers() {
 /// Test that closing a buffer returns to the previously focused buffer (not just adjacent tab)
 #[test]
 fn test_close_returns_to_previous_focused() {
-    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
 
     // Create temp files with identifiable content
     let temp_dir = tempfile::TempDir::new().unwrap();

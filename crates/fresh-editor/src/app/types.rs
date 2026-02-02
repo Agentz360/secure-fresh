@@ -438,6 +438,8 @@ pub enum HoverTarget {
     StatusBarWarningBadge,
     /// Hovering over the status bar line ending indicator
     StatusBarLineEndingIndicator,
+    /// Hovering over the status bar encoding indicator
+    StatusBarEncodingIndicator,
     /// Hovering over the status bar language indicator
     StatusBarLanguageIndicator,
     /// Hovering over the search options "Case Sensitive" checkbox
@@ -737,6 +739,8 @@ pub(crate) struct CachedLayout {
     pub status_bar_warning_area: Option<(u16, u16, u16)>,
     /// Status bar line ending indicator area (row, start_col, end_col)
     pub status_bar_line_ending_area: Option<(u16, u16, u16)>,
+    /// Status bar encoding indicator area (row, start_col, end_col)
+    pub status_bar_encoding_area: Option<(u16, u16, u16)>,
     /// Status bar language indicator area (row, start_col, end_col)
     pub status_bar_language_area: Option<(u16, u16, u16)>,
     /// Status bar message area (row, start_col, end_col) - clickable to show status log

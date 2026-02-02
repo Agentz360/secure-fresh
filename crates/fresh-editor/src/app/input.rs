@@ -674,6 +674,9 @@ impl Editor {
             Action::SetLineEnding => {
                 self.start_set_line_ending_prompt();
             }
+            Action::SetEncoding => {
+                self.start_set_encoding_prompt();
+            }
             Action::SetLanguage => {
                 self.start_set_language_prompt();
             }
@@ -2021,6 +2024,52 @@ impl Editor {
                 prompt.selected_suggestion = Some(current_index);
                 let (_, name, desc) = options[current_index];
                 prompt.input = format!("{} ({})", name, desc);
+                prompt.cursor_pos = prompt.input.len();
+            }
+        }
+    }
+
+    /// Start the encoding selection prompt
+    fn start_set_encoding_prompt(&mut self) {
+        use crate::model::buffer::Encoding;
+
+        let current_encoding = self.active_state().buffer.encoding();
+
+        let suggestions: Vec<crate::input::commands::Suggestion> = Encoding::all()
+            .iter()
+            .map(|enc| {
+                let is_current = *enc == current_encoding;
+                crate::input::commands::Suggestion {
+                    text: format!("{} ({})", enc.display_name(), enc.description()),
+                    description: if is_current {
+                        Some("current".to_string())
+                    } else {
+                        None
+                    },
+                    value: Some(enc.display_name().to_string()),
+                    disabled: false,
+                    keybinding: None,
+                    source: None,
+                }
+            })
+            .collect();
+
+        let current_index = Encoding::all()
+            .iter()
+            .position(|enc| *enc == current_encoding)
+            .unwrap_or(0);
+
+        self.prompt = Some(crate::view::prompt::Prompt::with_suggestions(
+            "Encoding: ".to_string(),
+            PromptType::SetEncoding,
+            suggestions,
+        ));
+
+        if let Some(prompt) = self.prompt.as_mut() {
+            if !prompt.suggestions.is_empty() {
+                prompt.selected_suggestion = Some(current_index);
+                let enc = Encoding::all()[current_index];
+                prompt.input = format!("{} ({})", enc.display_name(), enc.description());
                 prompt.cursor_pos = prompt.input.len();
             }
         }

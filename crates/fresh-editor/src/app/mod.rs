@@ -3340,7 +3340,7 @@ impl Editor {
     pub fn confirm_prompt(&mut self) -> Option<(String, PromptType, Option<usize>)> {
         if let Some(prompt) = self.prompt.take() {
             let selected_index = prompt.selected_suggestion;
-            // For command, file, theme, plugin, and LSP stop prompts, prefer the selected suggestion over raw input
+            // For prompts with suggestions, prefer the selected suggestion over raw input
             let final_input = if matches!(
                 prompt.prompt_type,
                 PromptType::Command
@@ -3352,6 +3352,8 @@ impl Editor {
                     | PromptType::SelectLocale
                     | PromptType::SwitchToTab
                     | PromptType::SetLanguage
+                    | PromptType::SetEncoding
+                    | PromptType::SetLineEnding
                     | PromptType::Plugin { .. }
             ) {
                 // Use the selected suggestion if any
@@ -3607,7 +3609,9 @@ impl Editor {
             PromptType::SwitchToTab
             | PromptType::SelectTheme { .. }
             | PromptType::StopLspServer
-            | PromptType::SetLanguage => {
+            | PromptType::SetLanguage
+            | PromptType::SetEncoding
+            | PromptType::SetLineEnding => {
                 if let Some(prompt) = &mut self.prompt {
                     prompt.filter_suggestions(false);
                 }
