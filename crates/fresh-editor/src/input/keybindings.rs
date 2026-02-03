@@ -435,6 +435,7 @@ pub enum Action {
 
     // File browser actions
     FileBrowserToggleHidden,
+    FileBrowserToggleDetectEncoding,
 
     // Popup mode actions
     PopupSelectNext,
@@ -493,6 +494,7 @@ pub enum Action {
     SetTabSize,
     SetLineEnding,
     SetEncoding,
+    ReloadWithEncoding,
     SetLanguage,
     ToggleIndentationStyle,
     ToggleTabIndicators,
@@ -761,6 +763,7 @@ impl Action {
             "prompt_select_word_right" => Self::PromptSelectWordRight,
             "prompt_select_all" => Self::PromptSelectAll,
             "file_browser_toggle_hidden" => Self::FileBrowserToggleHidden,
+            "file_browser_toggle_detect_encoding" => Self::FileBrowserToggleDetectEncoding,
             "prompt_move_word_left" => Self::PromptMoveWordLeft,
             "prompt_move_word_right" => Self::PromptMoveWordRight,
             "prompt_delete" => Self::PromptDelete,
@@ -819,6 +822,7 @@ impl Action {
             "set_tab_size" => Self::SetTabSize,
             "set_line_ending" => Self::SetLineEnding,
             "set_encoding" => Self::SetEncoding,
+            "reload_with_encoding" => Self::ReloadWithEncoding,
             "toggle_indentation_style" => Self::ToggleIndentationStyle,
             "toggle_tab_indicators" => Self::ToggleTabIndicators,
             "reset_buffer_settings" => Self::ResetBufferSettings,
@@ -1375,6 +1379,28 @@ impl KeybindingResolver {
         Action::None
     }
 
+    /// Resolve a key event looking only in the specified context (no Global fallback).
+    /// This is used when a modal context (like Prompt) needs to check if it has
+    /// a specific binding without being overridden by Global bindings.
+    /// Returns None if no binding found in the specified context.
+    pub fn resolve_in_context_only(&self, event: &KeyEvent, context: KeyContext) -> Option<Action> {
+        // Try custom bindings for this context
+        if let Some(context_bindings) = self.bindings.get(&context) {
+            if let Some(action) = context_bindings.get(&(event.code, event.modifiers)) {
+                return Some(action.clone());
+            }
+        }
+
+        // Try default bindings for this context
+        if let Some(context_bindings) = self.default_bindings.get(&context) {
+            if let Some(action) = context_bindings.get(&(event.code, event.modifiers)) {
+                return Some(action.clone());
+            }
+        }
+
+        None
+    }
+
     /// Resolve a key event to a UI action for terminal mode.
     /// Only returns actions that are classified as UI actions (is_terminal_ui_action).
     /// Returns Action::None if the key doesn't map to a UI action.
@@ -1795,6 +1821,9 @@ impl KeybindingResolver {
             Action::PromptSelectWordRight => t!("action.prompt_select_word_right"),
             Action::PromptSelectAll => t!("action.prompt_select_all"),
             Action::FileBrowserToggleHidden => t!("action.file_browser_toggle_hidden"),
+            Action::FileBrowserToggleDetectEncoding => {
+                t!("action.file_browser_toggle_detect_encoding")
+            }
             Action::PopupSelectNext => t!("action.popup_select_next"),
             Action::PopupSelectPrev => t!("action.popup_select_prev"),
             Action::PopupPageUp => t!("action.popup_page_up"),
@@ -1841,6 +1870,7 @@ impl KeybindingResolver {
             Action::SetTabSize => t!("action.set_tab_size"),
             Action::SetLineEnding => t!("action.set_line_ending"),
             Action::SetEncoding => t!("action.set_encoding"),
+            Action::ReloadWithEncoding => t!("action.reload_with_encoding"),
             Action::SetLanguage => t!("action.set_language"),
             Action::ToggleIndentationStyle => t!("action.toggle_indentation_style"),
             Action::ToggleTabIndicators => t!("action.toggle_tab_indicators"),

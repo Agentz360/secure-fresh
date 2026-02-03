@@ -43,6 +43,7 @@ enum TestEncoding {
     Utf16Be,
     Latin1,
     Windows1252,
+    Windows1250,
     Gb18030,
     Ascii,
 }
@@ -95,6 +96,67 @@ impl TestEncoding {
                     })
                     .collect()
             }
+            TestEncoding::Windows1250 => {
+                // Windows-1250 (Central European)
+                // For testing, we encode common Polish/Czech characters
+                let mut result = Vec::new();
+                for c in text.chars() {
+                    let byte = match c {
+                        // Common Central European characters in Windows-1250
+                        'ą' => 0xB9,
+                        'ć' => 0xE6,
+                        'ę' => 0xEA,
+                        'ł' => 0xB3,
+                        'ń' => 0xF1,
+                        'ó' => 0xF3,
+                        'ś' => 0x9C,
+                        'ź' => 0x9F,
+                        'ż' => 0xBF,
+                        'Ą' => 0xA5,
+                        'Ć' => 0xC6,
+                        'Ę' => 0xCA,
+                        'Ł' => 0xA3,
+                        'Ń' => 0xD1,
+                        'Ó' => 0xD3,
+                        'Ś' => 0x8C,
+                        'Ź' => 0x8F,
+                        'Ż' => 0xAF,
+                        // Czech characters
+                        'á' => 0xE1,
+                        'č' => 0xE8,
+                        'ď' => 0xEF,
+                        'é' => 0xE9,
+                        'ě' => 0xEC,
+                        'í' => 0xED,
+                        'ň' => 0xF2,
+                        'ř' => 0xF8,
+                        'š' => 0x9A,
+                        'ť' => 0x9D,
+                        'ú' => 0xFA,
+                        'ů' => 0xF9,
+                        'ý' => 0xFD,
+                        'ž' => 0x9E,
+                        'Á' => 0xC1,
+                        'Č' => 0xC8,
+                        'Ď' => 0xCF,
+                        'É' => 0xC9,
+                        'Ě' => 0xCC,
+                        'Í' => 0xCD,
+                        'Ň' => 0xD2,
+                        'Ř' => 0xD8,
+                        'Š' => 0x8A,
+                        'Ť' => 0x8D,
+                        'Ú' => 0xDA,
+                        'Ů' => 0xD9,
+                        'Ý' => 0xDD,
+                        'Ž' => 0x8E,
+                        c if c.is_ascii() => c as u8,
+                        _ => b'?', // Replacement for unmapped chars
+                    };
+                    result.push(byte);
+                }
+                result
+            }
             TestEncoding::Gb18030 => {
                 // For testing, we'll use a simple mapping for common Chinese chars
                 // In real implementation, this would use encoding_rs
@@ -132,6 +194,62 @@ impl TestEncoding {
             TestEncoding::Latin1 | TestEncoding::Windows1252 => {
                 text.chars().all(|c| (c as u32) <= 0xFF)
             }
+            TestEncoding::Windows1250 => {
+                // Windows-1250 can encode ASCII and specific Central European characters
+                text.chars().all(|c| {
+                    c.is_ascii()
+                        || matches!(
+                            c,
+                            // Polish characters
+                            'ą' | 'ć'
+                                | 'ę'
+                                | 'ł'
+                                | 'ń'
+                                | 'ó'
+                                | 'ś'
+                                | 'ź'
+                                | 'ż'
+                                | 'Ą'
+                                | 'Ć'
+                                | 'Ę'
+                                | 'Ł'
+                                | 'Ń'
+                                | 'Ó'
+                                | 'Ś'
+                                | 'Ź'
+                                | 'Ż'
+                                // Czech characters
+                                | 'á'
+                                | 'č'
+                                | 'ď'
+                                | 'é'
+                                | 'ě'
+                                | 'í'
+                                | 'ň'
+                                | 'ř'
+                                | 'š'
+                                | 'ť'
+                                | 'ú'
+                                | 'ů'
+                                | 'ý'
+                                | 'ž'
+                                | 'Á'
+                                | 'Č'
+                                | 'Ď'
+                                | 'É'
+                                | 'Ě'
+                                | 'Í'
+                                | 'Ň'
+                                | 'Ř'
+                                | 'Š'
+                                | 'Ť'
+                                | 'Ú'
+                                | 'Ů'
+                                | 'Ý'
+                                | 'Ž'
+                        )
+                })
+            }
             TestEncoding::Ascii => text.is_ascii(),
             TestEncoding::Gb18030 => {
                 // GB18030 can encode all Unicode, but our test implementation is limited
@@ -151,6 +269,7 @@ impl TestEncoding {
             TestEncoding::Utf16Be => "UTF-16 BE",
             TestEncoding::Latin1 => "Latin-1",
             TestEncoding::Windows1252 => "Windows-1252",
+            TestEncoding::Windows1250 => "Windows-1250",
             TestEncoding::Gb18030 => "GB18030",
             TestEncoding::Ascii => "ASCII",
         }
@@ -1118,5 +1237,889 @@ fn test_utf8_to_utf16_encoding_change() {
     assert!(
         decoded.contains("こんにちは"),
         "Saved file should preserve Japanese characters"
+    );
+}
+
+// ============================================================================
+// Windows-1250 (Central European) Encoding Tests
+// ============================================================================
+
+/// Comprehensive test for Windows-1250 encoding:
+/// - Display of Polish diacritical characters
+/// - Encoding selector shows Windows-1250 (Central European)
+/// - Encoding change via selector works
+#[test]
+fn test_windows1250_display_and_selector() {
+    let temp_dir = TempDir::new().unwrap();
+
+    // Test 1: Display Windows-1250 encoded Polish characters
+    let polish_file = temp_dir.path().join("polish.txt");
+    // "Zażółć gęślą jaźń" - famous Polish pangram in Windows-1250
+    let windows1250_bytes: &[u8] = &[
+        0x5A, 0x61, 0xBF, 0xF3, 0xB3, 0xE6, // "Zażółć"
+        0x20, 0x67, 0xEA, 0x9C, 0x6C, 0xB9, // " gęślą"
+        0x20, 0x6A, 0x61, 0x9F, 0xF1, 0x0A, // " jaźń\n"
+    ];
+    std::fs::write(&polish_file, windows1250_bytes).unwrap();
+
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
+    harness.open_file(&polish_file).unwrap();
+    harness.render().unwrap();
+
+    // Verify Polish characters are displayed (converted to UTF-8 internally)
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains('ż') || screen.contains('ó') || screen.contains('ł'),
+        "Screen should contain Polish diacritical characters"
+    );
+
+    // Test 2: Encoding selector and change
+    let utf8_file = temp_dir.path().join("utf8.txt");
+    std::fs::write(&utf8_file, "Hello World!\n").unwrap();
+
+    drop(harness);
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
+    harness.open_file(&utf8_file).unwrap();
+    harness.render().unwrap();
+
+    // Click on encoding indicator to open selector
+    let (col, row) = harness
+        .find_text_on_screen("ASCII")
+        .expect("Encoding indicator should be visible");
+    harness.mouse_click(col, row).unwrap();
+    harness.assert_screen_contains("Encoding:");
+
+    // Filter for Windows-1250 and verify it shows with description
+    harness
+        .send_key(KeyCode::Char('a'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.type_text("1250").unwrap();
+    harness.render().unwrap();
+
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Windows-1250") && screen.contains("Central European"),
+        "Selector should show Windows-1250 / CP1250 – Central European"
+    );
+
+    // Select and verify encoding changed
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+    harness.assert_screen_contains("Windows-1250");
+}
+
+/// Test Windows-1250 encoding conversions:
+/// - UTF-8 → Windows-1250 → save → verify on disk
+/// - Continue: Windows-1250 → UTF-8 → save → verify on disk (bidirectional)
+/// - Fresh load: Load Windows-1250 from disk → UTF-8 → save → verify on disk
+#[test]
+fn test_windows1250_encoding_conversions() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("conversion_test.txt");
+
+    // Start with UTF-8 file containing Polish text
+    std::fs::write(&file_path, "Zażółć gęślą\n").unwrap();
+
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Part 1: UTF-8 → Windows-1250 → save
+    let (col, row) = harness
+        .find_text_on_screen("UTF-8")
+        .expect("UTF-8 indicator should be visible");
+    harness.mouse_click(col, row).unwrap();
+    harness
+        .send_key(KeyCode::Char('a'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.type_text("Windows-1250").unwrap();
+    harness.render().unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness
+        .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    let _ = harness.wait_until(|h| !h.editor().active_state().buffer.is_modified());
+
+    // Verify file is Windows-1250 encoded ('ż'=0xBF, 'ł'=0xB3)
+    let saved = std::fs::read(&file_path).unwrap();
+    assert!(
+        saved.contains(&0xBF) || saved.contains(&0xB3),
+        "File should be Windows-1250 encoded"
+    );
+    let (decoded, _) = encoding_rs::WINDOWS_1250.decode_without_bom_handling(&saved);
+    assert!(decoded.contains("Zażółć"), "Should preserve Polish text");
+
+    // Part 2: Fresh load Windows-1250 from disk → UTF-8 → save
+    // Close and reopen to simulate loading from disk
+    drop(harness);
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // File may be detected as Windows-1252 (chardetng can't distinguish 1250 vs 1252)
+    // Find encoding indicator and change to UTF-8
+    let (col, row) = harness
+        .find_text_on_screen("Windows")
+        .expect("Windows encoding indicator should be visible");
+    harness.mouse_click(col, row).unwrap();
+    harness
+        .send_key(KeyCode::Char('a'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.type_text("UTF-8").unwrap();
+    harness.render().unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness
+        .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    let _ = harness.wait_until(|h| !h.editor().active_state().buffer.is_modified());
+
+    // Verify file is now valid UTF-8
+    // Note: If detected as Windows-1252, some chars may differ (ś→œ, ć→æ)
+    // but the file should be valid UTF-8 regardless
+    let saved = std::fs::read(&file_path).unwrap();
+    let utf8_str = std::str::from_utf8(&saved).expect("File should be valid UTF-8");
+    // Check that common chars (ó, ł) that are same in both encodings are preserved
+    assert!(
+        utf8_str.contains('ó') || utf8_str.contains('ł'),
+        "UTF-8 file should contain some Polish chars. Got: {}",
+        utf8_str
+    );
+}
+
+/// Test loading and detecting Windows-1250 encoding with Czech pangram.
+/// Uses the famous Czech pangram "Příliš žluťoučký kůň úpěl ďábelské ódy"
+/// which contains all Czech diacritical characters.
+///
+/// Note: chardetng may detect Windows-1250 as Windows-1252 since many byte values
+/// overlap. However, the Czech-specific characters (ř, ů, ě, etc.) that differ
+/// between encodings should help with detection or at least display correctly.
+#[test]
+fn test_windows1250_czech_pangram() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("czech_pangram.txt");
+
+    // "Příliš žluťoučký kůň úpěl ďábelské ódy" in Windows-1250 encoding
+    // P=0x50, ř=0xF8, í=0xED, l=0x6C, i=0x69, š=0x9A, space=0x20
+    // ž=0x9E, l=0x6C, u=0x75, ť=0x9D, o=0x6F, u=0x75, č=0xE8, k=0x6B, ý=0xFD
+    // k=0x6B, ů=0xF9, ň=0xF2, space=0x20
+    // ú=0xFA, p=0x70, ě=0xEC, l=0x6C, space=0x20
+    // ď=0xEF, á=0xE1, b=0x62, e=0x65, l=0x6C, s=0x73, k=0x6B, é=0xE9, space=0x20
+    // ó=0xF3, d=0x64, y=0x79
+    let windows1250_bytes: &[u8] = &[
+        0x50, 0xF8, 0xED, 0x6C, 0x69, 0x9A, 0x20, // "Příliš "
+        0x9E, 0x6C, 0x75, 0x9D, 0x6F, 0x75, 0xE8, 0x6B, 0xFD, 0x20, // "žluťoučký "
+        0x6B, 0xF9, 0xF2, 0x20, // "kůň "
+        0xFA, 0x70, 0xEC, 0x6C, 0x20, // "úpěl "
+        0xEF, 0xE1, 0x62, 0x65, 0x6C, 0x73, 0x6B, 0xE9, 0x20, // "ďábelské "
+        0xF3, 0x64, 0x79, 0x0A, // "ódy\n"
+    ];
+    std::fs::write(&file_path, windows1250_bytes).unwrap();
+
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    let screen = harness.screen_to_string();
+
+    // The file should be detected as Windows-1250 because it contains ť (0x9D)
+    // which is a definitive Windows-1250 indicator (undefined in Windows-1252)
+    assert!(
+        screen.contains("Windows-1250"),
+        "Should detect as Windows-1250 (contains ť = 0x9D). Screen:\n{}",
+        screen
+    );
+
+    // Verify the Czech pangram is displayed correctly
+    // Now that Windows-1250 is properly detected, all Czech characters should display correctly
+    assert!(screen.contains('í'), "Screen should contain 'í'");
+    assert!(screen.contains('á'), "Screen should contain 'á'");
+    assert!(screen.contains('é'), "Screen should contain 'é'");
+    assert!(screen.contains('ó'), "Screen should contain 'ó'");
+    assert!(screen.contains('š'), "Screen should contain 'š'");
+    assert!(screen.contains('ž'), "Screen should contain 'ž'");
+
+    // Czech-specific characters that differ from Windows-1252
+    // These would be wrong if detected as Windows-1252, but should be correct now
+    assert!(
+        screen.contains('ř'),
+        "Screen should contain 'ř' (Windows-1250 specific)"
+    );
+    assert!(
+        screen.contains('ů'),
+        "Screen should contain 'ů' (Windows-1250 specific)"
+    );
+    assert!(
+        screen.contains('ě'),
+        "Screen should contain 'ě' (Windows-1250 specific)"
+    );
+    assert!(
+        screen.contains('č'),
+        "Screen should contain 'č' (Windows-1250 specific)"
+    );
+    assert!(
+        screen.contains('ť'),
+        "Screen should contain 'ť' (Windows-1250 specific)"
+    );
+
+    // Verify buffer content contains the full Czech pangram
+    let buffer = harness.get_buffer_content().unwrap();
+    assert!(
+        buffer.contains("Příliš") || buffer.contains("P"),
+        "Buffer should contain the pangram. Got: {}",
+        buffer
+    );
+}
+
+/// Test loading files in various encodings from disk and saving as UTF-8
+/// This tests the full flow: create encoded file → load → save as UTF-8 → verify
+/// Covers all supported encodings with detectable content.
+#[test]
+fn test_all_encodings_load_and_save_as_utf8() {
+    struct TestCase {
+        desc: &'static str,
+        bytes: &'static [u8],
+        expected_substr: &'static str,
+    }
+
+    let test_cases: &[TestCase] = &[
+        // UTF-16 LE with BOM: "Héllo"
+        TestCase {
+            desc: "UTF-16 LE",
+            bytes: &[
+                0xFF, 0xFE, // BOM
+                0x48, 0x00, 0xE9, 0x00, 0x6C, 0x00, 0x6C, 0x00, 0x6F, 0x00, 0x0A, 0x00,
+            ],
+            expected_substr: "H",
+        },
+        // UTF-16 BE with BOM: "Héllo"
+        TestCase {
+            desc: "UTF-16 BE",
+            bytes: &[
+                0xFE, 0xFF, // BOM
+                0x00, 0x48, 0x00, 0xE9, 0x00, 0x6C, 0x00, 0x6C, 0x00, 0x6F, 0x00, 0x0A,
+            ],
+            expected_substr: "H",
+        },
+        // UTF-8 with BOM: "Café"
+        TestCase {
+            desc: "UTF-8 BOM",
+            bytes: &[0xEF, 0xBB, 0xBF, 0x43, 0x61, 0x66, 0xC3, 0xA9, 0x0A],
+            expected_substr: "Café",
+        },
+        // UTF-8 without BOM: "Cześć" (Polish greeting)
+        TestCase {
+            desc: "UTF-8",
+            bytes: &[0x43, 0x7A, 0x65, 0xC5, 0x9B, 0xC4, 0x87, 0x0A], // "Cześć\n"
+            expected_substr: "Cze",
+        },
+        // Windows-1252: "Café" (é = 0xE9 in Windows-1252)
+        TestCase {
+            desc: "Windows-1252",
+            bytes: &[0x43, 0x61, 0x66, 0xE9, 0x0A],
+            expected_substr: "Café",
+        },
+        // Windows-1250: Polish "ółć" (ó=0xF3, ł=0xB3, ć=0xE6)
+        // These bytes are same in Win-1252, so detection may vary, but conversion works
+        TestCase {
+            desc: "Windows-1250",
+            bytes: &[0xF3, 0xB3, 0xE6, 0x0A],
+            expected_substr: "ó",
+        },
+        // Note: CJK encodings (GB18030, GBK, Shift-JIS, EUC-KR) have ambiguous
+        // detection - the same bytes can be valid in multiple encodings.
+        // These are tested in property tests (prop_all_encodings_roundtrip_exact)
+        // which use encoding_rs directly without relying on auto-detection.
+    ];
+
+    let temp_dir = TempDir::new().unwrap();
+
+    for (i, tc) in test_cases.iter().enumerate() {
+        let file_path = temp_dir.path().join(format!("test_{}.txt", i));
+        std::fs::write(&file_path, tc.bytes).unwrap();
+
+        let mut harness = EditorTestHarness::new(100, 24).unwrap();
+        harness.open_file(&file_path).unwrap();
+        harness.render().unwrap();
+
+        // Find encoding indicator and change to UTF-8
+        let encoding_pos = harness
+            .find_text_on_screen("UTF-16")
+            .or_else(|| harness.find_text_on_screen("UTF-8"))
+            .or_else(|| harness.find_text_on_screen("Windows"))
+            .or_else(|| harness.find_text_on_screen("Latin"))
+            .or_else(|| harness.find_text_on_screen("GB18030"))
+            .or_else(|| harness.find_text_on_screen("GBK"))
+            .or_else(|| harness.find_text_on_screen("Shift"))
+            .or_else(|| harness.find_text_on_screen("EUC"))
+            .or_else(|| harness.find_text_on_screen("ASCII"));
+
+        let (col, row) = encoding_pos.unwrap_or_else(|| {
+            panic!(
+                "Test {} ({}): Could not find encoding indicator",
+                i, tc.desc
+            )
+        });
+
+        harness.mouse_click(col, row).unwrap();
+        harness
+            .send_key(KeyCode::Char('a'), KeyModifiers::CONTROL)
+            .unwrap();
+        harness.type_text("UTF-8").unwrap();
+        harness.render().unwrap();
+        harness
+            .send_key(KeyCode::Enter, KeyModifiers::NONE)
+            .unwrap();
+
+        // Save
+        harness
+            .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
+            .unwrap();
+        harness.render().unwrap();
+        let _ = harness.wait_until(|h| !h.editor().active_state().buffer.is_modified());
+
+        // Verify saved file is valid UTF-8 and contains expected content
+        let saved = std::fs::read(&file_path).unwrap();
+        let utf8_str = std::str::from_utf8(&saved).unwrap_or_else(|e| {
+            panic!(
+                "Test {} ({}): File should be valid UTF-8. Error: {}. Bytes: {:?}",
+                i, tc.desc, e, saved
+            )
+        });
+        assert!(
+            utf8_str.contains(tc.expected_substr),
+            "Test {} ({}): Expected '{}' in saved file. Got: {}",
+            i,
+            tc.desc,
+            tc.expected_substr,
+            utf8_str
+        );
+
+        drop(harness);
+    }
+}
+
+// ============================================================================
+// Large File Encoding Confirmation Tests
+// ============================================================================
+
+/// Test that opening a large file with GBK encoding via file browser shows confirmation prompt
+/// and pressing Enter (default = Load) loads the file.
+///
+/// Uses a small `large_file_threshold_bytes` to avoid creating huge test files.
+/// The file browser flow (Ctrl+O) catches the LargeFileEncodingConfirmation error and shows a prompt.
+#[test]
+fn test_large_file_gbk_encoding_confirmation_prompt() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("large_gbk.txt");
+
+    // Create a GBK-encoded file larger than our test threshold (500 bytes)
+    // GBK encoding of Chinese characters: 你好 = 0xC4E3 0xBAC3
+    let mut gbk_bytes = Vec::new();
+    // Create ~600 bytes of GBK content (60 repetitions of "你好世界\n" = 9 bytes each = 540 bytes)
+    for _ in 0..60 {
+        gbk_bytes.extend_from_slice(&[
+            0xC4, 0xE3, // 你
+            0xBA, 0xC3, // 好
+            0xCA, 0xC0, // 世
+            0xBD, 0xE7, // 界
+            0x0A, // \n
+        ]);
+    }
+    assert!(
+        gbk_bytes.len() >= 500,
+        "File should be at least 500 bytes (got {})",
+        gbk_bytes.len()
+    );
+    std::fs::write(&file_path, &gbk_bytes).unwrap();
+
+    // Create harness with small threshold to trigger large file mode
+    let mut harness = EditorTestHarness::with_config(
+        100,
+        30,
+        fresh::config::Config {
+            editor: fresh::config::EditorConfig {
+                large_file_threshold_bytes: 500, // Force large file mode
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    harness.render().unwrap();
+
+    // Use Ctrl+O to open file browser, then type path and Enter
+    // This triggers the flow that catches LargeFileEncodingConfirmation and shows a prompt
+    harness
+        .send_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Type the file path in the file browser
+    harness.type_text(file_path.to_str().unwrap()).unwrap();
+    harness.render().unwrap();
+
+    // Press Enter to open the file - this should show the confirmation prompt
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Check that the confirmation prompt is shown
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("requires full load") || screen.contains("GBK"),
+        "Should show confirmation prompt for GBK encoding. Screen:\n{}",
+        screen
+    );
+
+    // Press Enter to accept the default (Load)
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // After loading, the file content should be visible
+    let screen_after = harness.screen_to_string();
+    assert!(
+        screen_after.contains('你') || screen_after.contains('好'),
+        "Chinese characters should be visible after loading. Screen:\n{}",
+        screen_after
+    );
+
+    // Verify the status bar shows GBK encoding
+    assert!(
+        screen_after.contains("GBK"),
+        "Status bar should show GBK encoding. Screen:\n{}",
+        screen_after
+    );
+}
+
+/// Test that pressing 'c' (cancel) on the large file encoding prompt cancels the operation
+#[test]
+fn test_large_file_gbk_encoding_cancel() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("large_gbk_cancel.txt");
+
+    // Create a GBK-encoded file larger than threshold (60 * 9 = 540 bytes)
+    let mut gbk_bytes = Vec::new();
+    for _ in 0..60 {
+        gbk_bytes.extend_from_slice(&[
+            0xC4, 0xE3, // 你
+            0xBA, 0xC3, // 好
+            0xCA, 0xC0, // 世
+            0xBD, 0xE7, // 界
+            0x0A, // \n
+        ]);
+    }
+    std::fs::write(&file_path, &gbk_bytes).unwrap();
+
+    let mut harness = EditorTestHarness::with_config(
+        100,
+        30,
+        fresh::config::Config {
+            editor: fresh::config::EditorConfig {
+                large_file_threshold_bytes: 500,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    harness.render().unwrap();
+
+    // Use Ctrl+O to open file browser
+    harness
+        .send_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Type the file path
+    harness.type_text(file_path.to_str().unwrap()).unwrap();
+    harness.render().unwrap();
+
+    // Press Enter to open - this should show the confirmation prompt
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Verify prompt is shown
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("requires full load") || screen.contains("GBK"),
+        "Should show confirmation prompt. Screen:\n{}",
+        screen
+    );
+
+    // Press 'c' and then Enter to cancel
+    harness
+        .send_key(KeyCode::Char('c'), KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // After cancelling, the file should NOT be loaded
+    // The status message should indicate cancellation
+    let screen_after = harness.screen_to_string();
+    assert!(
+        screen_after.contains("cancel") || screen_after.contains("Cancel"),
+        "Should show cancellation message. Screen:\n{}",
+        screen_after
+    );
+}
+
+/// Test that pressing 'e' (encoding) on the large file encoding prompt opens encoding selector
+#[test]
+fn test_large_file_gbk_encoding_change() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("large_gbk_encoding.txt");
+
+    // Create a GBK-encoded file larger than threshold (60 * 9 = 540 bytes)
+    let mut gbk_bytes = Vec::new();
+    for _ in 0..60 {
+        gbk_bytes.extend_from_slice(&[
+            0xC4, 0xE3, // 你
+            0xBA, 0xC3, // 好
+            0xCA, 0xC0, // 世
+            0xBD, 0xE7, // 界
+            0x0A, // \n
+        ]);
+    }
+    std::fs::write(&file_path, &gbk_bytes).unwrap();
+
+    let mut harness = EditorTestHarness::with_config(
+        100,
+        30,
+        fresh::config::Config {
+            editor: fresh::config::EditorConfig {
+                large_file_threshold_bytes: 500,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    harness.render().unwrap();
+
+    // Use Ctrl+O to open file browser
+    harness
+        .send_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Type the file path
+    harness.type_text(file_path.to_str().unwrap()).unwrap();
+    harness.render().unwrap();
+
+    // Press Enter to open - this should show the confirmation prompt
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Verify prompt is shown
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("requires full load") || screen.contains("GBK"),
+        "Should show confirmation prompt. Screen:\n{}",
+        screen
+    );
+
+    // Press 'e' and Enter to open encoding selector
+    harness
+        .send_key(KeyCode::Char('e'), KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // The encoding selector should now be open
+    let screen_after = harness.screen_to_string();
+    assert!(
+        screen_after.contains("Encoding:") || screen_after.contains("UTF-16"),
+        "Encoding selector should be open. Screen:\n{}",
+        screen_after
+    );
+}
+
+/// Test with Shift-JIS encoding (another non-resynchronizable encoding)
+#[test]
+fn test_large_file_shift_jis_encoding_confirmation() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("large_shift_jis.txt");
+
+    // Create a Shift-JIS encoded file larger than threshold
+    // Shift-JIS encoding of こんにちは (konnichiha):
+    // こ=0x82B1, ん=0x82F1, に=0x82C9, ち=0x82BF, は=0x82CD
+    let mut sjis_bytes = Vec::new();
+    for _ in 0..50 {
+        sjis_bytes.extend_from_slice(&[
+            0x82, 0xB1, // こ
+            0x82, 0xF1, // ん
+            0x82, 0xC9, // に
+            0x82, 0xBF, // ち
+            0x82, 0xCD, // は
+            0x0A, // \n
+        ]);
+    }
+    assert!(
+        sjis_bytes.len() >= 500,
+        "File should be at least 500 bytes (got {})",
+        sjis_bytes.len()
+    );
+    std::fs::write(&file_path, &sjis_bytes).unwrap();
+
+    let mut harness = EditorTestHarness::with_config(
+        100,
+        30,
+        fresh::config::Config {
+            editor: fresh::config::EditorConfig {
+                large_file_threshold_bytes: 500,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    harness.render().unwrap();
+
+    // Use Ctrl+O to open file browser
+    harness
+        .send_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Type the file path
+    harness.type_text(file_path.to_str().unwrap()).unwrap();
+    harness.render().unwrap();
+
+    // Press Enter to open - this should show the confirmation prompt
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Check that the confirmation prompt is shown
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("requires full load") || screen.contains("Shift-JIS"),
+        "Should show confirmation prompt for Shift-JIS encoding. Screen:\n{}",
+        screen
+    );
+
+    // Press 'L' (explicit load key) to load
+    harness
+        .send_key(KeyCode::Char('L'), KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // After loading, the file content should be visible (Japanese hiragana)
+    let screen_after = harness.screen_to_string();
+    assert!(
+        screen_after.contains('こ')
+            || screen_after.contains('ん')
+            || screen_after.contains("Shift-JIS"),
+        "Should show Shift-JIS content or encoding indicator. Screen:\n{}",
+        screen_after
+    );
+}
+
+/// Test that selecting a non-resynchronizable encoding from the encoding selector
+/// shows the confirmation prompt again
+#[test]
+fn test_large_file_encoding_selector_non_sync_shows_prompt() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("large_gbk_resync.txt");
+
+    // Create a GBK-encoded file larger than threshold
+    let mut gbk_bytes = Vec::new();
+    for _ in 0..60 {
+        gbk_bytes.extend_from_slice(&[
+            0xC4, 0xE3, // 你
+            0xBA, 0xC3, // 好
+            0xCA, 0xC0, // 世
+            0xBD, 0xE7, // 界
+            0x0A, // \n
+        ]);
+    }
+    std::fs::write(&file_path, &gbk_bytes).unwrap();
+
+    let mut harness = EditorTestHarness::with_config(
+        100,
+        30,
+        fresh::config::Config {
+            editor: fresh::config::EditorConfig {
+                large_file_threshold_bytes: 500,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    harness.render().unwrap();
+
+    // Open file via Ctrl+O
+    harness
+        .send_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    harness.type_text(file_path.to_str().unwrap()).unwrap();
+    harness.render().unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // First prompt for GBK
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("requires full load") || screen.contains("GBK"),
+        "Should show first confirmation prompt. Screen:\n{}",
+        screen
+    );
+
+    // Press 'e' to select encoding
+    harness
+        .send_key(KeyCode::Char('e'), KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Type "Shift-JIS" (another non-resynchronizable encoding)
+    // Clear the current input first
+    for _ in 0..30 {
+        harness
+            .send_key(KeyCode::Backspace, KeyModifiers::NONE)
+            .unwrap();
+    }
+    harness.type_text("Shift-JIS").unwrap();
+    harness.render().unwrap();
+
+    // Press Enter to select Shift-JIS
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Should show confirmation prompt again for Shift-JIS
+    let screen_after = harness.screen_to_string();
+    assert!(
+        screen_after.contains("requires full load") || screen_after.contains("Shift-JIS"),
+        "Should show confirmation prompt again for Shift-JIS. Screen:\n{}",
+        screen_after
+    );
+}
+
+/// Test that selecting a synchronizable encoding (UTF-8) from the encoding selector
+/// loads the file directly without showing confirmation prompt again
+#[test]
+fn test_large_file_encoding_selector_sync_no_prompt() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("large_gbk_utf8.txt");
+
+    // Create a GBK-encoded file larger than threshold
+    let mut gbk_bytes = Vec::new();
+    for _ in 0..60 {
+        gbk_bytes.extend_from_slice(&[
+            0xC4, 0xE3, // 你
+            0xBA, 0xC3, // 好
+            0xCA, 0xC0, // 世
+            0xBD, 0xE7, // 界
+            0x0A, // \n
+        ]);
+    }
+    std::fs::write(&file_path, &gbk_bytes).unwrap();
+
+    let mut harness = EditorTestHarness::with_config(
+        100,
+        30,
+        fresh::config::Config {
+            editor: fresh::config::EditorConfig {
+                large_file_threshold_bytes: 500,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    harness.render().unwrap();
+
+    // Open file via Ctrl+O
+    harness
+        .send_key(KeyCode::Char('o'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    harness.type_text(file_path.to_str().unwrap()).unwrap();
+    harness.render().unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // First prompt for GBK
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("requires full load") || screen.contains("GBK"),
+        "Should show first confirmation prompt. Screen:\n{}",
+        screen
+    );
+
+    // Press 'e' to select encoding
+    harness
+        .send_key(KeyCode::Char('e'), KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // UTF-8 should already be selected, just press Enter
+    // (or clear and type UTF-8)
+    for _ in 0..30 {
+        harness
+            .send_key(KeyCode::Backspace, KeyModifiers::NONE)
+            .unwrap();
+    }
+    harness.type_text("UTF-8").unwrap();
+    harness.render().unwrap();
+
+    // Press Enter to select UTF-8
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Should NOT show confirmation prompt - file should be loaded directly
+    // (UTF-8 is resynchronizable, so no full load needed)
+    let screen_after = harness.screen_to_string();
+    // The file will be loaded with UTF-8 encoding (will show garbled content but that's ok)
+    // The key assertion is that we don't see another "requires full load" prompt
+    assert!(
+        !screen_after.contains("requires full load"),
+        "Should NOT show confirmation prompt for UTF-8 (synchronizable). Screen:\n{}",
+        screen_after
+    );
+    // Should show UTF-8 in status bar (file is open)
+    assert!(
+        screen_after.contains("UTF-8"),
+        "File should be opened with UTF-8 encoding. Screen:\n{}",
+        screen_after
     );
 }

@@ -1363,7 +1363,8 @@
       "when": "prompt"
     },
     {
-      "key": "e",
+      "comment": "Toggle confirm each in search/replace (mnemonic: I for Interactive)",
+      "key": "i",
       "modifiers": ["alt"],
       "action": "toggle_search_confirm_each",
       "args": {},
@@ -1374,6 +1375,14 @@
       "key": ".",
       "modifiers": ["alt"],
       "action": "file_browser_toggle_hidden",
+      "args": {},
+      "when": "prompt"
+    },
+    {
+      "comment": "File browser - toggle encoding detection (mnemonic: E for Encoding)",
+      "key": "e",
+      "modifiers": ["alt"],
+      "action": "file_browser_toggle_detect_encoding",
       "args": {},
       "when": "prompt"
     },

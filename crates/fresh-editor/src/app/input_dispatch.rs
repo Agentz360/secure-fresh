@@ -90,17 +90,23 @@ impl Editor {
 
         // Prompt is next
         if self.prompt.is_some() {
-            // Check for Alt+key keybindings first (before prompt consumes them as modal)
+            // Check for Alt+key keybindings in Prompt context first
+            // Use resolve_in_context_only to bypass Global bindings (like menu mnemonics)
+            // This allows Prompt-specific Alt+key bindings (like encoding toggle) to work
             if event
                 .modifiers
                 .contains(crossterm::event::KeyModifiers::ALT)
             {
                 if let crossterm::event::KeyCode::Char(_) = event.code {
-                    let action = self
-                        .keybindings
-                        .resolve(event, crate::input::keybindings::KeyContext::Prompt);
-                    if !matches!(action, Action::None) {
-                        // Handle the action (ignore errors for modal context)
+                    if let Some(action) = self.keybindings.resolve_in_context_only(
+                        event,
+                        crate::input::keybindings::KeyContext::Prompt,
+                    ) {
+                        // For file browser actions, route to handle_file_open_action
+                        if self.is_file_open_active() && self.handle_file_open_action(&action) {
+                            return Some(InputResult::Consumed);
+                        }
+                        // For other prompt actions, use handle_action
                         let _ = self.handle_action(action);
                         return Some(InputResult::Consumed);
                     }

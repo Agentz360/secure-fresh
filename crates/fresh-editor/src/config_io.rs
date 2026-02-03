@@ -817,21 +817,12 @@ impl DirectoryContext {
             })?
             .join("fresh");
 
-        #[allow(unused_mut)] // mut needed on macOS only
-        let mut config_dir = dirs::config_dir()
-            .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Could not determine config directory",
-                )
-            })?
-            .join("fresh");
-
-        // macOS: Prioritize ~/.config/fresh
-        #[cfg(target_os = "macos")]
-        if let Some(home) = dirs::home_dir() {
-            config_dir = home.join(".config").join("fresh");
-        }
+        let config_dir = Self::default_config_dir().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "Could not determine config directory",
+            )
+        })?;
 
         Ok(Self {
             data_dir,
@@ -917,6 +908,24 @@ impl DirectoryContext {
     /// Get the plugins directory path
     pub fn plugins_dir(&self) -> std::path::PathBuf {
         self.config_dir.join("plugins")
+    }
+
+    /// Get the default config directory path (static/internal version).
+    ///
+    /// This is used internally by `from_system()` to determine the config directory.
+    ///
+    /// On macOS, this prioritizes `~/.config/fresh` over `~/Library/Application Support/fresh`
+    /// to match the documented configuration location.
+    fn default_config_dir() -> Option<std::path::PathBuf> {
+        #[cfg(target_os = "macos")]
+        {
+            dirs::home_dir().map(|p| p.join(".config").join("fresh"))
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            dirs::config_dir().map(|p| p.join("fresh"))
+        }
     }
 }
 

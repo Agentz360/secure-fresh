@@ -14,6 +14,7 @@
 //! 5. **Statistical Detection**: Use chardetng for legacy encoding detection
 //! 6. **Fallback**: Default to Windows-1252 for ambiguous cases
 
+use super::encoding_heuristics::has_windows1250_pattern;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +44,8 @@ pub enum Encoding {
     Latin1,
     /// Windows-1252 / CP-1252 (Windows Western European, often called "ANSI")
     Windows1252,
+    /// Windows-1250 / CP-1250 (Windows Central European)
+    Windows1250,
     /// GB18030 (Chinese, superset of GBK)
     Gb18030,
     /// GBK (Chinese Simplified, subset of GB18030)
@@ -64,6 +67,7 @@ impl Encoding {
             Self::Ascii => "ASCII",
             Self::Latin1 => "Latin-1",
             Self::Windows1252 => "Windows-1252",
+            Self::Windows1250 => "Windows-1250",
             Self::Gb18030 => "GB18030",
             Self::Gbk => "GBK",
             Self::ShiftJis => "Shift-JIS",
@@ -74,17 +78,18 @@ impl Encoding {
     /// Get a longer description for UI (e.g., command palette)
     pub fn description(&self) -> &'static str {
         match self {
-            Self::Utf8 => "UTF-8 (Unicode)",
+            Self::Utf8 => "UTF-8",
             Self::Utf8Bom => "UTF-8 with BOM",
-            Self::Utf16Le => "UTF-16 LE (Windows Unicode)",
-            Self::Utf16Be => "UTF-16 BE",
-            Self::Ascii => "ASCII (7-bit)",
-            Self::Latin1 => "Latin-1 / ISO-8859-1 (Western European)",
-            Self::Windows1252 => "Windows-1252 / ANSI (Western European)",
-            Self::Gb18030 => "GB18030 (Chinese)",
-            Self::Gbk => "GBK (Chinese Simplified)",
-            Self::ShiftJis => "Shift-JIS (Japanese)",
-            Self::EucKr => "EUC-KR (Korean)",
+            Self::Utf16Le => "UTF-16 Little Endian",
+            Self::Utf16Be => "UTF-16 Big Endian",
+            Self::Ascii => "US-ASCII",
+            Self::Latin1 => "ISO-8859-1 / Latin-1 – Western European",
+            Self::Windows1252 => "Windows-1252 / CP1252 – Western European",
+            Self::Windows1250 => "Windows-1250 / CP1250 – Central European",
+            Self::Gb18030 => "GB18030 – Chinese",
+            Self::Gbk => "GBK / CP936 – Simplified Chinese",
+            Self::ShiftJis => "Shift_JIS – Japanese",
+            Self::EucKr => "EUC-KR – Korean",
         }
     }
 
@@ -96,6 +101,7 @@ impl Encoding {
             Self::Utf16Be => encoding_rs::UTF_16BE,
             Self::Latin1 => encoding_rs::WINDOWS_1252, // ISO-8859-1 maps to Windows-1252 per WHATWG
             Self::Windows1252 => encoding_rs::WINDOWS_1252,
+            Self::Windows1250 => encoding_rs::WINDOWS_1250,
             Self::Gb18030 => encoding_rs::GB18030,
             Self::Gbk => encoding_rs::GBK,
             Self::ShiftJis => encoding_rs::SHIFT_JIS,
@@ -128,6 +134,7 @@ impl Encoding {
             Self::Ascii,
             Self::Latin1,
             Self::Windows1252,
+            Self::Windows1250,
             Self::Gb18030,
             Self::Gbk,
             Self::ShiftJis,
@@ -152,7 +159,7 @@ impl Encoding {
     pub fn is_resynchronizable(&self) -> bool {
         match self {
             // Fixed-width single byte - every byte is a character
-            Self::Ascii | Self::Latin1 | Self::Windows1252 => true,
+            Self::Ascii | Self::Latin1 | Self::Windows1252 | Self::Windows1250 => true,
 
             // UTF-8 has unique bit patterns for lead vs continuation bytes
             Self::Utf8 | Self::Utf8Bom => true,
@@ -174,7 +181,7 @@ impl Encoding {
     pub fn alignment(&self) -> Option<usize> {
         match self {
             // Single-byte encodings - no alignment needed
-            Self::Ascii | Self::Latin1 | Self::Windows1252 => Some(1),
+            Self::Ascii | Self::Latin1 | Self::Windows1252 | Self::Windows1250 => Some(1),
 
             // UTF-8 - no alignment needed (self-synchronizing)
             Self::Utf8 | Self::Utf8Bom => Some(1),
@@ -330,20 +337,42 @@ pub fn detect_encoding_or_binary(bytes: &[u8]) -> (Encoding, bool) {
             Encoding::ShiftJis
         } else if detected_encoding == encoding_rs::EUC_KR {
             Encoding::EucKr
-        } else if detected_encoding == encoding_rs::WINDOWS_1252 {
-            Encoding::Windows1252
+        } else if detected_encoding == encoding_rs::WINDOWS_1252
+            || detected_encoding == encoding_rs::WINDOWS_1250
+        {
+            // chardetng often returns Windows-1252 for Central European text
+            // Check for Windows-1250 specific patterns
+            if has_windows1250_pattern(sample) {
+                Encoding::Windows1250
+            } else {
+                Encoding::Windows1252
+            }
         } else if detected_encoding == encoding_rs::UTF_8 {
             // chardetng thinks it's UTF-8, but validation failed above
-            Encoding::Windows1252
+            // Could still be Windows-1250 if it has Central European patterns
+            if has_windows1250_pattern(sample) {
+                Encoding::Windows1250
+            } else {
+                Encoding::Windows1252
+            }
         } else {
-            Encoding::Windows1252
+            // Unknown encoding - check for Windows-1250 patterns
+            if has_windows1250_pattern(sample) {
+                Encoding::Windows1250
+            } else {
+                Encoding::Windows1252
+            }
         };
         return (encoding, false);
     }
 
-    // 7. chardetng not confident, but no binary indicators - default to Windows-1252
+    // 7. chardetng not confident, but no binary indicators - check for Windows-1250 patterns
     // We already checked for binary control chars earlier, so this is valid text
-    (Encoding::Windows1252, false)
+    if has_windows1250_pattern(sample) {
+        (Encoding::Windows1250, false)
+    } else {
+        (Encoding::Windows1252, false)
+    }
 }
 
 // ============================================================================
@@ -480,6 +509,51 @@ pub fn detect_and_convert(bytes: &[u8]) -> (Encoding, Vec<u8>) {
     }
 }
 
+/// Convert bytes from a specific encoding to UTF-8
+///
+/// Used when opening a file with a user-specified encoding instead of auto-detection.
+/// Returns the UTF-8 converted content.
+pub fn convert_to_utf8(bytes: &[u8], encoding: Encoding) -> Vec<u8> {
+    if bytes.is_empty() {
+        return Vec::new();
+    }
+
+    match encoding {
+        Encoding::Utf8 | Encoding::Ascii => {
+            // Already UTF-8, just clone
+            bytes.to_vec()
+        }
+        Encoding::Utf8Bom => {
+            // Skip the BOM (3 bytes) if present and use the rest
+            if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) && bytes.len() > 3 {
+                bytes[3..].to_vec()
+            } else {
+                bytes.to_vec()
+            }
+        }
+        Encoding::Utf16Le | Encoding::Utf16Be => {
+            // Decode UTF-16 to UTF-8
+            let enc_rs = encoding.to_encoding_rs();
+            let start_offset =
+                if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+                    2 // Skip BOM
+                } else {
+                    0
+                };
+            let data = &bytes[start_offset..];
+
+            let (cow, _had_errors) = enc_rs.decode_without_bom_handling(data);
+            cow.into_owned().into_bytes()
+        }
+        _ => {
+            // Use encoding_rs to convert to UTF-8
+            let enc_rs = encoding.to_encoding_rs();
+            let (cow, _had_errors) = enc_rs.decode_without_bom_handling(bytes);
+            cow.into_owned().into_bytes()
+        }
+    }
+}
+
 /// Convert UTF-8 content to the specified encoding for saving
 ///
 /// Used when saving files to convert internal UTF-8 representation
@@ -534,6 +608,7 @@ mod tests {
         assert_eq!(Encoding::Utf8Bom.display_name(), "UTF-8 BOM");
         assert_eq!(Encoding::Utf16Le.display_name(), "UTF-16 LE");
         assert_eq!(Encoding::Gb18030.display_name(), "GB18030");
+        assert_eq!(Encoding::Windows1250.display_name(), "Windows-1250");
     }
 
     #[test]
@@ -542,6 +617,7 @@ mod tests {
         assert!(Encoding::Utf16Le.has_bom());
         assert!(!Encoding::Utf8.has_bom());
         assert!(!Encoding::Windows1252.has_bom());
+        assert!(!Encoding::Windows1250.has_bom());
     }
 
     #[test]
@@ -623,6 +699,7 @@ mod tests {
         assert!(Encoding::Ascii.is_resynchronizable());
         assert!(Encoding::Latin1.is_resynchronizable());
         assert!(Encoding::Windows1252.is_resynchronizable());
+        assert!(Encoding::Windows1250.is_resynchronizable());
 
         // UTF-16 is resynchronizable with proper alignment
         assert!(Encoding::Utf16Le.is_resynchronizable());
@@ -642,6 +719,7 @@ mod tests {
         assert_eq!(Encoding::Ascii.alignment(), Some(1));
         assert_eq!(Encoding::Latin1.alignment(), Some(1));
         assert_eq!(Encoding::Windows1252.alignment(), Some(1));
+        assert_eq!(Encoding::Windows1250.alignment(), Some(1));
         assert_eq!(Encoding::Utf8.alignment(), Some(1));
         assert_eq!(Encoding::Utf8Bom.alignment(), Some(1));
 
@@ -662,6 +740,7 @@ mod tests {
         assert!(!Encoding::Utf8.requires_full_file_load());
         assert!(!Encoding::Ascii.requires_full_file_load());
         assert!(!Encoding::Latin1.requires_full_file_load());
+        assert!(!Encoding::Windows1250.requires_full_file_load());
         assert!(!Encoding::Utf16Le.requires_full_file_load());
 
         // Encodings that require full loading
@@ -669,5 +748,129 @@ mod tests {
         assert!(Encoding::Gbk.requires_full_file_load());
         assert!(Encoding::ShiftJis.requires_full_file_load());
         assert!(Encoding::EucKr.requires_full_file_load());
+    }
+
+    #[test]
+    fn test_convert_roundtrip_windows1250() {
+        // Windows-1250 encoded text with Central European characters
+        // "Zażółć" in Windows-1250: Z(0x5A) a(0x61) ż(0xBF) ó(0xF3) ł(0xB3) ć(0xE6)
+        let windows1250_bytes: &[u8] = &[0x5A, 0x61, 0xBF, 0xF3, 0xB3, 0xE6];
+
+        // Convert to UTF-8
+        let enc_rs = Encoding::Windows1250.to_encoding_rs();
+        let (decoded, _had_errors) = enc_rs.decode_without_bom_handling(windows1250_bytes);
+        let utf8_content = decoded.as_bytes();
+
+        // The UTF-8 content should contain the Polish characters
+        let utf8_str = std::str::from_utf8(utf8_content).unwrap();
+        assert!(utf8_str.contains('ż'), "Should contain ż: {}", utf8_str);
+        assert!(utf8_str.contains('ó'), "Should contain ó: {}", utf8_str);
+        assert!(utf8_str.contains('ł'), "Should contain ł: {}", utf8_str);
+        assert!(utf8_str.contains('ć'), "Should contain ć: {}", utf8_str);
+
+        // Convert back to Windows-1250
+        let back = convert_from_utf8(utf8_content, Encoding::Windows1250);
+        assert_eq!(back, windows1250_bytes, "Round-trip should preserve bytes");
+    }
+
+    #[test]
+    fn test_windows1250_description() {
+        assert_eq!(
+            Encoding::Windows1250.description(),
+            "Windows-1250 / CP1250 – Central European"
+        );
+    }
+
+    #[test]
+    fn test_detect_windows1250_definitive_bytes() {
+        // Bytes 0x8D (Ť), 0x8F (Ź), 0x9D (ť) are undefined in Windows-1252
+        // but valid in Windows-1250, so they definitively indicate Windows-1250
+
+        // Czech text with ť (0x9D): "měsťo" (city, archaic)
+        let with_t_caron = [0x6D, 0x9D, 0x73, 0x74, 0x6F]; // mťsto
+        assert_eq!(
+            detect_encoding(&with_t_caron),
+            Encoding::Windows1250,
+            "Byte 0x9D (ť) should trigger Windows-1250 detection"
+        );
+
+        // Polish text with Ź (0x8F): "Źródło" (source)
+        let with_z_acute_upper = [0x8F, 0x72, 0xF3, 0x64, 0xB3, 0x6F]; // Źródło
+        assert_eq!(
+            detect_encoding(&with_z_acute_upper),
+            Encoding::Windows1250,
+            "Byte 0x8F (Ź) should trigger Windows-1250 detection"
+        );
+    }
+
+    #[test]
+    fn test_detect_windows1250_strong_indicators() {
+        // Polish text with ś (0x9C) and Ś (0x8C) - strong indicators from 0x80-0x9F range
+        let polish_text = [
+            0x9C, 0x77, 0x69, 0x65, 0x74, 0x79, 0x20, // "świety "
+            0x8C, 0x77, 0x69, 0x61, 0x74, // "Świat"
+        ];
+        assert_eq!(
+            detect_encoding(&polish_text),
+            Encoding::Windows1250,
+            "Multiple Polish characters (ś, Ś) should trigger Windows-1250"
+        );
+    }
+
+    #[test]
+    fn test_detect_ambiguous_bytes_as_windows1252() {
+        // Bytes in 0xA0-0xFF range are ambiguous and should default to Windows-1252
+        // Polish "żółć" - ż(0xBF) ó(0xF3) ł(0xB3) ć(0xE6) - all ambiguous
+        let zolc = [0xBF, 0xF3, 0xB3, 0xE6];
+        assert_eq!(
+            detect_encoding(&zolc),
+            Encoding::Windows1252,
+            "Ambiguous bytes should default to Windows-1252"
+        );
+
+        // ą (0xB9) and ł (0xB3) could be ¹ and ³ in Windows-1252
+        let ambiguous = [
+            0x6D, 0xB9, 0x6B, 0x61, 0x20, // "mąka " or "m¹ka "
+            0x6D, 0xB3, 0x6F, 0x64, 0x79, // "młody" or "m³ody"
+        ];
+        assert_eq!(
+            detect_encoding(&ambiguous),
+            Encoding::Windows1252,
+            "Ambiguous Polish bytes should default to Windows-1252"
+        );
+    }
+
+    #[test]
+    fn test_detect_windows1250_czech_pangram() {
+        // "Příliš žluťoučký kůň úpěl ďábelské ódy" - Czech pangram in Windows-1250
+        // Contains ť (0x9D) which is a definitive Windows-1250 indicator
+        let czech_pangram: &[u8] = &[
+            0x50, 0xF8, 0xED, 0x6C, 0x69, 0x9A, 0x20, // "Příliš "
+            0x9E, 0x6C, 0x75, 0x9D, 0x6F, 0x75, 0xE8, 0x6B, 0xFD, 0x20, // "žluťoučký "
+            0x6B, 0xF9, 0xF2, 0x20, // "kůň "
+            0xFA, 0x70, 0xEC, 0x6C, 0x20, // "úpěl "
+            0xEF, 0xE1, 0x62, 0x65, 0x6C, 0x73, 0x6B, 0xE9, 0x20, // "ďábelské "
+            0xF3, 0x64, 0x79, // "ódy"
+        ];
+        assert_eq!(
+            detect_encoding(czech_pangram),
+            Encoding::Windows1250,
+            "Czech pangram should be detected as Windows-1250 (contains ť = 0x9D)"
+        );
+    }
+
+    #[test]
+    fn test_detect_windows1252_not_1250() {
+        // Pure Windows-1252 text without Central European indicators
+        // "Café résumé" in Windows-1252
+        let windows1252_text = [
+            0x43, 0x61, 0x66, 0xE9, 0x20, // "Café "
+            0x72, 0xE9, 0x73, 0x75, 0x6D, 0xE9, // "résumé"
+        ];
+        assert_eq!(
+            detect_encoding(&windows1252_text),
+            Encoding::Windows1252,
+            "French text should remain Windows-1252"
+        );
     }
 }

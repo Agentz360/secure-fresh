@@ -11,6 +11,12 @@ use crate::primitives::word_navigation::{
 pub enum PromptType {
     /// Open a file
     OpenFile,
+    /// Open a file with a specific encoding (used when detect_encoding is disabled)
+    /// Contains the path to open after encoding selection
+    OpenFileWithEncoding { path: std::path::PathBuf },
+    /// Reload current file with a different encoding
+    /// Requires the buffer to have no unsaved modifications
+    ReloadWithEncoding,
     /// Switch to a different project folder (change working directory)
     SwitchProject,
     /// Save current buffer to a new file
@@ -111,6 +117,9 @@ pub enum PromptType {
         path: std::path::PathBuf,
         is_dir: bool,
     },
+    /// Confirm loading a large file with non-resynchronizable encoding
+    /// (like GB18030, GBK, Shift-JIS, EUC-KR) that requires full file loading
+    ConfirmLargeFileEncoding { path: std::path::PathBuf },
     /// Switch to a tab by name (from the current split's open buffers)
     SwitchToTab,
     /// Run shell command on buffer/selection

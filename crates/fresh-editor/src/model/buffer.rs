@@ -69,11 +69,9 @@ impl std::fmt::Display for LargeFileEncodingConfirmation {
         let size_mb = self.file_size as f64 / (1024.0 * 1024.0);
         write!(
             f,
-            "Large file ({:.1} MB) uses {} encoding which requires loading the entire file into memory. \
-             This encoding cannot be streamed because character boundaries cannot be determined \
-             from the middle of the file. Continue?",
-            size_mb,
-            self.encoding.display_name()
+            "{} ({:.0} MB) requires full load. (l)oad, (e)ncoding, (C)ancel? ",
+            self.encoding.display_name(),
+            size_mb
         )
     }
 }
@@ -417,6 +415,52 @@ impl TextBuffer {
         }
     }
 
+    /// Create a text buffer from bytes with a specific encoding (no auto-detection).
+    pub fn from_bytes_with_encoding(
+        content: Vec<u8>,
+        encoding: Encoding,
+        fs: Arc<dyn FileSystem + Send + Sync>,
+    ) -> Self {
+        // Convert from specified encoding to UTF-8
+        let utf8_content = encoding::convert_to_utf8(&content, encoding);
+
+        let bytes = utf8_content.len();
+
+        // Auto-detect line ending format from content
+        let line_ending = Self::detect_line_ending(&utf8_content);
+
+        // Create initial StringBuffer with ID 0
+        let buffer = StringBuffer::new(0, utf8_content);
+        let line_feed_cnt = buffer.line_feed_count();
+
+        let piece_tree = if bytes > 0 {
+            PieceTree::new(BufferLocation::Stored(0), 0, bytes, line_feed_cnt)
+        } else {
+            PieceTree::empty()
+        };
+
+        let saved_root = piece_tree.root();
+
+        TextBuffer {
+            fs,
+            line_ending,
+            original_line_ending: line_ending,
+            encoding,
+            original_encoding: encoding,
+            piece_tree,
+            saved_root,
+            buffers: vec![buffer],
+            next_buffer_id: 1,
+            file_path: None,
+            modified: false,
+            recovery_pending: false,
+            large_file: false,
+            is_binary: false,
+            saved_file_size: Some(bytes),
+            version: 0,
+        }
+    }
+
     /// Create a text buffer from a string with the given filesystem.
     pub fn from_str(
         s: &str,
@@ -477,6 +521,21 @@ impl TextBuffer {
         } else {
             Self::load_small_file(path, fs)
         }
+    }
+
+    /// Load a text buffer from a file with a specific encoding (no auto-detection).
+    pub fn load_from_file_with_encoding<P: AsRef<Path>>(
+        path: P,
+        encoding: Encoding,
+        fs: Arc<dyn FileSystem + Send + Sync>,
+    ) -> anyhow::Result<Self> {
+        let path = path.as_ref();
+        let contents = fs.read_file(path)?;
+
+        let mut buffer = Self::from_bytes_with_encoding(contents, encoding, fs);
+        buffer.file_path = Some(path.to_path_buf());
+        buffer.modified = false;
+        Ok(buffer)
     }
 
     /// Load a small file with full eager loading and line indexing
@@ -4849,9 +4908,13 @@ mod tests {
             };
 
             let display = format!("{}", confirmation);
-            assert!(display.contains("150.0 MB"));
-            assert!(display.contains("Shift-JIS"));
-            assert!(display.contains("entire file into memory"));
+            assert!(display.contains("150 MB"), "Display: {}", display);
+            assert!(display.contains("Shift-JIS"), "Display: {}", display);
+            assert!(
+                display.contains("requires full load"),
+                "Display: {}",
+                display
+            );
         }
 
         #[test]
