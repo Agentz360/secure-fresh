@@ -249,14 +249,36 @@ pub fn detect_encoding_or_binary(bytes: &[u8]) -> (Encoding, bool) {
     }
 
     // 2. Try UTF-8 validation (fast path for most modern files)
-    if std::str::from_utf8(sample).is_ok() {
+    // Note: When we truncate to 8KB, we may cut in the middle of a multi-byte UTF-8 sequence.
+    // We need to handle this case - if most of the sample is valid UTF-8 and the only error
+    // is an incomplete sequence at the very end, we should still detect it as UTF-8.
+    let utf8_valid_len = match std::str::from_utf8(sample) {
+        Ok(_) => sample.len(),
+        Err(e) => {
+            // error_len() returns None if the error is due to incomplete sequence at end
+            // (i.e., unexpected end of input), vs Some(n) for an invalid byte
+            if e.error_len().is_none() {
+                // Incomplete sequence at end - this is likely due to sample truncation
+                e.valid_up_to()
+            } else {
+                // Invalid byte found - not valid UTF-8
+                0
+            }
+        }
+    };
+
+    // If most of the sample is valid UTF-8 (at least 99% or all but the last few bytes),
+    // treat it as UTF-8. The incomplete sequence at end is just due to sample truncation.
+    if utf8_valid_len > 0 && (utf8_valid_len == sample.len() || utf8_valid_len >= sample.len() - 3)
+    {
+        let valid_sample = &sample[..utf8_valid_len];
         // Check if it's pure ASCII (subset of UTF-8)
         // Also check for binary indicators in valid ASCII/UTF-8
-        let has_binary_control = sample.iter().any(|&b| is_binary_control_char(b));
+        let has_binary_control = valid_sample.iter().any(|&b| is_binary_control_char(b));
         if has_binary_control {
             return (Encoding::Utf8, true);
         }
-        if sample.iter().all(|&b| b < 128) {
+        if valid_sample.iter().all(|&b| b < 128) {
             return (Encoding::Ascii, false);
         }
         return (Encoding::Utf8, false);
@@ -265,18 +287,27 @@ pub fn detect_encoding_or_binary(bytes: &[u8]) -> (Encoding, bool) {
     // 3. Check for UTF-16 without BOM (common in some Windows files)
     // Heuristic: Look for patterns of null bytes alternating with printable chars
     // The non-null byte should be printable (0x20-0x7E) or a valid high byte
+    //
+    // Note: Unlike UTF-8 above, this heuristic is robust to sample truncation because:
+    // - We use statistical pattern matching (50% threshold), not strict validation
+    // - chunks(2) naturally handles odd-length samples by dropping the last byte
+    // - Losing 1 pair out of ~4096 doesn't affect the detection threshold
     if sample.len() >= 4 {
         let is_printable_or_high = |b: u8| (0x20..=0x7E).contains(&b) || b >= 0x80;
 
-        let le_pairs = sample
+        // Align to even boundary to ensure we only process complete 2-byte pairs
+        let aligned_len = sample.len() & !1; // Round down to even
+        let aligned_sample = &sample[..aligned_len];
+
+        let le_pairs = aligned_sample
             .chunks(2)
-            .filter(|chunk| chunk.len() == 2 && chunk[1] == 0 && is_printable_or_high(chunk[0]))
+            .filter(|chunk| chunk[1] == 0 && is_printable_or_high(chunk[0]))
             .count();
-        let be_pairs = sample
+        let be_pairs = aligned_sample
             .chunks(2)
-            .filter(|chunk| chunk.len() == 2 && chunk[0] == 0 && is_printable_or_high(chunk[1]))
+            .filter(|chunk| chunk[0] == 0 && is_printable_or_high(chunk[1]))
             .count();
-        let pair_count = sample.len() / 2;
+        let pair_count = aligned_len / 2;
 
         // If more than 50% of pairs look like valid UTF-16 text, it's text
         if le_pairs > pair_count / 2 {
@@ -872,5 +903,111 @@ mod tests {
             Encoding::Windows1252,
             "French text should remain Windows-1252"
         );
+    }
+
+    #[test]
+    fn test_detect_utf8_chinese_truncated_sequence() {
+        // Test that UTF-8 Chinese text is correctly detected even when the sample
+        // is truncated in the middle of a multi-byte sequence.
+        //
+        // Bug context: When sampling first 8KB for detection, the boundary may cut
+        // through a multi-byte UTF-8 character. This caused valid UTF-8 Chinese text
+        // to fail std::str::from_utf8() validation and fall through to Windows-1250
+        // detection (because UTF-8 continuation bytes like 0x9C, 0x9D overlap with
+        // Windows-1250 indicator bytes).
+
+        // Chinese text "更多" (more) = [0xE6, 0x9B, 0xB4, 0xE5, 0xA4, 0x9A]
+        // If we truncate after 0xE5, we get an incomplete sequence
+        let utf8_chinese_truncated = [
+            0xE6, 0x9B, 0xB4, // 更
+            0xE5, 0xA4, 0x9A, // 多
+            0xE5, // Start of another character, incomplete
+        ];
+
+        // This should still be detected as UTF-8, not Windows-1250
+        assert_eq!(
+            detect_encoding(&utf8_chinese_truncated),
+            Encoding::Utf8,
+            "Truncated UTF-8 Chinese text should be detected as UTF-8"
+        );
+
+        // Test with 2 bytes of incomplete sequence
+        let utf8_chinese_truncated_2 = [
+            0xE6, 0x9B, 0xB4, // 更
+            0xE5, 0xA4, 0x9A, // 多
+            0xE5, 0xA4, // Incomplete 3-byte sequence (missing last byte)
+        ];
+        assert_eq!(
+            detect_encoding(&utf8_chinese_truncated_2),
+            Encoding::Utf8,
+            "Truncated UTF-8 with 2-byte incomplete sequence should be detected as UTF-8"
+        );
+    }
+
+    #[test]
+    fn test_detect_utf8_chinese_with_high_bytes() {
+        // UTF-8 Chinese text contains many continuation bytes in the 0x80-0xBF range,
+        // including bytes like 0x9C, 0x9D that happen to be Windows-1250 indicators.
+        // These should NOT trigger Windows-1250 detection for valid UTF-8 content.
+
+        // Chinese characters that use continuation bytes that overlap with Windows-1250 indicators:
+        // 集 = E9 9B 86 (contains 0x9B)
+        // 精 = E7 B2 BE (contains 0xB2, 0xBE)
+        // Build a string with many such characters
+        let chinese_text = "更多全本全集精校小说"; // Contains various high continuation bytes
+        let bytes = chinese_text.as_bytes();
+
+        assert_eq!(
+            detect_encoding(bytes),
+            Encoding::Utf8,
+            "UTF-8 Chinese text should be detected as UTF-8, not Windows-1250"
+        );
+
+        // Verify these bytes would have triggered Windows-1250 detection if not valid UTF-8
+        // by checking that the sample contains bytes in the 0x80-0x9F range
+        let has_high_continuation_bytes = bytes.iter().any(|&b| (0x80..0xA0).contains(&b));
+        assert!(
+            has_high_continuation_bytes,
+            "Test should include bytes that could be mistaken for Windows-1250 indicators"
+        );
+    }
+
+    #[test]
+    fn test_detect_utf8_sample_truncation_at_boundary() {
+        // Simulate what happens when we take an 8KB sample that ends mid-character
+        // by creating a buffer that's valid UTF-8 except for the last 1-3 bytes
+
+        // Build a large UTF-8 Chinese text buffer
+        let chinese = "我的美女老师"; // "My Beautiful Teacher"
+        let mut buffer = Vec::new();
+        // Repeat to make it substantial
+        for _ in 0..100 {
+            buffer.extend_from_slice(chinese.as_bytes());
+        }
+
+        // Verify it's valid UTF-8 when complete
+        assert!(std::str::from_utf8(&buffer).is_ok());
+        assert_eq!(detect_encoding(&buffer), Encoding::Utf8);
+
+        // Now truncate at various points that cut through multi-byte sequences
+        // Each Chinese character is 3 bytes in UTF-8
+        for truncate_offset in 1..=3 {
+            let truncated_len = buffer.len() - truncate_offset;
+            let truncated = &buffer[..truncated_len];
+
+            // The truncated buffer should fail strict UTF-8 validation
+            // (unless we happen to cut at a character boundary)
+            let is_strict_valid = std::str::from_utf8(truncated).is_ok();
+
+            // But our encoding detection should still detect it as UTF-8
+            let detected = detect_encoding(truncated);
+            assert_eq!(
+                detected,
+                Encoding::Utf8,
+                "Truncated UTF-8 at offset -{} should be detected as UTF-8, strict_valid={}",
+                truncate_offset,
+                is_strict_valid
+            );
+        }
     }
 }

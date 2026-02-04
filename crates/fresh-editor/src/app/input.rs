@@ -1363,7 +1363,9 @@ impl Editor {
             None => return Ok(()), // No drag start, shouldn't happen
         };
 
-        // Calculate the offset in rows
+        let drag_start_view_line_offset = self.mouse_state.drag_start_view_line_offset.unwrap_or(0);
+
+        // Calculate the offset in rows (still used for large files)
         let row_offset = (row as i32) - (drag_start_row as i32);
 
         // Get viewport height from SplitViewState
@@ -1373,8 +1375,22 @@ impl Editor {
             .map(|vs| vs.viewport.height as usize)
             .unwrap_or(10);
 
-        // Get the buffer state and calculate target position
-        let line_start = if let Some(state) = self.buffers.get_mut(&buffer_id) {
+        // Check if line wrapping is enabled
+        let line_wrap_enabled = self
+            .split_view_states
+            .get(&split_id)
+            .map(|vs| vs.viewport.line_wrap_enabled)
+            .unwrap_or(false);
+
+        let viewport_width = self
+            .split_view_states
+            .get(&split_id)
+            .map(|vs| vs.viewport.width as usize)
+            .unwrap_or(80);
+
+        // Get the buffer state and calculate target position using RELATIVE movement
+        // Returns (byte_position, view_line_offset) for proper positioning within wrapped lines
+        let scroll_position = if let Some(state) = self.buffers.get_mut(&buffer_id) {
             let scrollbar_height = scrollbar_rect.height as usize;
             if scrollbar_height == 0 {
                 return Ok(());
@@ -1383,61 +1399,90 @@ impl Editor {
             let buffer_len = state.buffer.len();
             let large_file_threshold = self.config.editor.large_file_threshold_bytes as usize;
 
-            // For small files, use precise line-based calculations
-            // For large files, fall back to byte-based estimation
-            let new_top_byte = if buffer_len <= large_file_threshold {
-                // Small file: use line-based calculation for precision
-                // Count total lines
-                let total_lines = if buffer_len > 0 {
-                    state.buffer.get_line_number(buffer_len.saturating_sub(1)) + 1
+            // Use relative movement: calculate scroll change based on row_offset from drag start
+            if buffer_len <= large_file_threshold {
+                // When line wrapping is enabled, use visual row calculations
+                if line_wrap_enabled {
+                    Self::calculate_scrollbar_drag_relative_visual(
+                        &mut state.buffer,
+                        row,
+                        scrollbar_rect.y,
+                        scrollbar_height,
+                        drag_start_row,
+                        drag_start_top_byte,
+                        drag_start_view_line_offset,
+                        viewport_height,
+                        viewport_width,
+                    )
                 } else {
-                    1
-                };
-
-                // Calculate max scroll line
-                let max_scroll_line = total_lines.saturating_sub(viewport_height);
-
-                if max_scroll_line == 0 {
-                    // File fits in viewport, no scrolling
-                    0
-                } else {
-                    // Calculate which line the mouse position corresponds to using linear interpolation
-                    // Convert absolute mouse row to relative position within scrollbar
-                    let relative_mouse_row = row.saturating_sub(scrollbar_rect.y) as usize;
-                    // Divide by (height - 1) to map first row to 0.0 and last row to 1.0
-                    let scroll_ratio = if scrollbar_height > 1 {
-                        (relative_mouse_row as f64 / (scrollbar_height - 1) as f64).clamp(0.0, 1.0)
+                    // Small file without line wrap: thumb follows mouse
+                    let total_lines = if buffer_len > 0 {
+                        state.buffer.get_line_number(buffer_len.saturating_sub(1)) + 1
                     } else {
-                        0.0
+                        1
                     };
 
-                    // Map scroll ratio to target line
-                    let target_line = (scroll_ratio * max_scroll_line as f64).round() as usize;
-                    let target_line = target_line.min(max_scroll_line);
+                    let max_scroll_line = total_lines.saturating_sub(viewport_height);
 
-                    // Find byte position of target line
-                    // We need to iterate 'target_line' times to skip past lines 0..target_line-1,
-                    // then one more time to get the position of line 'target_line'
-                    let mut iter = state.buffer.line_iterator(0, 80);
-                    let mut line_byte = 0;
-
-                    for _ in 0..target_line {
-                        if let Some((pos, _content)) = iter.next_line() {
-                            line_byte = pos;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    // Get the position of the target line
-                    if let Some((pos, _)) = iter.next_line() {
-                        pos
+                    if max_scroll_line == 0 || scrollbar_height <= 1 {
+                        // File fits in viewport, no scrolling
+                        (0, 0)
                     } else {
-                        line_byte // Reached end of buffer
+                        // Find the starting line number from drag_start_top_byte
+                        let start_line = state.buffer.get_line_number(drag_start_top_byte);
+
+                        // Calculate thumb size (same formula as scrollbar rendering)
+                        let thumb_size_raw = (viewport_height as f64 / total_lines as f64
+                            * scrollbar_height as f64)
+                            .ceil() as usize;
+                        let max_thumb_size = (scrollbar_height as f64 * 0.8).floor() as usize;
+                        let thumb_size = thumb_size_raw
+                            .max(1)
+                            .min(max_thumb_size)
+                            .min(scrollbar_height);
+
+                        // Calculate max thumb start position (same as scrollbar rendering)
+                        let max_thumb_start = scrollbar_height.saturating_sub(thumb_size);
+
+                        if max_thumb_start == 0 {
+                            // Thumb fills the track, no dragging possible
+                            (0, 0)
+                        } else {
+                            // Calculate where the thumb was at drag start
+                            let start_scroll_ratio =
+                                start_line.min(max_scroll_line) as f64 / max_scroll_line as f64;
+                            let thumb_row_at_start = scrollbar_rect.y as f64
+                                + start_scroll_ratio * max_thumb_start as f64;
+
+                            // Calculate click offset (where on thumb we clicked)
+                            let click_offset = drag_start_row as f64 - thumb_row_at_start;
+
+                            // Target thumb position based on current mouse position
+                            let target_thumb_row = row as f64 - click_offset;
+
+                            // Map target thumb position to scroll ratio
+                            let target_scroll_ratio = ((target_thumb_row
+                                - scrollbar_rect.y as f64)
+                                / max_thumb_start as f64)
+                                .clamp(0.0, 1.0);
+
+                            // Map scroll ratio to target line
+                            let target_line =
+                                (target_scroll_ratio * max_scroll_line as f64).round() as usize;
+                            let target_line = target_line.min(max_scroll_line);
+
+                            // Find byte position of target line
+                            let target_byte = state
+                                .buffer
+                                .line_start_offset(target_line)
+                                .unwrap_or(drag_start_top_byte);
+
+                            (target_byte, 0)
+                        }
                     }
                 }
             } else {
-                // Large file: use byte-based estimation (original logic)
+                // Large file: use byte-based relative movement
                 let bytes_per_pixel = buffer_len as f64 / scrollbar_height as f64;
                 let byte_offset = (row_offset as f64 * bytes_per_pixel) as i64;
 
@@ -1448,19 +1493,20 @@ impl Editor {
                 };
 
                 // Clamp to valid range using byte-based max (avoid iterating entire buffer)
-                new_top_byte.min(buffer_len.saturating_sub(1))
-            };
+                let new_top_byte = new_top_byte.min(buffer_len.saturating_sub(1));
 
-            // Find the line start for this byte position
-            let iter = state.buffer.line_iterator(new_top_byte, 80);
-            iter.current_position()
+                // Find the line start for this byte position
+                let iter = state.buffer.line_iterator(new_top_byte, 80);
+                (iter.current_position(), 0)
+            }
         } else {
             return Ok(());
         };
 
         // Set viewport top to this position in SplitViewState
         if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
-            view_state.viewport.top_byte = line_start;
+            view_state.viewport.top_byte = scroll_position.0;
+            view_state.viewport.top_view_line_offset = scroll_position.1;
             // Skip ensure_visible so the scroll position isn't undone during render
             view_state.viewport.set_skip_ensure_visible();
         }
@@ -1502,78 +1548,106 @@ impl Editor {
             .map(|vs| vs.viewport.height as usize)
             .unwrap_or(10);
 
-        // Get the buffer state and calculate limited_line_start
-        let limited_line_start = if let Some(state) = self.buffers.get_mut(&buffer_id) {
+        // Check if line wrapping is enabled
+        let line_wrap_enabled = self
+            .split_view_states
+            .get(&split_id)
+            .map(|vs| vs.viewport.line_wrap_enabled)
+            .unwrap_or(false);
+
+        let viewport_width = self
+            .split_view_states
+            .get(&split_id)
+            .map(|vs| vs.viewport.width as usize)
+            .unwrap_or(80);
+
+        // Get the buffer state and calculate scroll position
+        // Returns (byte_position, view_line_offset) for proper positioning within wrapped lines
+        let scroll_position = if let Some(state) = self.buffers.get_mut(&buffer_id) {
             let buffer_len = state.buffer.len();
             let large_file_threshold = self.config.editor.large_file_threshold_bytes as usize;
 
             // For small files, use precise line-based calculations
             // For large files, fall back to byte-based estimation
-            let target_byte = if buffer_len <= large_file_threshold {
-                // Small file: use line-based calculation for precision
-                let total_lines = if buffer_len > 0 {
-                    state.buffer.get_line_number(buffer_len.saturating_sub(1)) + 1
+            if buffer_len <= large_file_threshold {
+                // When line wrapping is enabled, use visual row calculations
+                if line_wrap_enabled {
+                    // calculate_scrollbar_jump_visual already handles max scroll limiting
+                    // and returns both byte position and view line offset
+                    Self::calculate_scrollbar_jump_visual(
+                        &mut state.buffer,
+                        ratio,
+                        viewport_height,
+                        viewport_width,
+                    )
                 } else {
-                    1
-                };
-
-                let max_scroll_line = total_lines.saturating_sub(viewport_height);
-
-                if max_scroll_line == 0 {
-                    // File fits in viewport, no scrolling
-                    0
-                } else {
-                    // Map ratio to target line
-                    let target_line = (ratio * max_scroll_line as f64).round() as usize;
-                    let target_line = target_line.min(max_scroll_line);
-
-                    // Find byte position of target line
-                    // We need to iterate 'target_line' times to skip past lines 0..target_line-1,
-                    // then one more time to get the position of line 'target_line'
-                    let mut iter = state.buffer.line_iterator(0, 80);
-                    let mut line_byte = 0;
-
-                    for _ in 0..target_line {
-                        if let Some((pos, _content)) = iter.next_line() {
-                            line_byte = pos;
-                        } else {
-                            break;
-                        }
-                    }
-
-                    // Get the position of the target line
-                    if let Some((pos, _)) = iter.next_line() {
-                        pos
+                    // Small file without line wrap: use line-based calculation for precision
+                    let total_lines = if buffer_len > 0 {
+                        state.buffer.get_line_number(buffer_len.saturating_sub(1)) + 1
                     } else {
-                        line_byte // Reached end of buffer
-                    }
+                        1
+                    };
+
+                    let max_scroll_line = total_lines.saturating_sub(viewport_height);
+
+                    let target_byte = if max_scroll_line == 0 {
+                        // File fits in viewport, no scrolling
+                        0
+                    } else {
+                        // Map ratio to target line
+                        let target_line = (ratio * max_scroll_line as f64).round() as usize;
+                        let target_line = target_line.min(max_scroll_line);
+
+                        // Find byte position of target line
+                        // We need to iterate 'target_line' times to skip past lines 0..target_line-1,
+                        // then one more time to get the position of line 'target_line'
+                        let mut iter = state.buffer.line_iterator(0, 80);
+                        let mut line_byte = 0;
+
+                        for _ in 0..target_line {
+                            if let Some((pos, _content)) = iter.next_line() {
+                                line_byte = pos;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        // Get the position of the target line
+                        if let Some((pos, _)) = iter.next_line() {
+                            pos
+                        } else {
+                            line_byte // Reached end of buffer
+                        }
+                    };
+
+                    // Find the line start for this byte position
+                    let iter = state.buffer.line_iterator(target_byte, 80);
+                    let line_start = iter.current_position();
+
+                    // Apply scroll limiting
+                    let max_top_byte =
+                        Self::calculate_max_scroll_position(&mut state.buffer, viewport_height);
+                    (line_start.min(max_top_byte), 0)
                 }
             } else {
                 // Large file: use byte-based estimation (original logic)
                 let target_byte = (buffer_len as f64 * ratio) as usize;
-                target_byte.min(buffer_len.saturating_sub(1))
-            };
+                let target_byte = target_byte.min(buffer_len.saturating_sub(1));
 
-            // Find the line start for this byte position
-            let iter = state.buffer.line_iterator(target_byte, 80);
-            let line_start = iter.current_position();
+                // Find the line start for this byte position
+                let iter = state.buffer.line_iterator(target_byte, 80);
+                let line_start = iter.current_position();
 
-            // Apply scroll limiting
-            // Use viewport.height (constant allocated rows) not visible_line_count (varies with content)
-            // For large files, use byte-based max to avoid iterating entire buffer
-            let max_top_byte = if buffer_len <= large_file_threshold {
-                Self::calculate_max_scroll_position(&mut state.buffer, viewport_height)
-            } else {
-                buffer_len.saturating_sub(1)
-            };
-            line_start.min(max_top_byte)
+                (line_start.min(buffer_len.saturating_sub(1)), 0)
+            }
         } else {
             return Ok(());
         };
 
         // Set viewport top to this position in SplitViewState
         if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
-            view_state.viewport.top_byte = limited_line_start;
+            view_state.viewport.top_byte = scroll_position.0;
+            view_state.viewport.top_view_line_offset = scroll_position.1;
             // Skip ensure_visible so the scroll position isn't undone during render
             view_state.viewport.set_skip_ensure_visible();
         }
@@ -1675,6 +1749,176 @@ impl Editor {
         }
 
         max_byte_pos
+    }
+
+    /// Calculate scrollbar jump position using visual rows (for line-wrapped content)
+    /// Returns the byte position to scroll to based on the scroll ratio
+    /// Calculate scroll position for visual-row-aware scrollbar jump.
+    /// Returns (byte_position, view_line_offset) for proper positioning within wrapped lines.
+    fn calculate_scrollbar_jump_visual(
+        buffer: &mut crate::model::buffer::Buffer,
+        ratio: f64,
+        viewport_height: usize,
+        viewport_width: usize,
+    ) -> (usize, usize) {
+        use crate::primitives::line_wrapping::{wrap_line, WrapConfig};
+
+        let buffer_len = buffer.len();
+        if buffer_len == 0 || viewport_height == 0 {
+            return (0, 0);
+        }
+
+        // Calculate gutter width (estimate based on line count)
+        let line_count = buffer.line_count().unwrap_or(1);
+        let digits = (line_count as f64).log10().floor() as usize + 1;
+        let gutter_width = 1 + digits.max(4) + 3; // indicator + digits + separator
+
+        let wrap_config = WrapConfig::new(viewport_width, gutter_width, true);
+
+        // Count total visual rows and build a map of visual row -> (line_byte, offset_in_line)
+        let mut total_visual_rows = 0;
+        let mut visual_row_positions: Vec<(usize, usize)> = Vec::new(); // (line_start_byte, visual_row_offset)
+
+        let mut iter = buffer.line_iterator(0, 80);
+        while let Some((line_start, content)) = iter.next_line() {
+            let line_content = content.trim_end_matches(['\n', '\r']).to_string();
+            let segments = wrap_line(&line_content, &wrap_config);
+            let visual_rows_in_line = segments.len().max(1);
+
+            for offset in 0..visual_rows_in_line {
+                visual_row_positions.push((line_start, offset));
+            }
+            total_visual_rows += visual_rows_in_line;
+        }
+
+        if total_visual_rows == 0 {
+            return (0, 0);
+        }
+
+        // Calculate max scroll visual row (leave viewport_height rows visible at bottom)
+        let max_scroll_row = total_visual_rows.saturating_sub(viewport_height);
+
+        if max_scroll_row == 0 {
+            // Content fits in viewport, no scrolling needed
+            return (0, 0);
+        }
+
+        // Map ratio to target visual row
+        let target_row = (ratio * max_scroll_row as f64).round() as usize;
+        let target_row = target_row.min(max_scroll_row);
+
+        // Get the byte position and offset for this visual row
+        if target_row < visual_row_positions.len() {
+            visual_row_positions[target_row]
+        } else {
+            // Fallback to last position
+            visual_row_positions.last().copied().unwrap_or((0, 0))
+        }
+    }
+
+    /// Calculate scroll position for visual-row-aware scrollbar drag.
+    /// The thumb follows the mouse position, accounting for where on the thumb the user clicked.
+    /// Returns (byte_position, view_line_offset) for proper positioning within wrapped lines.
+    fn calculate_scrollbar_drag_relative_visual(
+        buffer: &mut crate::model::buffer::Buffer,
+        current_row: u16,
+        scrollbar_y: u16,
+        scrollbar_height: usize,
+        drag_start_row: u16,
+        drag_start_top_byte: usize,
+        drag_start_view_line_offset: usize,
+        viewport_height: usize,
+        viewport_width: usize,
+    ) -> (usize, usize) {
+        use crate::primitives::line_wrapping::{wrap_line, WrapConfig};
+
+        let buffer_len = buffer.len();
+        if buffer_len == 0 || viewport_height == 0 || scrollbar_height <= 1 {
+            return (0, 0);
+        }
+
+        // Calculate gutter width (estimate based on line count)
+        let line_count = buffer.line_count().unwrap_or(1);
+        let digits = (line_count as f64).log10().floor() as usize + 1;
+        let gutter_width = 1 + digits.max(4) + 3; // indicator + digits + separator
+
+        let wrap_config = WrapConfig::new(viewport_width, gutter_width, true);
+
+        // Build visual row positions map
+        let mut total_visual_rows = 0;
+        let mut visual_row_positions: Vec<(usize, usize)> = Vec::new();
+
+        let mut iter = buffer.line_iterator(0, 80);
+        while let Some((line_start, content)) = iter.next_line() {
+            let line_content = content.trim_end_matches(['\n', '\r']).to_string();
+            let segments = wrap_line(&line_content, &wrap_config);
+            let visual_rows_in_line = segments.len().max(1);
+
+            for offset in 0..visual_rows_in_line {
+                visual_row_positions.push((line_start, offset));
+            }
+            total_visual_rows += visual_rows_in_line;
+        }
+
+        if total_visual_rows == 0 {
+            return (0, 0);
+        }
+
+        let max_scroll_row = total_visual_rows.saturating_sub(viewport_height);
+        if max_scroll_row == 0 {
+            return (0, 0);
+        }
+
+        // Find the visual row corresponding to drag_start_top_byte + view_line_offset
+        // First find the line start, then add the offset for wrapped lines
+        let line_start_visual_row = visual_row_positions
+            .iter()
+            .position(|(byte, _)| *byte >= drag_start_top_byte)
+            .unwrap_or(0);
+        let start_visual_row =
+            (line_start_visual_row + drag_start_view_line_offset).min(max_scroll_row);
+
+        // Calculate thumb size (same formula as scrollbar rendering)
+        let thumb_size_raw = (viewport_height as f64 / total_visual_rows as f64
+            * scrollbar_height as f64)
+            .ceil() as usize;
+        let max_thumb_size = (scrollbar_height as f64 * 0.8).floor() as usize;
+        let thumb_size = thumb_size_raw
+            .max(1)
+            .min(max_thumb_size)
+            .min(scrollbar_height);
+
+        // Calculate max thumb start position (same as scrollbar rendering)
+        let max_thumb_start = scrollbar_height.saturating_sub(thumb_size);
+
+        // Calculate where the thumb was (in scrollbar coordinates) at drag start
+        // Using the same formula as scrollbar rendering: thumb_start = scroll_ratio * max_thumb_start
+        let start_scroll_ratio = start_visual_row as f64 / max_scroll_row as f64;
+        let thumb_row_at_start = scrollbar_y as f64 + start_scroll_ratio * max_thumb_start as f64;
+
+        // Calculate click offset (where on the thumb we clicked)
+        let click_offset = drag_start_row as f64 - thumb_row_at_start;
+
+        // Calculate target thumb position based on current mouse position
+        let target_thumb_row = current_row as f64 - click_offset;
+
+        // Map target thumb position to scroll ratio (inverse of thumb_start formula)
+        let target_scroll_ratio = if max_thumb_start > 0 {
+            ((target_thumb_row - scrollbar_y as f64) / max_thumb_start as f64).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        // Map scroll ratio to visual row
+        let target_row = (target_scroll_ratio * max_scroll_row as f64).round() as usize;
+        let target_row = target_row.min(max_scroll_row);
+
+        // Get the byte position and offset for this visual row
+        if target_row < visual_row_positions.len() {
+            visual_row_positions[target_row]
+        } else {
+            visual_row_positions.last().copied().unwrap_or((0, 0))
+        }
     }
 
     /// Calculate buffer byte position from screen coordinates
@@ -1968,10 +2212,26 @@ impl Editor {
                         // Double-click or Enter will focus the editor
                         let path = node.entry.path.clone();
                         let name = node.entry.name.clone();
-                        self.open_file(&path)?;
-                        self.set_status_message(
-                            rust_i18n::t!("explorer.opened_file", name = &name).to_string(),
-                        );
+                        match self.open_file(&path) {
+                            Ok(_) => {
+                                self.set_status_message(
+                                    rust_i18n::t!("explorer.opened_file", name = &name).to_string(),
+                                );
+                            }
+                            Err(e) => {
+                                // Check if this is a large file encoding confirmation error
+                                if let Some(confirmation) = e.downcast_ref::<
+                                    crate::model::buffer::LargeFileEncodingConfirmation,
+                                >() {
+                                    self.start_large_file_encoding_confirmation(confirmation);
+                                } else {
+                                    self.set_status_message(
+                                        rust_i18n::t!("file.error_opening", error = e.to_string())
+                                            .to_string(),
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }

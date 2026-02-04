@@ -314,16 +314,15 @@ fn handle_first_run_setup(
         editor.open_stdin_buffer(&stream_state.temp_path, stream_state.thread_handle.take())?;
     }
 
+    // Queue CLI files to be opened after the TUI starts
+    // This ensures they go through the same code path as interactive file opens,
+    // with consistent error handling (e.g., encoding confirmation prompts in the UI)
     for loc in file_locations {
         if loc.path.is_dir() {
             continue;
         }
-        tracing::info!("[SYNTAX DEBUG] CLI opening file: {:?}", loc.path);
-        editor.open_file(&loc.path)?;
-
-        if let Some(line) = loc.line {
-            editor.goto_line_col(line, loc.column);
-        }
+        tracing::info!("[SYNTAX DEBUG] Queueing CLI file for open: {:?}", loc.path);
+        editor.queue_file_open(loc.path.clone(), loc.line, loc.column);
     }
 
     if show_file_explorer {
@@ -1490,7 +1489,24 @@ MIT
 }
 
 fn main() -> AnyhowResult<()> {
-    // Parse command-line arguments
+    // On Windows, run on a thread with larger stack size to handle rust-i18n's generated code
+    // (1100+ translation keys cause stack overflow with default 1-2 MB stack on Windows)
+    #[cfg(target_os = "windows")]
+    {
+        const STACK_SIZE: usize = 8 * 1024 * 1024; // 8 MB
+        std::thread::Builder::new()
+            .stack_size(STACK_SIZE)
+            .spawn(real_main)
+            .expect("Failed to spawn main thread")
+            .join()
+            .expect("Main thread panicked")
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    real_main()
+}
+
+fn real_main() -> AnyhowResult<()> {
     let args = Args::parse();
 
     // Handle --show-paths early (no terminal setup needed)
@@ -1769,6 +1785,13 @@ where
     loop {
         // Process async messages and poll for file changes (auto-revert, file tree)
         if editor.process_async_messages() {
+            needs_render = true;
+        }
+
+        // Process pending file opens from CLI arguments
+        // This runs after the first render, ensuring files go through the same
+        // code path as interactive file opens (with proper UI prompts for errors)
+        if editor.process_pending_file_opens() {
             needs_render = true;
         }
 
