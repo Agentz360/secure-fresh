@@ -2895,3 +2895,62 @@ fn test_terminal_exit_keeps_buffer_with_message() {
     // Screen should show the exit message
     harness.assert_screen_contains("[Terminal process exited]");
 }
+
+/// Test Windows terminal shows prompt and responds to commands
+///
+/// This test verifies that the DSR (Device Status Report) cursor position
+/// response is working correctly on Windows. PowerShell sends `\x1b[6n` and
+/// waits for a response before showing the prompt. Without the response,
+/// the terminal shows a black screen.
+#[test]
+#[cfg(windows)]
+fn test_windows_terminal_shows_prompt_and_executes_command() {
+    let mut harness = harness_or_return!(100, 30);
+
+    // Open a terminal
+    harness.editor_mut().open_terminal();
+    harness.render().unwrap();
+    assert!(harness.editor().is_terminal_mode());
+
+    // Wait for the shell prompt to appear
+    // On Windows, this requires the DSR response to work correctly
+    let prompt_result = harness.wait_until(|h| {
+        let screen = h.screen_to_string();
+        // PowerShell prompt contains "PS " and ">"
+        // cmd.exe prompt contains ">"
+        screen.contains("PS ") || screen.contains(">")
+    });
+
+    assert!(
+        prompt_result.is_ok(),
+        "Terminal should show a shell prompt (PS or >). This may fail if DSR response is not working.\nScreen:\n{}",
+        harness.screen_to_string()
+    );
+
+    // Send a simple Windows command: echo with a unique marker
+    let marker = "FRESH_TERMINAL_TEST_12345";
+    let command = format!("echo {}\r\n", marker);
+    harness.editor_mut().send_terminal_input(command.as_bytes());
+
+    // Wait for the echo output to appear
+    let output_result = harness.wait_until(|h| {
+        let screen = h.screen_to_string();
+        screen.contains(marker)
+    });
+
+    assert!(
+        output_result.is_ok(),
+        "Terminal should show echo output containing '{}'. Screen:\n{}",
+        marker,
+        harness.screen_to_string()
+    );
+
+    // Verify the screen contains the expected output
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains(marker),
+        "Screen should contain the echo marker '{}'. Screen:\n{}",
+        marker,
+        screen
+    );
+}

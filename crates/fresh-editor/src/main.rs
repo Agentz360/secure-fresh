@@ -214,24 +214,100 @@ fn start_stdin_streaming() -> AnyhowResult<StdinStreamState> {
     })
 }
 
-/// Placeholder for Windows (not yet implemented)
+/// Windows stdin stream state
 #[cfg(windows)]
 pub struct StdinStreamState {
     pub temp_path: PathBuf,
     pub thread_handle: Option<std::thread::JoinHandle<anyhow::Result<()>>>,
 }
 
-// TODO(windows): Implement stdin streaming for Windows
-// - Use GetStdHandle(STD_INPUT_HANDLE) to get stdin handle
-// - Use DuplicateHandle to duplicate the pipe handle before reopening as CONIN$
-// - Spawn background thread to read from duplicated handle and write to temp file
-// - Use SetStdHandle or reopen CONIN$ as stdin for keyboard input
+/// Stream stdin content to a temp file on Windows.
+/// This is called when stdin is a pipe (e.g., `cat file.txt | fresh`).
+/// We duplicate the stdin handle, spawn a thread to read from it,
+/// and then reopen stdin from CONIN$ for keyboard input.
 #[cfg(windows)]
 fn start_stdin_streaming() -> AnyhowResult<StdinStreamState> {
-    anyhow::bail!(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Reading from stdin is not yet supported on Windows",
-    ))
+    use std::fs::File;
+    use std::io::{Read, Write};
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE, INVALID_HANDLE_VALUE,
+    };
+    use windows_sys::Win32::System::Console::GetStdHandle;
+    use windows_sys::Win32::System::Console::STD_INPUT_HANDLE;
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    // Get the current stdin handle (which is a pipe)
+    let stdin_handle = unsafe { GetStdHandle(STD_INPUT_HANDLE) };
+    if stdin_handle == INVALID_HANDLE_VALUE || stdin_handle == 0 as HANDLE {
+        anyhow::bail!("Failed to get stdin handle");
+    }
+
+    // Duplicate the handle so we can read from it in a background thread
+    // while we replace stdin with CONIN$ for keyboard input
+    let mut duplicated_handle: HANDLE = 0 as HANDLE;
+    let current_process = unsafe { GetCurrentProcess() };
+    let success = unsafe {
+        DuplicateHandle(
+            current_process,
+            stdin_handle,
+            current_process,
+            &mut duplicated_handle,
+            0,
+            0, // not inheritable
+            DUPLICATE_SAME_ACCESS,
+        )
+    };
+
+    if success == 0 {
+        anyhow::bail!(
+            "Failed to duplicate stdin handle: {}",
+            io::Error::last_os_error()
+        );
+    }
+
+    // Create a temp file to store the piped content
+    let temp_dir = std::env::temp_dir();
+    let temp_path = temp_dir.join(format!("fresh-stdin-{}.txt", std::process::id()));
+
+    let temp_path_clone = temp_path.clone();
+
+    // Cast handle to usize for Send across thread boundary
+    // SAFETY: HANDLE is a pointer-sized value, usize preserves it exactly
+    let handle_as_usize = duplicated_handle as usize;
+
+    // Spawn a thread to read from the duplicated pipe handle
+    let thread_handle = std::thread::spawn(move || -> AnyhowResult<()> {
+        // SAFETY: We own this duplicated handle and will close it when done
+        // Cast back from usize to raw handle
+        let raw_handle = handle_as_usize as *mut std::ffi::c_void;
+        let owned_handle = unsafe { OwnedHandle::from_raw_handle(raw_handle) };
+        let mut pipe_reader = unsafe { File::from_raw_handle(owned_handle.as_raw_handle()) };
+        // Forget the OwnedHandle since File now owns it
+        std::mem::forget(owned_handle);
+
+        let mut temp_file = File::create(&temp_path_clone)?;
+        let mut buffer = [0u8; 8192];
+
+        loop {
+            match pipe_reader.read(&mut buffer) {
+                Ok(0) => break, // EOF
+                Ok(n) => {
+                    temp_file.write_all(&buffer[..n])?;
+                }
+                Err(e) if e.kind() == io::ErrorKind::BrokenPipe => break,
+                Err(e) => return Err(e.into()),
+            }
+        }
+
+        temp_file.flush()?;
+        Ok(())
+    });
+
+    Ok(StdinStreamState {
+        temp_path,
+        thread_handle: Some(thread_handle),
+    })
 }
 
 /// Check if stdin has data available (is a pipe or redirect, not a TTY)
@@ -262,16 +338,46 @@ fn reopen_stdin_from_tty() -> AnyhowResult<()> {
     Ok(())
 }
 
-// TODO(windows): Implement reopening stdin from CONIN$
-// - Open "CONIN$" which is the console input device
-// - Use SetStdHandle(STD_INPUT_HANDLE, conin_handle) to replace stdin
-// - This allows crossterm to receive keyboard events after stdin was a pipe
+/// Reopen stdin from CONIN$ on Windows.
+/// This allows crossterm to receive keyboard events after stdin was a pipe.
 #[cfg(windows)]
 fn reopen_stdin_from_tty() -> AnyhowResult<()> {
-    anyhow::bail!(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "Reading from stdin is not yet supported on Windows",
-    ))
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, FILE_GENERIC_READ, FILE_SHARE_READ, OPEN_EXISTING,
+    };
+    use windows_sys::Win32::System::Console::{SetStdHandle, STD_INPUT_HANDLE};
+
+    // "CONIN$" is the console input device on Windows
+    // This is analogous to /dev/tty on Unix
+    let conin: Vec<u16> = "CONIN$\0".encode_utf16().collect();
+
+    let conin_handle = unsafe {
+        CreateFileW(
+            conin.as_ptr(),
+            FILE_GENERIC_READ,
+            FILE_SHARE_READ,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+
+    if conin_handle == INVALID_HANDLE_VALUE {
+        anyhow::bail!("Failed to open CONIN$: {}", io::Error::last_os_error());
+    }
+
+    // Replace stdin with the console input handle
+    let success = unsafe { SetStdHandle(STD_INPUT_HANDLE, conin_handle) };
+    if success == 0 {
+        anyhow::bail!(
+            "Failed to set stdin to CONIN$: {}",
+            io::Error::last_os_error()
+        );
+    }
+
+    Ok(())
 }
 
 fn handle_first_run_setup(

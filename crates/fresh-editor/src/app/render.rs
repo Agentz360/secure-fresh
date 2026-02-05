@@ -706,6 +706,13 @@ impl Editor {
                 .get(&active_split)
                 .map(|vs| vs.viewport.clone());
 
+            // Get file explorer width offset for popup positioning (Bug #898)
+            let file_explorer_offset = self
+                .cached_layout
+                .file_explorer_area
+                .map(|area| area.width)
+                .unwrap_or(0);
+
             let state = self.active_state_mut();
             if state.popups.is_visible() {
                 // Get the primary cursor position for popup positioning
@@ -716,7 +723,11 @@ impl Editor {
                     .unwrap_or((0, 0));
 
                 // Adjust cursor position to account for tab bar (1 line offset)
-                let cursor_screen_pos = (cursor_screen_pos.0, cursor_screen_pos.1 + 1);
+                // and file explorer width (Bug #898)
+                let cursor_screen_pos = (
+                    cursor_screen_pos.0 + file_explorer_offset,
+                    cursor_screen_pos.1 + 1,
+                );
 
                 // Collect popup data
                 state
@@ -1565,22 +1576,14 @@ impl Editor {
             }
         };
 
-        // Get the file path and verify language matches
-        let path = match metadata.file_path() {
-            Some(p) => p,
-            None => {
-                tracing::debug!("notify_lsp_current_file_opened: no file path for buffer");
-                return;
-            }
-        };
+        // Get the buffer text and line count before borrowing lsp
+        let active_buffer = self.active_buffer();
 
-        let file_language = match detect_language(path, &self.config.languages) {
+        // Use buffer's stored language to verify it matches the LSP server
+        let file_language = match self.buffers.get(&active_buffer).map(|s| s.language.clone()) {
             Some(l) => l,
             None => {
-                tracing::debug!(
-                    "notify_lsp_current_file_opened: no language detected for {:?}",
-                    path
-                );
+                tracing::debug!("notify_lsp_current_file_opened: no buffer state");
                 return;
             }
         };
@@ -1594,9 +1597,6 @@ impl Editor {
             );
             return;
         }
-
-        // Get the buffer text and line count before borrowing lsp
-        let active_buffer = self.active_buffer();
         let (text, line_count) = if let Some(state) = self.buffers.get(&active_buffer) {
             let text = match state.buffer.to_string() {
                 Some(t) => t,
@@ -1662,30 +1662,6 @@ impl Editor {
     /// Check if there's a pending LSP confirmation
     pub fn has_pending_lsp_confirmation(&self) -> bool {
         self.pending_lsp_confirmation.is_some()
-    }
-
-    /// Try to get or spawn an LSP handle, showing confirmation popup if needed
-    ///
-    /// This is the recommended way to access LSP functionality. It checks if
-    /// confirmation is required and shows the popup if so.
-    ///
-    /// Returns:
-    /// - `Some(true)` if LSP is ready (handle was already available or spawned)
-    /// - `Some(false)` if confirmation popup was shown (user needs to respond)
-    /// - `None` if LSP is not available (disabled, not configured, not auto-start, or failed)
-    pub fn try_get_lsp_with_confirmation(&mut self, language: &str) -> Option<bool> {
-        use crate::services::lsp::manager::LspSpawnResult;
-
-        let result = {
-            let lsp = self.lsp.as_mut()?;
-            lsp.try_spawn(language)
-        };
-
-        match result {
-            LspSpawnResult::Spawned => Some(true),
-            LspSpawnResult::NotAutoStart => None, // Not configured for auto-start
-            LspSpawnResult::Failed => None,
-        }
     }
 
     /// Navigate popup selection (next item)
@@ -1891,18 +1867,15 @@ impl Editor {
         };
 
         // Get the file path for language detection
-        let path = match metadata.file_path() {
-            Some(p) => p,
-            None => {
-                tracing::debug!("notify_lsp_save: no file path for buffer");
-                return;
-            }
-        };
-
-        let language = match detect_language(path, &self.config.languages) {
+        // Use buffer's stored language
+        let language = match self
+            .buffers
+            .get(&self.active_buffer())
+            .map(|s| s.language.clone())
+        {
             Some(l) => l,
             None => {
-                tracing::debug!("notify_lsp_save: no language detected for {:?}", path);
+                tracing::debug!("notify_lsp_save: no buffer state");
                 return;
             }
         };

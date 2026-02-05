@@ -206,6 +206,9 @@ impl LspManager {
     /// - `LspSpawnResult::Spawned` if the server was spawned or already running
     /// - `LspSpawnResult::NotAutoStart` if auto_start is false and not manually allowed
     /// - `LspSpawnResult::Failed` if spawn failed or language is disabled
+    ///
+    /// IMPORTANT: Callers should only call this when there is at least one buffer
+    /// with a matching language. Do not call for languages with no open files.
     pub fn try_spawn(&mut self, language: &str) -> LspSpawnResult {
         // If handle already exists, return success
         if self.handles.contains_key(language) {
@@ -373,7 +376,8 @@ impl LspManager {
             }
         };
 
-        if !config.enabled {
+        // Skip enabled check if user explicitly requested start (via allowed_languages)
+        if !config.enabled && !self.allowed_languages.contains(language) {
             tracing::debug!("force_spawn: LSP for {} is not enabled in config", language);
             return None;
         }

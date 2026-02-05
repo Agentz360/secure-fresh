@@ -34,24 +34,45 @@ use alacritty_terminal::term::test::TermSize;
 use alacritty_terminal::term::{Config as TermConfig, Term, TermMode};
 use alacritty_terminal::vte::ansi::Processor;
 use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
 
 // Keep a generous scrollback so sync-to-buffer can include deep history.
 const SCROLLBACK_LINES: usize = 200_000;
 
-/// Event listener that does nothing (we handle events ourselves)
-struct NullListener;
+/// Event listener that captures PtyWrite events for sending back to the PTY.
+///
+/// When the terminal emulator needs to respond to queries (like DSR cursor position
+/// requests `\x1b[6n`), it generates `Event::PtyWrite` events. These must be captured
+/// and sent back to the PTY for the shell to receive the response.
+#[derive(Clone)]
+struct PtyWriteListener {
+    /// Queue of data to write back to the PTY
+    write_queue: Arc<Mutex<Vec<String>>>,
+}
 
-impl EventListener for NullListener {
-    fn send_event(&self, _event: Event) {
-        // We don't need to handle terminal events in the listener
-        // The main loop will poll the terminal state directly
+impl PtyWriteListener {
+    fn new() -> Self {
+        Self {
+            write_queue: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl EventListener for PtyWriteListener {
+    fn send_event(&self, event: Event) {
+        if let Event::PtyWrite(text) = event {
+            if let Ok(mut queue) = self.write_queue.lock() {
+                queue.push(text);
+            }
+        }
+        // Other events (Title, ClipboardStore, etc.) are ignored for now
     }
 }
 
 /// Terminal state wrapping alacritty_terminal
 pub struct TerminalState {
     /// The terminal emulator
-    term: Term<NullListener>,
+    term: Term<PtyWriteListener>,
     /// ANSI parser
     parser: Processor,
     /// Current dimensions
@@ -65,6 +86,8 @@ pub struct TerminalState {
     synced_history_lines: usize,
     /// Byte offset in backing file where scrollback ends (for truncation)
     backing_file_history_end: u64,
+    /// Queue of data to write back to the PTY (for DSR responses, etc.)
+    pty_write_queue: Arc<Mutex<Vec<String>>>,
 }
 
 impl TerminalState {
@@ -75,7 +98,9 @@ impl TerminalState {
             scrolling_history: SCROLLBACK_LINES,
             ..Default::default()
         };
-        let term = Term::new(config, &size, NullListener);
+        let listener = PtyWriteListener::new();
+        let pty_write_queue = listener.write_queue.clone();
+        let term = Term::new(config, &size, listener);
 
         Self {
             term,
@@ -86,6 +111,19 @@ impl TerminalState {
             terminal_title: String::new(),
             synced_history_lines: 0,
             backing_file_history_end: 0,
+            pty_write_queue,
+        }
+    }
+
+    /// Drain any pending data that needs to be written back to the PTY.
+    ///
+    /// This is used for responses to terminal queries like DSR (cursor position report).
+    /// The caller should write this data to the PTY writer.
+    pub fn drain_pty_write_queue(&self) -> Vec<String> {
+        if let Ok(mut queue) = self.pty_write_queue.lock() {
+            std::mem::take(&mut *queue)
+        } else {
+            Vec::new()
         }
     }
 
@@ -862,5 +900,61 @@ mod tests {
             !output3.contains("Batch1-Line6\n"),
             "Batch1-Line6 was already flushed, shouldn't appear again"
         );
+    }
+
+    #[test]
+    fn test_dsr_cursor_position_response() {
+        // Test that sending a DSR (Device Status Report) query generates a response
+        // This is critical for Windows ConPTY where PowerShell waits for this response
+        let mut state = TerminalState::new(80, 24);
+
+        // Initially the write queue should be empty
+        assert!(
+            state.drain_pty_write_queue().is_empty(),
+            "Write queue should be empty initially"
+        );
+
+        // Send DSR query: ESC [ 6 n (request cursor position)
+        state.process_output(b"\x1b[6n");
+
+        // The terminal should generate a response: ESC [ row ; col R
+        let responses = state.drain_pty_write_queue();
+        assert_eq!(responses.len(), 1, "Should have exactly one response");
+
+        let response = &responses[0];
+        // Response format: \x1b[row;colR where row and col are 1-based
+        // Cursor starts at (0,0) internally, so response should be \x1b[1;1R
+        assert!(
+            response.starts_with("\x1b["),
+            "Response should start with ESC["
+        );
+        assert!(response.ends_with("R"), "Response should end with R");
+        eprintln!("DSR response: {:?}", response);
+
+        // Draining again should return empty
+        assert!(
+            state.drain_pty_write_queue().is_empty(),
+            "Write queue should be empty after draining"
+        );
+    }
+
+    #[test]
+    fn test_dsr_response_after_cursor_move() {
+        // Test DSR response reflects actual cursor position
+        let mut state = TerminalState::new(80, 24);
+
+        // Move cursor to row 5, column 10 using CUP (Cursor Position)
+        // ESC [ 5 ; 10 H
+        state.process_output(b"\x1b[5;10H");
+
+        // Request cursor position
+        state.process_output(b"\x1b[6n");
+
+        let responses = state.drain_pty_write_queue();
+        assert_eq!(responses.len(), 1);
+
+        let response = &responses[0];
+        // Should report position as row 5, col 10
+        assert_eq!(response, "\x1b[5;10R", "Response should be \\x1b[5;10R");
     }
 }

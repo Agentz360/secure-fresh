@@ -165,7 +165,19 @@ impl TerminalManager {
                     pixel_width: 0,
                     pixel_height: 0,
                 })
-                .map_err(|e| format!("Failed to open PTY: {}", e))?;
+                .map_err(|e| {
+                    #[cfg(windows)]
+                    {
+                        format!(
+                            "Failed to open PTY: {}. Note: Terminal requires Windows 10 version 1809 or later with ConPTY support.",
+                            e
+                        )
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        format!("Failed to open PTY: {}", e)
+                    }
+                })?;
 
             // Detect shell
             let shell = detect_shell();
@@ -177,11 +189,24 @@ impl TerminalManager {
                 cmd.cwd(dir);
             }
 
+            // On Windows, set environment variables that help with ConPTY
+            #[cfg(windows)]
+            {
+                // Set TERM to help shells understand they're in a terminal
+                cmd.env("TERM", "xterm-256color");
+                // Ensure PROMPT is set for cmd.exe
+                if shell.to_lowercase().contains("cmd") {
+                    cmd.env("PROMPT", "$P$G");
+                }
+            }
+
             // Spawn the shell process
             let mut child = pty_pair
                 .slave
                 .spawn_command(cmd)
-                .map_err(|e| format!("Failed to spawn shell: {}", e))?;
+                .map_err(|e| format!("Failed to spawn shell '{}': {}", shell, e))?;
+
+            tracing::debug!("Shell process spawned successfully");
 
             // Create terminal state
             let state = Arc::new(Mutex::new(TerminalState::new(cols, rows)));
@@ -266,19 +291,46 @@ impl TerminalManager {
 
             // Spawn reader thread
             let terminal_id = id;
+            let pty_response_tx = command_tx.clone();
             thread::spawn(move || {
+                tracing::debug!("Terminal {:?} reader thread started", terminal_id);
                 let mut buf = [0u8; 4096];
+                let mut total_bytes = 0usize;
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => {
                             // EOF - process exited
-                            tracing::info!("Terminal {:?} EOF", terminal_id);
+                            tracing::info!(
+                                "Terminal {:?} EOF after {} total bytes",
+                                terminal_id,
+                                total_bytes
+                            );
                             break;
                         }
                         Ok(n) => {
+                            total_bytes += n;
+                            tracing::debug!(
+                                "Terminal {:?} received {} bytes (total: {})",
+                                terminal_id,
+                                n,
+                                total_bytes
+                            );
                             // Process output through terminal emulator and stream scrollback
                             if let Ok(mut state) = state_clone.lock() {
                                 state.process_output(&buf[..n]);
+
+                                // Send any PTY write responses (e.g., DSR cursor position)
+                                // This is critical for Windows ConPTY where PowerShell waits
+                                // for cursor position response before showing the prompt
+                                for response in state.drain_pty_write_queue() {
+                                    tracing::debug!(
+                                        "Terminal {:?} sending PTY response: {:?}",
+                                        terminal_id,
+                                        response
+                                    );
+                                    let _ = pty_response_tx
+                                        .send(TerminalCommand::Write(response.into_bytes()));
+                                }
 
                                 // Incrementally stream new scrollback lines to backing file
                                 if let Some(ref mut writer) = backing_writer {
@@ -478,8 +530,37 @@ pub fn detect_shell() -> String {
     }
     #[cfg(windows)]
     {
+        // On Windows, prefer PowerShell for better ConPTY and ANSI escape support
+        // Check for PowerShell Core (pwsh) first, then Windows PowerShell
+        let powershell_paths = [
+            "pwsh.exe",
+            "powershell.exe",
+            r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        ];
+
+        for ps in &powershell_paths {
+            if std::path::Path::new(ps).exists() || which_exists(ps) {
+                return ps.to_string();
+            }
+        }
+
+        // Fall back to COMSPEC (cmd.exe)
         std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
     }
+}
+
+/// Check if command exists in PATH (Windows)
+#[cfg(windows)]
+fn which_exists(cmd: &str) -> bool {
+    if let Ok(path_var) = std::env::var("PATH") {
+        for path in path_var.split(';') {
+            let full_path = std::path::Path::new(path).join(cmd);
+            if full_path.exists() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
