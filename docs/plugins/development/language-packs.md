@@ -140,12 +140,11 @@ by Original Author, licensed under MIT. See `grammars/LICENSE` for details.
 
 ## Writing Sublime Syntax Grammars
 
-Fresh uses Sublime Text's `.sublime-syntax` format (YAML-based). This is the recommended format because:
-- More readable than JSON TextMate grammars
-- Better tooling and documentation
-- Supports advanced features like contexts and includes
+Fresh uses Sublime Text's `.sublime-syntax` format (YAML-based).
 
-### Basic Structure
+**Recommendation**: Start with an existing grammar from [fresh-plugins/languages](https://github.com/sinelaw/fresh-plugins/tree/main/languages) and adapt it for your language, rather than writing from scratch.
+
+### Minimal Example
 
 ```yaml
 %YAML 1.2
@@ -156,62 +155,38 @@ file_extensions: [mylang, ml]
 
 contexts:
   main:
-    - include: comments
-    - include: strings
-    - include: keywords
-    - include: numbers
-
-  comments:
+    # Line comments
     - match: //.*$
-      scope: comment.line.double-slash
+      scope: comment.line
 
-    - match: /\*
-      scope: punctuation.definition.comment.begin
-      push:
-        - meta_scope: comment.block
-        - match: \*/
-          scope: punctuation.definition.comment.end
-          pop: true
-
-  strings:
+    # Strings
     - match: '"'
-      scope: punctuation.definition.string.begin
+      scope: string.quoted.double
       push:
-        - meta_scope: string.quoted.double
+        - match: '"'
+          pop: true
         - match: \\.
           scope: constant.character.escape
-        - match: '"'
-          scope: punctuation.definition.string.end
-          pop: true
 
-  keywords:
-    - match: \b(if|else|while|for|return|fn|let|const)\b
+    # Keywords
+    - match: \b(if|else|while|for|return)\b
       scope: keyword.control
-
-  numbers:
-    - match: \b[0-9]+(\.[0-9]+)?\b
-      scope: constant.numeric
 ```
 
-### Key Concepts
+### Documentation Resources
 
-**Scopes**: Define how text is styled. Common scopes include:
-- `comment.line`, `comment.block` - Comments
-- `string.quoted.single`, `string.quoted.double` - Strings
-- `keyword.control`, `keyword.operator` - Keywords
-- `constant.numeric`, `constant.language` - Constants
-- `entity.name.function`, `entity.name.class` - Declarations
-- `variable.parameter`, `variable.other` - Variables
+For comprehensive grammar writing guidance, see the official documentation:
 
-**Contexts**: Named states for the parser. Use `push`/`pop` for nested structures.
+- **[Sublime Text Syntax Reference](https://www.sublimetext.com/docs/syntax.html)** - Complete format specification
+- **[Scope Naming Guide](https://www.sublimetext.com/docs/scope_naming.html)** - Standard scope names for syntax elements
+- **[TextMate Language Grammars](https://macromates.com/manual/en/language_grammars)** - Additional background
 
-**Includes**: Reuse rules across contexts with `include`.
+### Working Examples
 
-### Resources
-
-- [Sublime Text Syntax Documentation](https://www.sublimetext.com/docs/syntax.html)
-- [Scope Naming Conventions](https://www.sublimetext.com/docs/scope_naming.html)
-- [TextMate Grammar Reference](https://macromates.com/manual/en/language_grammars)
+Browse complete, tested grammars in the [fresh-plugins repository](https://github.com/sinelaw/fresh-plugins/tree/main/languages):
+- **Templ** - Simple, self-contained
+- **Hare** - Systems language
+- **Solidity** - Smart contracts
 
 ## Examples
 
