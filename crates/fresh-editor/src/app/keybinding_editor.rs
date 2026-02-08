@@ -7,6 +7,7 @@
 use crate::config::{Config, KeyPress, Keybinding};
 use crate::input::keybindings::{format_keybinding, Action, KeybindingResolver};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::layout::Rect;
 use rust_i18n::t;
 use std::collections::HashMap;
 
@@ -186,6 +187,29 @@ pub enum SourceFilter {
     CustomOnly,
 }
 
+/// Layout information for mouse hit testing
+#[derive(Debug, Clone, Default)]
+pub struct KeybindingEditorLayout {
+    /// The full modal area (all mouse events inside are captured)
+    pub modal_area: Rect,
+    /// The table area (for scroll and click)
+    pub table_area: Rect,
+    /// The y-offset of the first visible row in the table
+    pub table_first_row_y: u16,
+    /// Edit dialog button areas: (save_rect, cancel_rect)
+    pub dialog_buttons: Option<(Rect, Rect)>,
+    /// Edit dialog key field area
+    pub dialog_key_field: Option<Rect>,
+    /// Edit dialog action field area
+    pub dialog_action_field: Option<Rect>,
+    /// Edit dialog context field area
+    pub dialog_context_field: Option<Rect>,
+    /// Confirm dialog button areas: (save, discard, cancel)
+    pub confirm_buttons: Option<(Rect, Rect, Rect)>,
+    /// Search bar area (for clicking to focus)
+    pub search_bar: Option<Rect>,
+}
+
 /// The main keybinding editor state
 #[derive(Debug)]
 pub struct KeybindingEditor {
@@ -248,6 +272,9 @@ pub struct KeybindingEditor {
 
     /// Available action names (for autocomplete)
     pub available_actions: Vec<String>,
+
+    /// Layout info for mouse hit testing (updated during render)
+    pub layout: KeybindingEditorLayout,
 }
 
 impl KeybindingEditor {
@@ -289,6 +316,7 @@ impl KeybindingEditor {
             confirm_selection: 0,
             keymap_names,
             available_actions,
+            layout: KeybindingEditorLayout::default(),
         };
 
         editor.apply_filters();

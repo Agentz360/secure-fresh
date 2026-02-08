@@ -21,7 +21,7 @@ use rust_i18n::t;
 pub fn render_keybinding_editor(
     frame: &mut Frame,
     area: Rect,
-    editor: &KeybindingEditor,
+    editor: &mut KeybindingEditor,
     theme: &Theme,
 ) {
     // Modal dimensions: 90% width, 90% height
@@ -66,6 +66,23 @@ pub fn render_keybinding_editor(
     ])
     .split(inner);
 
+    // Store layout for mouse hit testing
+    editor.layout.modal_area = modal_area;
+    editor.layout.table_area = chunks[1];
+    editor.layout.table_first_row_y = chunks[1].y + 2; // +2 for header + separator
+    editor.layout.search_bar = Some(Rect {
+        x: inner.x,
+        y: inner.y + 1, // second row of header
+        width: inner.width,
+        height: 1,
+    });
+    // Reset dialog layouts (will be set if dialogs are rendered)
+    editor.layout.dialog_buttons = None;
+    editor.layout.dialog_key_field = None;
+    editor.layout.dialog_action_field = None;
+    editor.layout.dialog_context_field = None;
+    editor.layout.confirm_buttons = None;
+
     render_header(frame, chunks[0], editor, theme);
     render_table(frame, chunks[1], editor, theme);
     render_footer(frame, chunks[2], editor, theme);
@@ -75,8 +92,10 @@ pub fn render_keybinding_editor(
         render_help_overlay(frame, inner, theme);
     }
 
-    if let Some(ref dialog) = editor.edit_dialog {
-        render_edit_dialog(frame, inner, dialog, editor, theme);
+    // Need to temporarily take dialog to avoid borrow conflict
+    if let Some(dialog) = editor.edit_dialog.take() {
+        render_edit_dialog(frame, inner, &dialog, editor, theme);
+        editor.edit_dialog = Some(dialog);
     }
 
     if editor.showing_confirm_dialog {
@@ -612,7 +631,7 @@ fn render_edit_dialog(
     frame: &mut Frame,
     area: Rect,
     dialog: &crate::app::keybinding_editor::EditBindingState,
-    _editor: &KeybindingEditor,
+    editor: &mut KeybindingEditor,
     theme: &Theme,
 ) {
     let width = 56u16.min(area.width.saturating_sub(4));
@@ -841,18 +860,36 @@ fn render_edit_dialog(
     } else {
         Style::default().fg(theme.editor_fg)
     };
+    // Store field areas for mouse hit testing
+    editor.layout.dialog_key_field = Some(chunks[2]);
+    editor.layout.dialog_action_field = Some(chunks[3]);
+    editor.layout.dialog_context_field = Some(chunks[5]);
+
+    let save_text = format!(" {} ", t!("keybinding_editor.btn_save"));
+    let cancel_text = format!(" {} ", t!("keybinding_editor.btn_cancel"));
+    let save_x = chunks[8].x + 3;
+    let cancel_x = save_x + save_text.len() as u16 + 2;
+    editor.layout.dialog_buttons = Some((
+        Rect {
+            x: save_x,
+            y: chunks[8].y,
+            width: save_text.len() as u16,
+            height: 1,
+        },
+        Rect {
+            x: cancel_x,
+            y: chunks[8].y,
+            width: cancel_text.len() as u16,
+            height: 1,
+        },
+    ));
+
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw("   "),
-            Span::styled(
-                format!(" {} ", t!("keybinding_editor.btn_save")),
-                save_style,
-            ),
+            Span::styled(save_text, save_style),
             Span::raw("  "),
-            Span::styled(
-                format!(" {} ", t!("keybinding_editor.btn_cancel")),
-                cancel_style,
-            ),
+            Span::styled(cancel_text, cancel_style),
         ])),
         chunks[8],
     );
@@ -937,7 +974,12 @@ fn render_autocomplete_popup(
 }
 
 /// Render the unsaved changes confirm dialog
-fn render_confirm_dialog(frame: &mut Frame, area: Rect, editor: &KeybindingEditor, theme: &Theme) {
+fn render_confirm_dialog(
+    frame: &mut Frame,
+    area: Rect,
+    editor: &mut KeybindingEditor,
+    theme: &Theme,
+) {
     let width = 44u16.min(area.width.saturating_sub(4));
     let height = 7u16.min(area.height.saturating_sub(4));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
@@ -979,6 +1021,9 @@ fn render_confirm_dialog(frame: &mut Frame, area: Rect, editor: &KeybindingEdito
         t!("keybinding_editor.btn_discard").to_string(),
         t!("keybinding_editor.btn_cancel").to_string(),
     ];
+    // Compute button areas for mouse hit testing
+    let mut x_offset = chunks[2].x + 1;
+    let mut btn_rects = Vec::new();
     let mut spans = vec![Span::raw(" ")];
     for (i, opt) in options.iter().enumerate() {
         let style = if i == editor.confirm_selection {
@@ -989,8 +1034,20 @@ fn render_confirm_dialog(frame: &mut Frame, area: Rect, editor: &KeybindingEdito
         } else {
             Style::default().fg(theme.editor_fg)
         };
-        spans.push(Span::styled(format!(" {} ", opt), style));
+        let text = format!(" {} ", opt);
+        let text_len = text.len() as u16;
+        btn_rects.push(Rect {
+            x: x_offset,
+            y: chunks[2].y,
+            width: text_len,
+            height: 1,
+        });
+        x_offset += text_len + 2; // +2 for spacing
+        spans.push(Span::styled(text, style));
         spans.push(Span::raw("  "));
+    }
+    if btn_rects.len() == 3 {
+        editor.layout.confirm_buttons = Some((btn_rects[0], btn_rects[1], btn_rects[2]));
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), chunks[2]);

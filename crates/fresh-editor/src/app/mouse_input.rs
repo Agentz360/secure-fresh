@@ -69,6 +69,11 @@ impl Editor {
                 (false, false)
             };
 
+        // When keybinding editor is open, capture all mouse events
+        if self.keybinding_editor.is_some() {
+            return self.handle_keybinding_editor_mouse(mouse_event);
+        }
+
         // When settings modal is open, capture all mouse events
         if self.settings_state.as_ref().is_some_and(|s| s.visible) {
             return self.handle_settings_mouse(mouse_event, is_double_click);
