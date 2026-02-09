@@ -160,6 +160,15 @@ def main():
             flags=re.MULTILINE,
         )
 
+        # Ensure UpgradeBehavior is set (needed for winget upgrade to replace instead of install alongside)
+        if "UpgradeBehavior" not in content:
+            content = re.sub(
+                r"^(\s*NestedInstallerType: portable)$",
+                r"\1\n    UpgradeBehavior: uninstallPrevious",
+                content,
+                flags=re.MULTILINE,
+            )
+
         yaml_file.write_text(content)
 
     # Show updated manifests
