@@ -1385,6 +1385,22 @@ fn test_delete_binding_full_flow() {
         .unwrap();
     harness.render().unwrap();
 
+    // Immediately after delete (before saving/closing): the table should
+    // already reflect the removal — the action appears as unbound with no key.
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("duplicate_line") || screen.contains("Duplicate"),
+        "After delete (before save): action should still be listed"
+    );
+    assert!(
+        !screen.contains("Ctrl+Shift+D"),
+        "After delete (before save): Ctrl+Shift+D should be gone from the table immediately"
+    );
+    assert!(
+        !screen.contains("custom"),
+        "After delete (before save): 'custom' source should be gone immediately"
+    );
+
     // Save and close keybinding editor with Ctrl+S
     harness
         .send_key(KeyCode::Char('s'), KeyModifiers::CONTROL)
