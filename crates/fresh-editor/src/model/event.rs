@@ -1,4 +1,4 @@
-use crate::model::piece_tree::PieceTree;
+use crate::model::buffer::BufferSnapshot;
 pub use fresh_core::api::{OverlayColorSpec, OverlayOptions};
 pub use fresh_core::overlay::{OverlayHandle, OverlayNamespace};
 pub use fresh_core::{BufferId, CursorId, SplitDirection, SplitId};
@@ -201,12 +201,12 @@ pub enum Event {
     /// Key insight: PieceTree uses Arc<PieceTreeNode> (persistent data structure),
     /// so storing trees for undo/redo is O(1) (Arc clone), not O(n) (content copy).
     BulkEdit {
-        /// Tree state before the edit (for undo)
+        /// Buffer state before the edit (for undo)
         #[serde(skip)]
-        old_tree: Option<Arc<PieceTree>>,
-        /// Tree state after the edit (for redo)
+        old_snapshot: Option<Arc<BufferSnapshot>>,
+        /// Buffer state after the edit (for redo)
         #[serde(skip)]
-        new_tree: Option<Arc<PieceTree>>,
+        new_snapshot: Option<Arc<BufferSnapshot>>,
         /// Cursor states before the edit
         old_cursors: Vec<(CursorId, usize, Option<usize>)>,
         /// Cursor states after the edit
@@ -439,17 +439,17 @@ impl Event {
                 None
             }
             Self::BulkEdit {
-                old_tree,
-                new_tree,
+                old_snapshot,
+                new_snapshot,
                 old_cursors,
                 new_cursors,
                 description,
             } => {
-                // Inverse swaps both trees and cursor states
+                // Inverse swaps both snapshots and cursor states
                 // For undo: old becomes new, new becomes old
                 Some(Self::BulkEdit {
-                    old_tree: new_tree.clone(),
-                    new_tree: old_tree.clone(),
+                    old_snapshot: new_snapshot.clone(),
+                    new_snapshot: old_snapshot.clone(),
                     old_cursors: new_cursors.clone(),
                     new_cursors: old_cursors.clone(),
                     description: format!("Undo: {}", description),

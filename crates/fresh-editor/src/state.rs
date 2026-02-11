@@ -772,16 +772,18 @@ impl EditorState {
             }
 
             Event::BulkEdit {
-                new_tree,
+                new_snapshot,
                 new_cursors,
                 ..
             } => {
-                // Restore the new_tree (target tree state for this event)
+                // Restore the target buffer state (piece tree + buffers) for this event.
                 // - For original application: this is set after apply_events_as_bulk_edit
-                // - For undo: trees are swapped, so new_tree is the original state
-                // - For redo: new_tree is the state after edits
-                if let Some(tree) = new_tree {
-                    self.buffer.restore_piece_tree(tree);
+                // - For undo: snapshots are swapped, so new_snapshot is the original state
+                // - For redo: new_snapshot is the state after edits
+                // Restoring buffers alongside the tree is critical because
+                // consolidate_after_save() can replace buffers between snapshot and restore.
+                if let Some(snapshot) = new_snapshot {
+                    self.buffer.restore_buffer_state(snapshot);
                 }
 
                 // Update cursor positions

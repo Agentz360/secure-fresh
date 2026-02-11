@@ -279,6 +279,18 @@ pub struct TextBuffer {
     version: u64,
 }
 
+/// Snapshot of a TextBuffer's piece tree and associated string buffers.
+///
+/// Used by BulkEdit undo/redo to capture the complete buffer state.
+/// Without this, consolidate_after_save() would destroy the string buffers
+/// that a BulkEdit's piece tree snapshot references, causing corruption on undo.
+#[derive(Debug, Clone)]
+pub struct BufferSnapshot {
+    pub piece_tree: PieceTree,
+    pub buffers: Vec<StringBuffer>,
+    pub next_buffer_id: usize,
+}
+
 impl TextBuffer {
     /// Create a new text buffer with the given filesystem implementation.
     /// Note: large_file_threshold is ignored in the new implementation
@@ -1785,17 +1797,29 @@ impl TextBuffer {
         self.mark_content_modified();
     }
 
-    /// Restore a previously saved piece tree (for undo of BulkEdit)
-    /// This is O(1) because PieceTree uses Arc internally
-    pub fn restore_piece_tree(&mut self, tree: &Arc<PieceTree>) {
-        self.piece_tree = (**tree).clone();
+    /// Restore a previously saved buffer state (for undo/redo of BulkEdit).
+    ///
+    /// This restores the piece tree AND the buffers list, which is critical
+    /// because consolidate_after_save() replaces self.buffers. Without restoring
+    /// buffers, the piece tree would reference buffer IDs that no longer exist.
+    pub fn restore_buffer_state(&mut self, snapshot: &BufferSnapshot) {
+        self.piece_tree = snapshot.piece_tree.clone();
+        self.buffers = snapshot.buffers.clone();
+        self.next_buffer_id = snapshot.next_buffer_id;
         self.mark_content_modified();
     }
 
-    /// Get the current piece tree as an Arc (for saving before BulkEdit)
-    /// This is O(1) - creates an Arc wrapper around a clone of the tree
-    pub fn snapshot_piece_tree(&self) -> Arc<PieceTree> {
-        Arc::new(self.piece_tree.clone())
+    /// Snapshot the current buffer state (piece tree + buffers) for BulkEdit undo/redo.
+    ///
+    /// The snapshot includes buffers because consolidate_after_save() can replace
+    /// self.buffers between the snapshot and restore, which would otherwise cause
+    /// the restored piece tree to reference nonexistent buffer IDs.
+    pub fn snapshot_buffer_state(&self) -> Arc<BufferSnapshot> {
+        Arc::new(BufferSnapshot {
+            piece_tree: self.piece_tree.clone(),
+            buffers: self.buffers.clone(),
+            next_buffer_id: self.next_buffer_id,
+        })
     }
 
     /// Apply bulk edits efficiently in a single pass

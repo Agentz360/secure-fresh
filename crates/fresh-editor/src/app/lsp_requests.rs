@@ -1559,8 +1559,8 @@ impl Editor {
             .map(|(id, c)| (id, c.position, c.anchor))
             .collect();
 
-        // Snapshot the tree for undo (O(1) - Arc clone)
-        let old_tree = state.buffer.snapshot_piece_tree();
+        // Snapshot buffer state for undo (piece tree + buffers)
+        let old_snapshot = state.buffer.snapshot_buffer_state();
 
         // Convert events to edit tuples: (position, delete_len, insert_text)
         let mut edits: Vec<(usize, usize, String)> = Vec::new();
@@ -1629,16 +1629,16 @@ impl Editor {
             }
         }
 
-        // Snapshot the tree after edits (for redo) - O(1) Arc clone
-        let new_tree = state.buffer.snapshot_piece_tree();
+        // Snapshot buffer state after edits (for redo)
+        let new_snapshot = state.buffer.snapshot_buffer_state();
 
         // Invalidate syntax highlighting
         state.highlighter.invalidate_all();
 
         // Create BulkEdit event for undo log
         let bulk_edit = Event::BulkEdit {
-            old_tree: Some(old_tree),
-            new_tree: Some(new_tree),
+            old_snapshot: Some(old_snapshot),
+            new_snapshot: Some(new_snapshot),
             old_cursors,
             new_cursors,
             description,

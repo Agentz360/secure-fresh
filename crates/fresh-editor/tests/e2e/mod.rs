@@ -1,3 +1,4 @@
+pub mod altgr_shift;
 pub mod ansi_cursor;
 pub mod auto_indent;
 pub mod auto_revert;
@@ -90,6 +91,7 @@ pub mod theme;
 pub mod toggle_bars;
 pub mod toggle_comment;
 pub mod triple_click;
+pub mod undo_bulk_edit_after_save;
 pub mod undo_redo;
 pub mod unicode_cursor;
 pub mod unicode_prompt_bugs;
