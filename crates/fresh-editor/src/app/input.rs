@@ -89,6 +89,12 @@ impl Editor {
             return Ok(());
         }
 
+        // If a modal was dismissed (e.g., completion popup closed and returned Ignored),
+        // recalculate the context so the key is processed in the correct context.
+        if context != self.get_key_context() {
+            context = self.get_key_context();
+        }
+
         // Only check buffer mode keybindings if we're not in a higher-priority context
         // (Menu, Prompt, Popup should take precedence over mode bindings)
         let should_check_mode_bindings = matches!(
@@ -230,6 +236,9 @@ impl Editor {
             Action::Quit => self.quit(),
             Action::ForceQuit => {
                 self.should_quit = true;
+            }
+            Action::Detach => {
+                self.should_detach = true;
             }
             Action::Save => {
                 // Check if buffer has a file path - if not, redirect to SaveAs
@@ -543,6 +552,9 @@ impl Editor {
             Action::LspStop => {
                 self.handle_lsp_stop();
             }
+            Action::LspToggleForBuffer => {
+                self.handle_lsp_toggle_for_buffer();
+            }
             Action::ToggleInlayHints => {
                 self.toggle_inlay_hints();
             }
@@ -663,7 +675,7 @@ impl Editor {
                 let current = self
                     .buffers
                     .get(&self.active_buffer())
-                    .map(|s| s.tab_size.to_string())
+                    .map(|s| s.buffer_settings.tab_size.to_string())
                     .unwrap_or_else(|| "4".to_string());
                 self.start_prompt_with_initial_text(
                     "Tab size: ".to_string(),
@@ -685,8 +697,8 @@ impl Editor {
             }
             Action::ToggleIndentationStyle => {
                 if let Some(state) = self.buffers.get_mut(&self.active_buffer()) {
-                    state.use_tabs = !state.use_tabs;
-                    let status = if state.use_tabs {
+                    state.buffer_settings.use_tabs = !state.buffer_settings.use_tabs;
+                    let status = if state.buffer_settings.use_tabs {
                         "Indentation: Tabs"
                     } else {
                         "Indentation: Spaces"
@@ -696,8 +708,9 @@ impl Editor {
             }
             Action::ToggleTabIndicators => {
                 if let Some(state) = self.buffers.get_mut(&self.active_buffer()) {
-                    state.show_whitespace_tabs = !state.show_whitespace_tabs;
-                    let status = if state.show_whitespace_tabs {
+                    state.buffer_settings.show_whitespace_tabs =
+                        !state.buffer_settings.show_whitespace_tabs;
+                    let status = if state.buffer_settings.show_whitespace_tabs {
                         "Tab indicators: Visible"
                     } else {
                         "Tab indicators: Hidden"
@@ -1122,6 +1135,9 @@ impl Editor {
             }
             Action::EventDebug => {
                 self.open_event_debug();
+            }
+            Action::OpenKeybindingEditor => {
+                self.open_keybinding_editor();
             }
             Action::PromptConfirm => {
                 if let Some((input, prompt_type, selected_index)) = self.confirm_prompt() {
@@ -2541,8 +2557,11 @@ impl Editor {
                 // Set terminal cursor color to match theme
                 self.theme.set_terminal_cursor_color();
 
-                // Update the config in memory
-                self.config.theme = self.theme.name.clone().into();
+                // Update the config in memory using the normalized registry key,
+                // not the JSON name field, so that the config value can be looked
+                // up in the registry on restart (fixes #1001).
+                let normalized = crate::view::theme::normalize_theme_name(theme_name);
+                self.config.theme = normalized.into();
 
                 // Persist to config file
                 self.save_theme_to_config();
@@ -2768,8 +2787,14 @@ impl Editor {
             self.config.editor.cursor_style = style;
 
             // Apply the cursor style to the terminal
-            use std::io::stdout;
-            let _ = crossterm::execute!(stdout(), style.to_crossterm_style());
+            if self.session_mode {
+                // In session mode, queue the escape sequence to be sent to the client
+                self.queue_escape_sequences(style.to_escape_sequence());
+            } else {
+                // In normal mode, write directly to stdout
+                use std::io::stdout;
+                let _ = crossterm::execute!(stdout(), style.to_crossterm_style());
+            }
 
             // Persist to config file
             self.save_cursor_style_to_config();
@@ -3138,6 +3163,9 @@ impl Editor {
                 | Action::DeleteWordBackward
                 | Action::DeleteWordForward
                 | Action::DeleteLine
+                | Action::DuplicateLine
+                | Action::MoveLineUp
+                | Action::MoveLineDown
                 | Action::DedentSelection
                 | Action::ToggleComment
         );

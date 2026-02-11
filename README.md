@@ -6,6 +6,8 @@ A terminal-based text editor. [Official Website →](https://sinelaw.github.io/f
 
 **[Contributing](#contributing)**
 
+**[Discord](https://discord.gg/qUutBj9t)**
+
 ## Why?
 
 Why another text editor? Fresh brings the intuitive, conventional UX of editors like VS Code and Sublime Text to the terminal.
@@ -57,9 +59,11 @@ Or, pick your preferred method:
 |----------|--------|
 | macOS | [brew](#brew) |
 | Bazzite/Bluefin/Aurora Linux | [brew](#brew) |
+| Windows | [winget](#windows-winget) |
 | Arch Linux | [AUR](#arch-linux-aur) |
 | Debian/Ubuntu | [.deb](#debianubuntu-deb) |
 | Fedora/RHEL | [.rpm](#fedorarhelopensuse-rpm), [Terra](https://terra.fyralabs.com/) |
+| FreeBSD | [ports / pkg](https://www.freshports.org/editors/fresh) |
 | Linux (any distro) | [AppImage](#appimage), [Flatpak](#flatpak) |
 | All platforms | [Pre-built binaries](#pre-built-binaries) |
 | npm | [npm / npx](#npm) |
@@ -78,6 +82,14 @@ On macOS and some linux distros (Bazzite/Bluefin/Aurora):
 brew tap sinelaw/fresh
 brew install fresh-editor
 ```
+
+### Windows (winget)
+
+```bash
+winget install fresh-editor
+```
+
+Alternatively, Windows users can use [npm](#npm).
 
 ### Arch Linux ([AUR](https://aur.archlinux.org/packages/fresh-editor-bin))
 
@@ -205,7 +217,7 @@ nix profile add github:sinelaw/fresh
 ### From crates.io
 
 ```bash
-cargo install fresh-editor
+cargo install --locked fresh-editor
 ```
 
 ### From source

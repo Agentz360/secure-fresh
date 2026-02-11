@@ -169,6 +169,20 @@ impl CursorStyle {
         }
     }
 
+    /// Get the ANSI escape sequence for this cursor style (DECSCUSR)
+    /// Used for session mode where we can't write directly to terminal
+    pub fn to_escape_sequence(self) -> &'static [u8] {
+        match self {
+            Self::Default => b"\x1b[0 q",
+            Self::BlinkingBlock => b"\x1b[1 q",
+            Self::SteadyBlock => b"\x1b[2 q",
+            Self::BlinkingUnderline => b"\x1b[3 q",
+            Self::SteadyUnderline => b"\x1b[4 q",
+            Self::BlinkingBar => b"\x1b[5 q",
+            Self::SteadyBar => b"\x1b[6 q",
+        }
+    }
+
     /// Parse from string (for command palette)
     pub fn parse(s: &str) -> Option<Self> {
         match s {
@@ -1412,6 +1426,14 @@ impl MenuConfig {
                         when: None,
                         checkbox: None,
                     },
+                    MenuItem::Separator { separator: true },
+                    MenuItem::Action {
+                        label: t!("menu.file.detach").to_string(),
+                        action: "detach".to_string(),
+                        args: HashMap::new(),
+                        when: Some(context_keys::SESSION_MODE.to_string()),
+                        checkbox: None,
+                    },
                     MenuItem::Action {
                         label: t!("menu.file.quit").to_string(),
                         action: "quit".to_string(),
@@ -1530,6 +1552,13 @@ impl MenuConfig {
                     MenuItem::Action {
                         label: t!("menu.edit.settings").to_string(),
                         action: "open_settings".to_string(),
+                        args: HashMap::new(),
+                        when: None,
+                        checkbox: None,
+                    },
+                    MenuItem::Action {
+                        label: t!("menu.edit.keybinding_editor").to_string(),
+                        action: "open_keybinding_editor".to_string(),
                         args: HashMap::new(),
                         when: None,
                         checkbox: None,
@@ -1933,6 +1962,14 @@ impl MenuConfig {
                     MenuItem::Action {
                         label: t!("menu.lsp.stop_server").to_string(),
                         action: "lsp_stop".to_string(),
+                        args: HashMap::new(),
+                        when: None,
+                        checkbox: None,
+                    },
+                    MenuItem::Separator { separator: true },
+                    MenuItem::Action {
+                        label: t!("menu.lsp.toggle_for_buffer").to_string(),
+                        action: "lsp_toggle_for_buffer".to_string(),
                         args: HashMap::new(),
                         when: None,
                         checkbox: None,
@@ -2707,6 +2744,25 @@ impl Config {
             },
         );
 
+        languages.insert(
+            "typst".to_string(),
+            LanguageConfig {
+                extensions: vec!["typ".to_string()],
+                filenames: vec![],
+                grammar: "Typst".to_string(),
+                comment_prefix: Some("//".to_string()),
+                auto_indent: true,
+                highlighter: HighlighterPreference::Auto,
+                textmate_grammar: None,
+                show_whitespace_tabs: true,
+                use_tabs: false,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+            },
+        );
+
         languages
     }
 
@@ -2958,6 +3014,101 @@ impl Config {
             LspServerConfig {
                 command: "templ".to_string(),
                 args: vec!["lsp".to_string()],
+                enabled: true,
+                auto_start: false,
+                process_limits: ProcessLimits::default(),
+                initialization_options: None,
+            },
+        );
+
+        // tinymist - Typst Language Server (https://github.com/Myriad-Dreamin/tinymist)
+        // Install via cargo install tinymist or download from releases
+        lsp.insert(
+            "typst".to_string(),
+            LspServerConfig {
+                command: "tinymist".to_string(),
+                args: vec![],
+                enabled: true,
+                auto_start: false,
+                process_limits: ProcessLimits::default(),
+                initialization_options: None,
+            },
+        );
+
+        // bash-language-server (installed via npm install -g bash-language-server)
+        lsp.insert(
+            "bash".to_string(),
+            LspServerConfig {
+                command: "bash-language-server".to_string(),
+                args: vec!["start".to_string()],
+                enabled: true,
+                auto_start: false,
+                process_limits: ProcessLimits::default(),
+                initialization_options: None,
+            },
+        );
+
+        // lua-language-server (https://github.com/LuaLS/lua-language-server)
+        // Install via package manager or download from releases
+        lsp.insert(
+            "lua".to_string(),
+            LspServerConfig {
+                command: "lua-language-server".to_string(),
+                args: vec![],
+                enabled: true,
+                auto_start: false,
+                process_limits: ProcessLimits::default(),
+                initialization_options: None,
+            },
+        );
+
+        // solargraph - Ruby Language Server (installed via gem install solargraph)
+        lsp.insert(
+            "ruby".to_string(),
+            LspServerConfig {
+                command: "solargraph".to_string(),
+                args: vec!["stdio".to_string()],
+                enabled: true,
+                auto_start: false,
+                process_limits: ProcessLimits::default(),
+                initialization_options: None,
+            },
+        );
+
+        // phpactor - PHP Language Server (https://phpactor.readthedocs.io)
+        // Install via composer global require phpactor/phpactor
+        lsp.insert(
+            "php".to_string(),
+            LspServerConfig {
+                command: "phpactor".to_string(),
+                args: vec!["language-server".to_string()],
+                enabled: true,
+                auto_start: false,
+                process_limits: ProcessLimits::default(),
+                initialization_options: None,
+            },
+        );
+
+        // yaml-language-server (installed via npm install -g yaml-language-server)
+        lsp.insert(
+            "yaml".to_string(),
+            LspServerConfig {
+                command: "yaml-language-server".to_string(),
+                args: vec!["--stdio".to_string()],
+                enabled: true,
+                auto_start: false,
+                process_limits: ProcessLimits::default(),
+                initialization_options: None,
+            },
+        );
+
+        // taplo - TOML Language Server (https://taplo.tamasfe.dev)
+        // Install via cargo install taplo-cli or npm install -g @taplo/cli
+        lsp.insert(
+            "toml".to_string(),
+            LspServerConfig {
+                command: "taplo".to_string(),
+                args: vec!["lsp".to_string(), "stdio".to_string()],
                 enabled: true,
                 auto_start: false,
                 process_limits: ProcessLimits::default(),

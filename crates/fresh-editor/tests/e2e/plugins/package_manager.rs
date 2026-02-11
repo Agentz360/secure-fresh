@@ -235,7 +235,7 @@ globalThis.sample_cmd = function() { editor.setStatus("Sample plugin works!"); }
 
     // Wait for the URL prompt to appear
     harness
-        .wait_until(|h| h.screen_to_string().contains("Git URL"))
+        .wait_until(|h| h.screen_to_string().contains("Git URL or local path"))
         .unwrap();
 
     // Enter the local git repo path as the URL
@@ -263,7 +263,7 @@ globalThis.sample_cmd = function() { editor.setStatus("Sample plugin works!"); }
     assert!(
         screen.contains("Install")
             || screen.contains("sample")
-            || screen.contains("Git URL")
+            || screen.contains("Git URL or local path")
             || screen.contains("Failed"),
         "Should show install progress or result. Screen: {}",
         screen
@@ -804,7 +804,7 @@ globalThis.beta_cmd = function() { editor.setStatus("Beta plugin works!"); };
 
     // Wait for the URL prompt
     harness
-        .wait_until(|h| h.screen_to_string().contains("Git URL"))
+        .wait_until(|h| h.screen_to_string().contains("Git URL or local path"))
         .unwrap();
 
     // Enter monorepo URL with subpath fragment (note: # for subpath)
@@ -1146,7 +1146,7 @@ editor.debug("Bundle test plugin 2 loaded!");
 
     // Wait for the URL prompt to appear
     harness
-        .wait_until(|h| h.screen_to_string().contains("Git URL"))
+        .wait_until(|h| h.screen_to_string().contains("Git URL or local path"))
         .unwrap();
 
     // Enter the local bundle directory path (not git, just a local path)

@@ -2435,3 +2435,50 @@ fn test_esc_clears_search_highlights() {
         highlight_count_after
     );
 }
+
+/// Regex replace with capture groups matches Python semantics:
+/// re.sub(r'bla(bla)', r'oo\1oo', 'blablabla') == 'ooblaoobla'
+#[test]
+fn test_regex_replace_with_capture_group() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.txt");
+    std::fs::write(&file_path, "blablabla").unwrap();
+
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Trigger replace with Ctrl+R
+    harness
+        .send_key(KeyCode::Char('r'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    harness.assert_screen_contains("Replace: ");
+
+    // Toggle regex mode with Alt+R
+    harness
+        .send_key(KeyCode::Char('r'), KeyModifiers::ALT)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Type the regex search pattern
+    harness.type_text("bla(bla)").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Should now show replacement prompt
+    harness.assert_screen_contains("Replace 'bla(bla)' with: ");
+
+    // Type the replacement with capture group reference ($1 syntax)
+    harness.type_text("oo$1oo").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Python: re.sub(r'bla(bla)', r'oo\1oo', 'blablabla') == 'ooblaoobla'
+    let content = harness.get_buffer_content().unwrap();
+    assert_eq!(content, "ooblaoobla");
+}

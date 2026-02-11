@@ -55,12 +55,16 @@ pub(super) struct InteractiveReplaceState {
     pub replacement: String,
     /// Current match position (byte offset of the match we're at)
     pub current_match_pos: usize,
+    /// Length of the current match in bytes (may differ from search.len() for regex)
+    pub current_match_len: usize,
     /// Starting position (to detect when we've wrapped around full circle)
     pub start_pos: usize,
     /// Whether we've wrapped around to the beginning
     pub has_wrapped: bool,
     /// Number of replacements made so far
     pub replacements_made: usize,
+    /// Compiled regex for regex-mode replace (None when regex mode is off)
+    pub regex: Option<regex::bytes::Regex>,
 }
 
 /// The kind of buffer (file-backed or virtual)
@@ -208,7 +212,7 @@ impl BufferMetadata {
         // Use canonicalized forms first to handle macOS /var -> /private/var differences.
         let display_name = Self::display_name_for_path(&path, working_dir);
 
-        // Check if this is a library file (outside project or in vendor directories)
+        // Check if this is a library file (in vendor directories)
         let (lsp_enabled, lsp_disabled_reason) = if Self::is_library_path(&path, working_dir) {
             (false, Some(t!("lsp.disabled.library_file").to_string()))
         } else {
@@ -231,18 +235,12 @@ impl BufferMetadata {
         }
     }
 
-    /// Check if a path is a library file (outside project root or in vendor directories)
+    /// Check if a path is a library file (in vendor directories)
     ///
     /// Library files include:
-    /// - Files outside the working directory
     /// - Files in common vendor/dependency directories (.cargo, node_modules, etc.)
-    pub fn is_library_path(path: &Path, working_dir: &Path) -> bool {
-        // Check if outside working directory
-        if !path.starts_with(working_dir) {
-            return true;
-        }
-
-        // Check for common library paths within the project
+    pub fn is_library_path(path: &Path, _working_dir: &Path) -> bool {
+        // Check for common library paths
         let path_str = path.to_string_lossy();
 
         // Rust: .cargo directory (can be within project for vendor'd crates)
@@ -816,5 +814,54 @@ impl CachedLayout {
             .unwrap_or(target_mapping.line_end_byte);
 
         Some((new_pos, goal_visual_col))
+    }
+
+    /// Get the start byte position of the visual row containing the given byte position.
+    /// If the cursor is already at the visual row start and this is a wrapped continuation,
+    /// moves to the previous visual row's start (within the same logical line).
+    /// Get the start byte position of the visual row containing the given byte position.
+    /// When `allow_advance` is true and the cursor is already at the row start,
+    /// moves to the previous visual row's start.
+    pub fn visual_line_start(
+        &self,
+        split_id: SplitId,
+        byte_pos: usize,
+        allow_advance: bool,
+    ) -> Option<usize> {
+        let mappings = self.view_line_mappings.get(&split_id)?;
+        let row_idx = self.find_visual_row(split_id, byte_pos)?;
+        let row = mappings.get(row_idx)?;
+        let row_start = row.first_source_byte()?;
+
+        if allow_advance && byte_pos == row_start && row_idx > 0 {
+            let prev_row = mappings.get(row_idx - 1)?;
+            prev_row.first_source_byte()
+        } else {
+            Some(row_start)
+        }
+    }
+
+    /// Get the end byte position of the visual row containing the given byte position.
+    /// If the cursor is already at the visual row end and the next row is a wrapped continuation,
+    /// moves to the next visual row's end (within the same logical line).
+    /// Get the end byte position of the visual row containing the given byte position.
+    /// When `allow_advance` is true and the cursor is already at the row end,
+    /// advances to the next visual row's end.
+    pub fn visual_line_end(
+        &self,
+        split_id: SplitId,
+        byte_pos: usize,
+        allow_advance: bool,
+    ) -> Option<usize> {
+        let mappings = self.view_line_mappings.get(&split_id)?;
+        let row_idx = self.find_visual_row(split_id, byte_pos)?;
+        let row = mappings.get(row_idx)?;
+
+        if allow_advance && byte_pos == row.line_end_byte && row_idx + 1 < mappings.len() {
+            let next_row = mappings.get(row_idx + 1)?;
+            Some(next_row.line_end_byte)
+        } else {
+            Some(row.line_end_byte)
+        }
     }
 }

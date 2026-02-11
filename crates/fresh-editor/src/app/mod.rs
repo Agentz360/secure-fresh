@@ -13,6 +13,8 @@ mod file_operations;
 mod help;
 mod input;
 mod input_dispatch;
+pub mod keybinding_editor;
+mod keybinding_editor_actions;
 mod lsp_actions;
 mod lsp_requests;
 mod menu_actions;
@@ -23,8 +25,8 @@ mod plugin_commands;
 mod popup_actions;
 mod prompt_actions;
 mod recovery_actions;
+mod regex_replace;
 mod render;
-pub mod session;
 mod settings_actions;
 mod shell_command;
 mod split_actions;
@@ -37,6 +39,7 @@ pub mod types;
 mod undo_actions;
 mod view_actions;
 pub mod warning_domains;
+pub mod workspace;
 
 use anyhow::Result as AnyhowResult;
 use rust_i18n::t;
@@ -227,6 +230,19 @@ pub struct Editor {
 
     /// Should the editor quit?
     should_quit: bool,
+
+    /// Should the client detach (keep server running)?
+    should_detach: bool,
+
+    /// Running in session/server mode (use hardware cursor only, no REVERSED style)
+    session_mode: bool,
+
+    /// Session name for display in status bar (session mode only)
+    session_name: Option<String>,
+
+    /// Pending escape sequences to send to client (session mode only)
+    /// These get prepended to the next render output
+    pending_escape_sequences: Vec<u8>,
 
     /// If set, the editor should restart with this new working directory
     /// This is used by Open Folder to do a clean context switch
@@ -643,12 +659,15 @@ pub struct Editor {
     /// When switching to a terminal in this set, terminal mode is automatically re-entered.
     terminal_mode_resume: std::collections::HashSet<BufferId>,
 
-    /// Timestamp of the previous mouse click (for double-click detection)
+    /// Timestamp of the previous mouse click (for multi-click detection)
     previous_click_time: Option<std::time::Instant>,
 
-    /// Position of the previous mouse click (for double-click detection)
-    /// Double-click is only detected if both clicks are at the same position
+    /// Position of the previous mouse click (for multi-click detection)
+    /// Multi-click is only detected if all clicks are at the same position
     previous_click_position: Option<(u16, u16)>,
+
+    /// Click count for multi-click detection (1=single, 2=double, 3=triple)
+    click_count: u8,
 
     /// Settings UI state (when settings modal is open)
     pub(crate) settings_state: Option<crate::view::settings::SettingsState>,
@@ -658,6 +677,9 @@ pub struct Editor {
 
     /// Event debug dialog state (when event debug modal is open)
     pub(crate) event_debug: Option<event_debug::EventDebug>,
+
+    /// Keybinding editor state (when keybinding editor modal is open)
+    pub(crate) keybinding_editor: Option<keybinding_editor::KeybindingEditor>,
 
     /// Key translator for input calibration (loaded from config)
     pub(crate) key_translator: crate::input::key_translator::KeyTranslator,
@@ -768,7 +790,9 @@ impl Editor {
     }
 
     /// Create a new editor for testing with custom backends
-    /// Uses empty grammar registry for fast initialization
+    ///
+    /// By default uses empty grammar registry for fast initialization.
+    /// Pass `Some(registry)` for tests that need syntax highlighting or shebang detection.
     #[allow(clippy::too_many_arguments)]
     pub fn for_test(
         config: Config,
@@ -779,7 +803,10 @@ impl Editor {
         color_capability: crate::view::color_support::ColorCapability,
         filesystem: Arc<dyn FileSystem + Send + Sync>,
         time_source: Option<SharedTimeSource>,
+        grammar_registry: Option<Arc<crate::primitives::grammar::GrammarRegistry>>,
     ) -> AnyhowResult<Self> {
+        let grammar_registry = grammar_registry
+            .unwrap_or_else(|| crate::primitives::grammar::GrammarRegistry::empty());
         Self::with_options(
             config,
             width,
@@ -790,7 +817,7 @@ impl Editor {
             dir_context,
             time_source,
             color_capability,
-            crate::primitives::grammar::GrammarRegistry::empty(),
+            grammar_registry,
         )
     }
 
@@ -1083,6 +1110,10 @@ impl Editor {
             keybindings,
             clipboard: crate::services::clipboard::Clipboard::new(),
             should_quit: false,
+            should_detach: false,
+            session_mode: false,
+            session_name: None,
+            pending_escape_sequences: Vec::new(),
             restart_with_dir: None,
             status_message: None,
             plugin_status_message: None,
@@ -1237,9 +1268,11 @@ impl Editor {
             terminal_mode_resume: std::collections::HashSet::new(),
             previous_click_time: None,
             previous_click_position: None,
+            click_count: 0,
             settings_state: None,
             calibration_wizard: None,
             event_debug: None,
+            keybinding_editor: None,
             key_translator: crate::input::key_translator::KeyTranslator::load_from_config_dir(
                 &dir_context.config_dir,
             )
@@ -2262,6 +2295,27 @@ impl Editor {
         self.adjust_other_split_cursors_for_event(&bulk_edit);
         // Note: Do NOT clear search overlays - markers track through edits for F3/Shift+F3
 
+        // Notify LSP of the change using full document replacement.
+        // Bulk edits combine multiple Delete+Insert operations into a single tree pass,
+        // so computing individual incremental LSP changes is not feasible. Instead,
+        // send the full document content which is always correct.
+        let buffer_id = self.active_buffer();
+        let full_content_change = self
+            .buffers
+            .get(&buffer_id)
+            .and_then(|s| s.buffer.to_string())
+            .map(|text| {
+                vec![TextDocumentContentChangeEvent {
+                    range: None,
+                    range_length: None,
+                    text,
+                }]
+            })
+            .unwrap_or_default();
+        if !full_content_change.is_empty() {
+            self.send_lsp_changes_for_buffer(buffer_id, full_content_change);
+        }
+
         Some(bulk_edit)
     }
 
@@ -2650,6 +2704,54 @@ impl Editor {
     /// Check if the editor should quit
     pub fn should_quit(&self) -> bool {
         self.should_quit
+    }
+
+    /// Check if the client should detach (keep server running)
+    pub fn should_detach(&self) -> bool {
+        self.should_detach
+    }
+
+    /// Clear the detach flag (after processing)
+    pub fn clear_detach(&mut self) {
+        self.should_detach = false;
+    }
+
+    /// Set session mode (use hardware cursor only, no REVERSED style for software cursor)
+    pub fn set_session_mode(&mut self, session_mode: bool) {
+        self.session_mode = session_mode;
+        // Also set custom context for command palette filtering
+        if session_mode {
+            self.active_custom_contexts
+                .insert(crate::types::context_keys::SESSION_MODE.to_string());
+        } else {
+            self.active_custom_contexts
+                .remove(crate::types::context_keys::SESSION_MODE);
+        }
+    }
+
+    /// Check if running in session mode
+    pub fn is_session_mode(&self) -> bool {
+        self.session_mode
+    }
+
+    /// Set the session name for display in status bar
+    pub fn set_session_name(&mut self, name: Option<String>) {
+        self.session_name = name;
+    }
+
+    /// Get the session name (for status bar display)
+    pub fn session_name(&self) -> Option<&str> {
+        self.session_name.as_deref()
+    }
+
+    /// Queue escape sequences to be sent to the client (session mode only)
+    pub fn queue_escape_sequences(&mut self, sequences: &[u8]) {
+        self.pending_escape_sequences.extend_from_slice(sequences);
+    }
+
+    /// Take pending escape sequences, clearing the queue
+    pub fn take_pending_escape_sequences(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending_escape_sequences)
     }
 
     /// Check if the editor should restart with a new working directory
@@ -5265,6 +5367,7 @@ impl Editor {
 
                 // Create popup with message + action list
                 let popup = crate::model::event::PopupData {
+                    kind: crate::model::event::PopupKindHint::List,
                     title: Some(title),
                     description: Some(message),
                     transient: false,

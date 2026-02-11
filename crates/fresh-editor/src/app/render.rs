@@ -333,7 +333,8 @@ impl Editor {
         let hide_cursor = self.menu_state.active_menu.is_some()
             || self.key_context == KeyContext::FileExplorer
             || self.terminal_mode
-            || settings_visible;
+            || settings_visible
+            || self.keybinding_editor.is_some();
 
         // Convert HoverTarget to tab hover info for rendering
         let hovered_tab = match &self.mouse_state.hover_target {
@@ -385,6 +386,7 @@ impl Editor {
                 self.config.editor.relative_line_numbers,
                 self.tab_bar_visible,
                 self.config.editor.use_terminal_bg,
+                self.session_mode,
             );
 
         // Detect viewport changes and fire hooks
@@ -581,6 +583,9 @@ impl Editor {
             // Get remote connection info if editing remote files
             let remote_connection = self.remote_connection_info().map(|s| s.to_string());
 
+            // Get session name for display (only in session mode)
+            let session_name = self.session_name().map(|s| s.to_string());
+
             let status_bar_layout = StatusBarRenderer::render_status_bar(
                 frame,
                 main_chunks[status_bar_idx],
@@ -597,6 +602,7 @@ impl Editor {
                 general_warning_count,        // Pass general warning count for badge
                 status_bar_hover,             // Pass hover state for indicator styling
                 remote_connection.as_deref(), // Pass remote connection info
+                session_name.as_deref(),      // Pass session name for status bar display
             );
 
             // Store status bar layout for click detection
@@ -847,6 +853,17 @@ impl Editor {
                 frame,
                 size,
                 wizard,
+                &self.theme,
+            );
+        }
+
+        // Render keybinding editor if active
+        if let Some(ref mut kb_editor) = self.keybinding_editor {
+            crate::view::dimming::apply_dimming(frame, size);
+            crate::view::keybinding_editor::render_keybinding_editor(
+                frame,
+                size,
+                kb_editor,
                 &self.theme,
             );
         }
@@ -1422,7 +1439,7 @@ impl Editor {
     /// they want to start the LSP server for the given language.
     pub fn show_lsp_confirmation_popup(&mut self, language: &str) {
         use crate::model::event::{
-            PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+            PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
         };
 
         // Store the pending confirmation
@@ -1444,6 +1461,7 @@ impl Editor {
         };
 
         let popup = PopupData {
+            kind: PopupKindHint::List,
             title: Some(format!("Start LSP Server: {}?", server_info)),
             description: None,
             transient: false,
@@ -1968,15 +1986,37 @@ impl Editor {
         split_id: SplitId,
         _estimated_line_length: usize,
     ) -> Option<Vec<Event>> {
-        // Determine direction and whether this is a selection action
+        // Classify the action
+        enum VisualAction {
+            UpDown { direction: i8, is_select: bool },
+            LineEnd { is_select: bool },
+            LineStart { is_select: bool },
+        }
+
         // Note: We don't intercept BlockSelectUp/Down because block selection has
         // special semantics (setting block_anchor) that require the default handler
-        let (direction, is_select) = match action {
-            Action::MoveUp => (-1i8, false),
-            Action::MoveDown => (1, false),
-            Action::SelectUp => (-1, true),
-            Action::SelectDown => (1, true),
-            _ => return None, // Not a visual line movement action
+        let visual_action = match action {
+            Action::MoveUp => VisualAction::UpDown {
+                direction: -1,
+                is_select: false,
+            },
+            Action::MoveDown => VisualAction::UpDown {
+                direction: 1,
+                is_select: false,
+            },
+            Action::SelectUp => VisualAction::UpDown {
+                direction: -1,
+                is_select: true,
+            },
+            Action::SelectDown => VisualAction::UpDown {
+                direction: 1,
+                is_select: true,
+            },
+            Action::MoveLineEnd => VisualAction::LineEnd { is_select: false },
+            Action::SelectLineEnd => VisualAction::LineEnd { is_select: true },
+            Action::MoveLineStart => VisualAction::LineStart { is_select: false },
+            Action::SelectLineStart => VisualAction::LineStart { is_select: true },
+            _ => return None, // Not a visual line action
         };
 
         // First, collect cursor data we need (to avoid borrow conflicts)
@@ -1986,12 +2026,33 @@ impl Editor {
                 .cursors
                 .iter()
                 .map(|(cursor_id, cursor)| {
+                    // Check if cursor is at a physical line boundary:
+                    // - at_line_ending: byte at cursor position is a newline or at buffer end
+                    // - at_line_start: cursor is at position 0 or preceded by a newline
+                    let at_line_ending = if cursor.position < state.buffer.len() {
+                        let bytes = state
+                            .buffer
+                            .slice_bytes(cursor.position..cursor.position + 1);
+                        bytes.first() == Some(&b'\n') || bytes.first() == Some(&b'\r')
+                    } else {
+                        true // end of buffer is a boundary
+                    };
+                    let at_line_start = if cursor.position == 0 {
+                        true
+                    } else {
+                        let prev = state
+                            .buffer
+                            .slice_bytes(cursor.position - 1..cursor.position);
+                        prev.first() == Some(&b'\n')
+                    };
                     (
                         cursor_id,
                         cursor.position,
                         cursor.anchor,
                         cursor.sticky_column,
                         cursor.deselect_on_move,
+                        at_line_ending,
+                        at_line_start,
                     )
                 })
                 .collect()
@@ -1999,48 +2060,88 @@ impl Editor {
 
         let mut events = Vec::new();
 
-        for (cursor_id, position, anchor, sticky_column, deselect_on_move) in cursor_data {
-            // Calculate current visual column from cached layout
-            // If we can't find the position in the layout, bail out and let the default handler deal with it
-            let current_visual_col =
-                match self.cached_layout.byte_to_visual_column(split_id, position) {
-                    Some(col) => col,
-                    None => return None, // Position not in cached layout, use default handler
-                };
+        for (
+            cursor_id,
+            position,
+            anchor,
+            sticky_column,
+            deselect_on_move,
+            at_line_ending,
+            at_line_start,
+        ) in cursor_data
+        {
+            let (new_pos, new_sticky) = match &visual_action {
+                VisualAction::UpDown { direction, .. } => {
+                    // Calculate current visual column from cached layout
+                    let current_visual_col =
+                        match self.cached_layout.byte_to_visual_column(split_id, position) {
+                            Some(col) => col,
+                            None => return None,
+                        };
 
-            // Use sticky column if set, otherwise use current visual column
-            let goal_visual_col = if sticky_column > 0 {
-                sticky_column
-            } else {
-                current_visual_col
+                    let goal_visual_col = if sticky_column > 0 {
+                        sticky_column
+                    } else {
+                        current_visual_col
+                    };
+
+                    match self.cached_layout.move_visual_line(
+                        split_id,
+                        position,
+                        goal_visual_col,
+                        *direction,
+                    ) {
+                        Some(result) => result,
+                        None => continue, // At boundary, skip this cursor
+                    }
+                }
+                VisualAction::LineEnd { .. } => {
+                    // Allow advancing to next visual segment only if not at a physical line ending
+                    let allow_advance = !at_line_ending;
+                    match self
+                        .cached_layout
+                        .visual_line_end(split_id, position, allow_advance)
+                    {
+                        Some(end_pos) => (end_pos, 0),
+                        None => return None,
+                    }
+                }
+                VisualAction::LineStart { .. } => {
+                    // Allow advancing to previous visual segment only if not at a physical line start
+                    let allow_advance = !at_line_start;
+                    match self
+                        .cached_layout
+                        .visual_line_start(split_id, position, allow_advance)
+                    {
+                        Some(start_pos) => (start_pos, 0),
+                        None => return None,
+                    }
+                }
             };
 
-            // Try to move using cached layout
-            let move_result =
-                self.cached_layout
-                    .move_visual_line(split_id, position, goal_visual_col, direction);
+            let is_select = match &visual_action {
+                VisualAction::UpDown { is_select, .. } => *is_select,
+                VisualAction::LineEnd { is_select } => *is_select,
+                VisualAction::LineStart { is_select } => *is_select,
+            };
 
-            if let Some((new_pos, new_sticky)) = move_result {
-                // Determine anchor based on action type
-                let new_anchor = if is_select {
-                    Some(anchor.unwrap_or(position))
-                } else if deselect_on_move {
-                    None
-                } else {
-                    anchor
-                };
+            let new_anchor = if is_select {
+                Some(anchor.unwrap_or(position))
+            } else if deselect_on_move {
+                None
+            } else {
+                anchor
+            };
 
-                events.push(Event::MoveCursor {
-                    cursor_id,
-                    old_position: position,
-                    new_position: new_pos,
-                    old_anchor: anchor,
-                    new_anchor,
-                    old_sticky_column: sticky_column,
-                    new_sticky_column: new_sticky,
-                });
-            }
-            // If move_result is None, we're at a boundary - don't generate an event
+            events.push(Event::MoveCursor {
+                cursor_id,
+                old_position: position,
+                new_position: new_pos,
+                old_anchor: anchor,
+                new_anchor,
+                old_sticky_column: sticky_column,
+                new_sticky_column: new_sticky,
+            });
         }
 
         if events.is_empty() {
@@ -2671,6 +2772,44 @@ impl Editor {
     }
 
     /// Perform a replace-all operation
+    /// Build a compiled byte-regex for replace operations using current search settings.
+    /// Returns None when regex mode is off (plain text matching should be used).
+    fn build_replace_regex(&self, search: &str) -> Option<regex::bytes::Regex> {
+        super::regex_replace::build_regex(
+            search,
+            self.search_use_regex,
+            self.search_whole_word,
+            self.search_case_sensitive,
+        )
+    }
+
+    /// Get the length of a regex match at a given position in the buffer.
+    fn get_regex_match_len(&mut self, regex: &regex::bytes::Regex, pos: usize) -> Option<usize> {
+        let state = self.active_state_mut();
+        let remaining = state.buffer.len().saturating_sub(pos);
+        if remaining == 0 {
+            return None;
+        }
+        let bytes = state.buffer.get_text_range_mut(pos, remaining).ok()?;
+        regex.find(&bytes).map(|m| m.len())
+    }
+
+    /// Expand capture group references (e.g. $1, $2, ${name}) in the replacement string
+    /// for a regex match at the given buffer position. Returns the expanded replacement.
+    fn expand_regex_replacement(
+        &mut self,
+        regex: &regex::bytes::Regex,
+        pos: usize,
+        match_len: usize,
+        replacement: &str,
+    ) -> String {
+        let state = self.active_state_mut();
+        if let Ok(bytes) = state.buffer.get_text_range_mut(pos, match_len) {
+            return super::regex_replace::expand_replacement(regex, &bytes, replacement);
+        }
+        replacement.to_string()
+    }
+
     /// Replaces all occurrences of the search query with the replacement text
     ///
     /// OPTIMIZATION: Uses BulkEdit for O(n) tree operations instead of O(n²)
@@ -2681,8 +2820,31 @@ impl Editor {
             return;
         }
 
+        let compiled_regex = self.build_replace_regex(search);
+
         // Find all matches first (before making any modifications)
-        let matches = {
+        // Each match is (position, length, expanded_replacement)
+        let matches: Vec<(usize, usize, String)> = if let Some(ref regex) = compiled_regex {
+            // Regex mode: load buffer content as bytes and find all matches
+            // with capture group expansion in the replacement template
+            let buffer_bytes = {
+                let state = self.active_state_mut();
+                let total_bytes = state.buffer.len();
+                match state.buffer.get_text_range_mut(0, total_bytes) {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("Failed to load buffer for replace: {}", e);
+                        self.set_status_message(t!("error.buffer_not_loaded").to_string());
+                        return;
+                    }
+                }
+            };
+            super::regex_replace::collect_regex_matches(regex, &buffer_bytes, replacement)
+                .into_iter()
+                .map(|m| (m.offset, m.len, m.replacement))
+                .collect()
+        } else {
+            // Plain text mode - replacement is used literally
             let state = self.active_state();
             let buffer_len = state.buffer.len();
             let mut matches = Vec::new();
@@ -2694,7 +2856,7 @@ impl Editor {
                     current_pos,
                     Some(current_pos..buffer_len),
                 ) {
-                    matches.push(offset);
+                    matches.push((offset, search.len(), replacement.to_string()));
                     current_pos = offset + search.len();
                 } else {
                     break;
@@ -2716,17 +2878,21 @@ impl Editor {
         // Create Delete+Insert events for each match
         // Events will be processed in reverse order by apply_events_as_bulk_edit
         let mut events = Vec::with_capacity(count * 2);
-        for &match_pos in &matches {
+        for (match_pos, match_len, expanded_replacement) in &matches {
+            // Get the actual matched text for the delete event
+            let deleted_text = self
+                .active_state_mut()
+                .get_text_range(*match_pos, match_pos + match_len);
             // Delete the matched text
             events.push(Event::Delete {
-                range: match_pos..match_pos + search.len(),
-                deleted_text: search.to_string(), // We know what text is being deleted
+                range: *match_pos..match_pos + match_len,
+                deleted_text,
                 cursor_id,
             });
-            // Insert the replacement
+            // Insert the replacement (with capture groups expanded)
             events.push(Event::Insert {
-                position: match_pos,
-                text: replacement.to_string(),
+                position: *match_pos,
+                text: expanded_replacement.clone(),
                 cursor_id,
             });
         }
@@ -2764,14 +2930,41 @@ impl Editor {
             return;
         }
 
-        // Find the first match lazily (don't find all matches upfront)
-        let state = self.active_state();
-        let start_pos = state.cursors.primary().position;
-        let first_match = state.buffer.find_next(search, start_pos);
+        let compiled_regex = self.build_replace_regex(search);
 
-        let Some(first_match_pos) = first_match else {
-            self.set_status_message(t!("search.no_occurrences", search = search).to_string());
-            return;
+        // Find the first match lazily (don't find all matches upfront)
+        let (first_match_pos, first_match_len) = if let Some(ref regex) = compiled_regex {
+            let state = self.active_state();
+            let start_pos = state.cursors.primary().position;
+            let buffer_len = state.buffer.len();
+            // Try from cursor to end, then wrap from beginning
+            let found = state
+                .buffer
+                .find_next_regex_in_range(regex, start_pos, Some(start_pos..buffer_len))
+                .or_else(|| {
+                    if start_pos > 0 {
+                        state
+                            .buffer
+                            .find_next_regex_in_range(regex, 0, Some(0..start_pos))
+                    } else {
+                        None
+                    }
+                });
+            let Some(pos) = found else {
+                self.set_status_message(t!("search.no_occurrences", search = search).to_string());
+                return;
+            };
+            // Determine the match length by re-matching at the found position
+            let match_len = self.get_regex_match_len(regex, pos).unwrap_or(search.len());
+            (pos, match_len)
+        } else {
+            let state = self.active_state();
+            let start_pos = state.cursors.primary().position;
+            let Some(pos) = state.buffer.find_next(search, start_pos) else {
+                self.set_status_message(t!("search.no_occurrences", search = search).to_string());
+                return;
+            };
+            (pos, search.len())
         };
 
         // Initialize interactive replace state with just the current match
@@ -2779,9 +2972,11 @@ impl Editor {
             search: search.to_string(),
             replacement: replacement.to_string(),
             current_match_pos: first_match_pos,
+            current_match_len: first_match_len,
             start_pos: first_match_pos,
             has_wrapped: false,
             replacements_made: 0,
+            regex: compiled_regex,
         });
 
         // Move cursor to first match
@@ -2822,10 +3017,11 @@ impl Editor {
 
                 // Find next match lazily (after the replacement)
                 let search_pos = ir_state.current_match_pos + ir_state.replacement.len();
-                if let Some((next_match, wrapped)) =
+                if let Some((next_match, match_len, wrapped)) =
                     self.find_next_match_for_replace(&ir_state, search_pos)
                 {
                     ir_state.current_match_pos = next_match;
+                    ir_state.current_match_len = match_len;
                     if wrapped {
                         ir_state.has_wrapped = true;
                     }
@@ -2837,11 +3033,12 @@ impl Editor {
             }
             'n' | 'N' => {
                 // Skip current match and find next
-                let search_pos = ir_state.current_match_pos + ir_state.search.len();
-                if let Some((next_match, wrapped)) =
+                let search_pos = ir_state.current_match_pos + ir_state.current_match_len;
+                if let Some((next_match, match_len, wrapped)) =
                     self.find_next_match_for_replace(&ir_state, search_pos)
                 {
                     ir_state.current_match_pos = next_match;
+                    ir_state.current_match_len = match_len;
                     if wrapped {
                         ir_state.has_wrapped = true;
                     }
@@ -2858,23 +3055,23 @@ impl Editor {
                 // OPTIMIZATION: Uses BulkEdit for O(n) tree operations instead of O(n²)
                 // This directly edits the piece tree without loading the entire buffer
 
-                // Collect ALL match positions including the current match
+                // Collect ALL match positions and lengths including the current match
                 // Start from the current match position
-                let all_matches = {
+                let all_matches: Vec<(usize, usize)> = {
                     let mut matches = Vec::new();
                     let mut temp_state = ir_state.clone();
                     temp_state.has_wrapped = false; // Reset wrap state to find current match
 
                     // First, include the current match
-                    matches.push(ir_state.current_match_pos);
-                    let mut current_pos = ir_state.current_match_pos + ir_state.search.len();
+                    matches.push((ir_state.current_match_pos, ir_state.current_match_len));
+                    let mut current_pos = ir_state.current_match_pos + ir_state.current_match_len;
 
                     // Find all remaining matches
-                    while let Some((next_match, wrapped)) =
+                    while let Some((next_match, match_len, wrapped)) =
                         self.find_next_match_for_replace(&temp_state, current_pos)
                     {
-                        matches.push(next_match);
-                        current_pos = next_match + temp_state.search.len();
+                        matches.push((next_match, match_len));
+                        current_pos = next_match + match_len;
                         if wrapped {
                             temp_state.has_wrapped = true;
                         }
@@ -2890,15 +3087,29 @@ impl Editor {
 
                     // Create Delete+Insert events for each match
                     let mut events = Vec::with_capacity(total_count * 2);
-                    for &match_pos in &all_matches {
+                    for &(match_pos, match_len) in &all_matches {
+                        let deleted_text = self
+                            .active_state_mut()
+                            .get_text_range(match_pos, match_pos + match_len);
+                        // Expand capture group references if in regex mode
+                        let replacement_text = if let Some(ref regex) = ir_state.regex {
+                            self.expand_regex_replacement(
+                                regex,
+                                match_pos,
+                                match_len,
+                                &ir_state.replacement,
+                            )
+                        } else {
+                            ir_state.replacement.clone()
+                        };
                         events.push(Event::Delete {
-                            range: match_pos..match_pos + ir_state.search.len(),
-                            deleted_text: ir_state.search.clone(),
+                            range: match_pos..match_pos + match_len,
+                            deleted_text,
                             cursor_id,
                         });
                         events.push(Event::Insert {
                             position: match_pos,
-                            text: ir_state.replacement.clone(),
+                            text: replacement_text,
                             cursor_id,
                         });
                     }
@@ -2930,50 +3141,89 @@ impl Editor {
     }
 
     /// Find the next match for interactive replace (lazy search with wrap-around)
+    /// Returns (match_position, match_length, wrapped)
     pub(super) fn find_next_match_for_replace(
-        &self,
+        &mut self,
         ir_state: &InteractiveReplaceState,
         start_pos: usize,
-    ) -> Option<(usize, bool)> {
-        let state = self.active_state();
-
-        if ir_state.has_wrapped {
-            // We've already wrapped - only search from start_pos up to (but not including) the original start position
-            // Use find_next_in_range to avoid wrapping again
-            let search_range = Some(start_pos..ir_state.start_pos);
-            if let Some(match_pos) =
-                state
-                    .buffer
-                    .find_next_in_range(&ir_state.search, start_pos, search_range)
-            {
-                return Some((match_pos, true));
-            }
-            None // No more matches before original start position
-        } else {
-            // Haven't wrapped yet - search normally from start_pos
-            // First try from start_pos to end of buffer
+    ) -> Option<(usize, usize, bool)> {
+        if let Some(ref regex) = ir_state.regex {
+            // Regex mode
+            let regex = regex.clone();
+            let state = self.active_state();
             let buffer_len = state.buffer.len();
-            let search_range = Some(start_pos..buffer_len);
-            if let Some(match_pos) =
-                state
-                    .buffer
-                    .find_next_in_range(&ir_state.search, start_pos, search_range)
-            {
-                return Some((match_pos, false));
-            }
 
-            // No match from start_pos to end - wrap to beginning
-            // Search from 0 to start_pos (original position)
-            let wrap_range = Some(0..ir_state.start_pos);
-            if let Some(match_pos) =
-                state
-                    .buffer
-                    .find_next_in_range(&ir_state.search, 0, wrap_range)
-            {
-                return Some((match_pos, true)); // Found match after wrapping
-            }
+            if ir_state.has_wrapped {
+                let search_range = Some(start_pos..ir_state.start_pos);
+                if let Some(match_pos) =
+                    state
+                        .buffer
+                        .find_next_regex_in_range(&regex, start_pos, search_range)
+                {
+                    let match_len = self.get_regex_match_len(&regex, match_pos).unwrap_or(0);
+                    return Some((match_pos, match_len, true));
+                }
+                None
+            } else {
+                let search_range = Some(start_pos..buffer_len);
+                if let Some(match_pos) =
+                    state
+                        .buffer
+                        .find_next_regex_in_range(&regex, start_pos, search_range)
+                {
+                    let match_len = self.get_regex_match_len(&regex, match_pos).unwrap_or(0);
+                    return Some((match_pos, match_len, false));
+                }
 
-            None // No matches found anywhere
+                // Wrap to beginning
+                let wrap_range = Some(0..ir_state.start_pos);
+                let state = self.active_state();
+                if let Some(match_pos) =
+                    state.buffer.find_next_regex_in_range(&regex, 0, wrap_range)
+                {
+                    let match_len = self.get_regex_match_len(&regex, match_pos).unwrap_or(0);
+                    return Some((match_pos, match_len, true));
+                }
+
+                None
+            }
+        } else {
+            // Plain text mode
+            let search_len = ir_state.search.len();
+            let state = self.active_state();
+
+            if ir_state.has_wrapped {
+                let search_range = Some(start_pos..ir_state.start_pos);
+                if let Some(match_pos) =
+                    state
+                        .buffer
+                        .find_next_in_range(&ir_state.search, start_pos, search_range)
+                {
+                    return Some((match_pos, search_len, true));
+                }
+                None
+            } else {
+                let buffer_len = state.buffer.len();
+                let search_range = Some(start_pos..buffer_len);
+                if let Some(match_pos) =
+                    state
+                        .buffer
+                        .find_next_in_range(&ir_state.search, start_pos, search_range)
+                {
+                    return Some((match_pos, search_len, false));
+                }
+
+                let wrap_range = Some(0..ir_state.start_pos);
+                if let Some(match_pos) =
+                    state
+                        .buffer
+                        .find_next_in_range(&ir_state.search, 0, wrap_range)
+                {
+                    return Some((match_pos, search_len, true));
+                }
+
+                None
+            }
         }
     }
 
@@ -2983,8 +3233,15 @@ impl Editor {
         ir_state: &InteractiveReplaceState,
     ) -> AnyhowResult<()> {
         let match_pos = ir_state.current_match_pos;
-        let search_len = ir_state.search.len();
-        let range = match_pos..(match_pos + search_len);
+        let match_len = ir_state.current_match_len;
+        let range = match_pos..(match_pos + match_len);
+
+        // Expand capture group references if in regex mode
+        let replacement_text = if let Some(ref regex) = ir_state.regex {
+            self.expand_regex_replacement(regex, match_pos, match_len, &ir_state.replacement)
+        } else {
+            ir_state.replacement.clone()
+        };
 
         // Get the deleted text for the event
         let deleted_text = self
@@ -3017,7 +3274,7 @@ impl Editor {
             },
             Event::Insert {
                 position: match_pos,
-                text: ir_state.replacement.clone(),
+                text: replacement_text,
                 cursor_id,
             },
         ];

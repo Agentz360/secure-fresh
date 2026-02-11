@@ -1,9 +1,14 @@
 // Editor library - exposes all core modules for testing
 
-// Initialize i18n with translations from locales/ directory
-rust_i18n::i18n!("locales", fallback = "en", minify_key = true);
-
 pub mod i18n;
+
+// Initialize i18n with empty directory (no compile-time code generation)
+// All translations are provided by the runtime backend
+rust_i18n::i18n!(
+    "locales-empty",
+    fallback = "en",
+    backend = i18n::runtime_backend::RuntimeBackend::new()
+);
 
 // Core types and config are always available (needed for schema generation)
 pub mod config;
@@ -14,9 +19,9 @@ pub mod types;
 #[cfg(feature = "runtime")]
 pub mod config_io;
 #[cfg(feature = "runtime")]
-pub mod session;
-#[cfg(feature = "runtime")]
 pub mod state;
+#[cfg(feature = "runtime")]
+pub mod workspace;
 
 // Core modules - always available (pure Rust, no platform dependencies)
 // Submodules within primitives that need ratatui/syntect are internally gated
@@ -30,6 +35,12 @@ pub mod app;
 pub mod input;
 #[cfg(feature = "runtime")]
 pub mod services;
+
+// Session persistence (client-server architecture)
+#[cfg(feature = "runtime")]
+pub mod client;
+#[cfg(feature = "runtime")]
+pub mod server;
 
 // View module - available for runtime, WASM, and dev-bins (schema generation)
 // Most submodules are runtime-only, but theme types are always available

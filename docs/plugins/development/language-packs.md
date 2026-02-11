@@ -74,17 +74,83 @@ The manifest configures the language pack:
 | `tabSize` | Default indentation width |
 | `useTabs` | Use tabs instead of spaces |
 | `autoIndent` | Enable automatic indentation |
-| `formatter.command` | Formatter command (e.g., `prettier`) |
-| `formatter.args` | Arguments for the formatter |
+| `formatter.command` | Formatter command (e.g., `prettier`, `rustfmt`) |
+| `formatter.args` | Arguments for the formatter (file path is passed automatically) |
+
+**Formatter Examples:**
+
+```json
+// Prettier (JavaScript/TypeScript/etc.)
+"formatter": {
+  "command": "prettier",
+  "args": ["--write"]
+}
+
+// Prettier with plugin (Svelte, Vue, etc.)
+"formatter": {
+  "command": "prettier",
+  "args": ["--write", "--plugin", "prettier-plugin-svelte"]
+}
+
+// Black (Python)
+"formatter": {
+  "command": "black",
+  "args": ["-"]
+}
+
+// rustfmt (Rust)
+"formatter": {
+  "command": "rustfmt",
+  "args": []
+}
+
+// gofmt (Go)
+"formatter": {
+  "command": "gofmt",
+  "args": ["-w"]
+}
+```
+
+**Note:** The file path is automatically appended to the args by Fresh. Some formatters expect stdin (use `"-"` as arg), others expect file path.
 
 ### LSP Configuration
 
 | Field | Description |
 |-------|-------------|
-| `command` | LSP server executable |
-| `args` | Arguments to pass to the server |
+| `command` | LSP server executable (e.g., `rust-analyzer`, `typescript-language-server`) |
+| `args` | Arguments to pass to the server (e.g., `["--stdio"]`) |
 | `autoStart` | Start server when opening matching files |
-| `initializationOptions` | Custom LSP initialization options |
+| `initializationOptions` | Custom LSP initialization options (language-specific JSON) |
+
+**Finding LSP Servers:**
+- [Language Server Protocol Implementations](https://microsoft.github.io/language-server-protocol/implementors/servers/) - Official registry
+- [langserver.org](https://langserver.org/) - Community directory
+
+**Common LSP Servers:**
+
+| Language | Server | Command | Installation |
+|----------|--------|---------|--------------|
+| Rust | rust-analyzer | `rust-analyzer` | `rustup component add rust-analyzer` |
+| TypeScript/JavaScript | typescript-language-server | `typescript-language-server` | `npm install -g typescript-language-server` |
+| Python | pyright | `pyright-langserver` | `npm install -g pyright` |
+| Go | gopls | `gopls` | `go install golang.org/x/tools/gopls@latest` |
+| C/C++ | clangd | `clangd` | System package manager |
+
+**Example with initialization options:**
+```json
+"lsp": {
+  "command": "rust-analyzer",
+  "args": [],
+  "autoStart": true,
+  "initializationOptions": {
+    "cargo": {
+      "buildScripts": {
+        "enable": true
+      }
+    }
+  }
+}
+```
 
 ## Finding Existing Grammars
 
@@ -93,6 +159,35 @@ Before writing a grammar from scratch, search online for existing Sublime Text o
 1. **Search GitHub** for `<language> sublime-syntax` or `<language> tmLanguage`
 2. **Check VS Code extensions** - many use TextMate/Sublime grammars
 3. **Browse [Package Control](https://packagecontrol.io/)** - Sublime Text's package repository
+
+### ⚠️ Grammar Compatibility
+
+**Important:** Fresh supports a subset of sublime-syntax features. Before using a grammar, check that it:
+
+**Will NOT work:**
+- Uses `extends: Packages/...` directive (grammar inheritance)
+- References external grammars or packages
+- Has dependencies on other grammar files
+
+**Will work:**
+- Standalone, self-contained grammars
+- Grammars using only `include` for internal contexts
+- No external dependencies
+
+**Examples of compatible grammars:**
+- See [fresh-plugins/languages](https://github.com/sinelaw/fresh-plugins/tree/main/languages) for working examples (templ, hare, solidity)
+- Standalone grammars from Package Control that don't use `extends`
+
+**To test compatibility:**
+
+Try installing your language pack locally (see Testing section below) and check the logs for parse errors.
+
+If you find a grammar that uses `extends`, you'll need to either:
+1. Find an alternative standalone grammar
+2. Manually merge the base grammar into your grammar file
+3. Create a new standalone grammar from scratch
+
+### Attribution
 
 When using an existing grammar:
 
@@ -110,12 +205,11 @@ by Original Author, licensed under MIT. See `grammars/LICENSE` for details.
 
 ## Writing Sublime Syntax Grammars
 
-Fresh uses Sublime Text's `.sublime-syntax` format (YAML-based). This is the recommended format because:
-- More readable than JSON TextMate grammars
-- Better tooling and documentation
-- Supports advanced features like contexts and includes
+Fresh uses Sublime Text's `.sublime-syntax` format (YAML-based).
 
-### Basic Structure
+**Recommendation**: Start with an existing grammar from [fresh-plugins/languages](https://github.com/sinelaw/fresh-plugins/tree/main/languages) and adapt it for your language, rather than writing from scratch.
+
+### Minimal Example
 
 ```yaml
 %YAML 1.2
@@ -126,62 +220,38 @@ file_extensions: [mylang, ml]
 
 contexts:
   main:
-    - include: comments
-    - include: strings
-    - include: keywords
-    - include: numbers
-
-  comments:
+    # Line comments
     - match: //.*$
-      scope: comment.line.double-slash
+      scope: comment.line
 
-    - match: /\*
-      scope: punctuation.definition.comment.begin
-      push:
-        - meta_scope: comment.block
-        - match: \*/
-          scope: punctuation.definition.comment.end
-          pop: true
-
-  strings:
+    # Strings
     - match: '"'
-      scope: punctuation.definition.string.begin
+      scope: string.quoted.double
       push:
-        - meta_scope: string.quoted.double
+        - match: '"'
+          pop: true
         - match: \\.
           scope: constant.character.escape
-        - match: '"'
-          scope: punctuation.definition.string.end
-          pop: true
 
-  keywords:
-    - match: \b(if|else|while|for|return|fn|let|const)\b
+    # Keywords
+    - match: \b(if|else|while|for|return)\b
       scope: keyword.control
-
-  numbers:
-    - match: \b[0-9]+(\.[0-9]+)?\b
-      scope: constant.numeric
 ```
 
-### Key Concepts
+### Documentation Resources
 
-**Scopes**: Define how text is styled. Common scopes include:
-- `comment.line`, `comment.block` - Comments
-- `string.quoted.single`, `string.quoted.double` - Strings
-- `keyword.control`, `keyword.operator` - Keywords
-- `constant.numeric`, `constant.language` - Constants
-- `entity.name.function`, `entity.name.class` - Declarations
-- `variable.parameter`, `variable.other` - Variables
+Official documentation:
 
-**Contexts**: Named states for the parser. Use `push`/`pop` for nested structures.
+- **[Sublime Text Syntax Reference](https://www.sublimetext.com/docs/syntax.html)** - Complete format specification
+- **[Scope Naming Guide](https://www.sublimetext.com/docs/scope_naming.html)** - Standard scope names for syntax elements
+- **[TextMate Language Grammars](https://macromates.com/manual/en/language_grammars)** - Additional background
 
-**Includes**: Reuse rules across contexts with `include`.
+### Working Examples
 
-### Resources
-
-- [Sublime Text Syntax Documentation](https://www.sublimetext.com/docs/syntax.html)
-- [Scope Naming Conventions](https://www.sublimetext.com/docs/scope_naming.html)
-- [TextMate Grammar Reference](https://macromates.com/manual/en/language_grammars)
+Browse complete, tested grammars in the [fresh-plugins repository](https://github.com/sinelaw/fresh-plugins/tree/main/languages):
+- **Templ** - Simple, self-contained
+- **Hare** - Systems language
+- **Solidity** - Smart contracts
 
 ## Examples
 
@@ -199,29 +269,97 @@ languages/solidity/
 └── README.md
 ```
 
-### Grammar with Embedded Languages
+### Complete Working Example
 
-See the [Templ language pack](https://github.com/sinelaw/fresh-plugins/tree/main/languages/templ) for an example that extends Go syntax:
+See the [Templ language pack](https://github.com/sinelaw/fresh-plugins/tree/main/languages/templ) for a complete, self-contained grammar example:
 
 ```yaml
 %YAML 1.2
 ---
 name: Templ
-scope: source.go.templ
-extends: Packages/Go/Go.sublime-syntax
+scope: source.templ
+version: 2
 
 file_extensions:
   - templ
 
+variables:
+  ident: '[a-zA-Z_][a-zA-Z0-9_]*'
+
 contexts:
-  # Custom rules that extend the base Go grammar
+  main:
+    # All grammar rules defined inline
+    # No external dependencies
 ```
 
-## Testing
+## Testing and Local Development
 
-1. **Local testing**: Copy your language pack to `~/.config/fresh/grammars/`
+### Testing with Local Path (Recommended)
+
+The fastest way to test your language pack during development:
+
+1. **Open Fresh** with a test file
+2. **Open command palette**: Press `Ctrl+P` then type `>`
+3. **Install from local path**:
+   - Type `package` and select "Package: Install from URL"
+   - Enter the full path to your language pack directory: `/path/to/your-language-pack`
+4. **Check for errors**:
+   - Open command palette and run "Show Warnings"
+   - Check for grammar parse errors or missing files
+5. **Iterate**: Edit your grammar, then reinstall from the same local path to reload
+
+### Alternative: Manual Installation
+
+1. **Copy** your language pack to `~/.config/fresh/grammars/<package-name>/`
 2. **Validate manifest**: Run `./validate.sh` in your package directory
 3. **Restart Fresh** to load the new grammar
+
+### Validation
+
+Always validate your package before publishing:
+
+```bash
+# Validate package.json schema
+./validate.sh
+
+# Test by installing locally and checking logs
+# (see Troubleshooting section for log commands)
+```
+
+## Troubleshooting
+
+### Debugging Commands
+
+```bash
+# Show log locations
+fresh --show-paths
+
+# View Fresh logs (check for grammar parse errors)
+tail -f ~/.local/state/fresh/logs/fresh-*.log
+
+# Check LSP logs
+tail -f ~/.local/state/fresh/logs/lsp/<language>-*.log
+
+# Validate package.json
+./validate.sh
+```
+
+### Common Issues
+
+**Syntax highlighting not working:**
+- Check logs for `Failed to parse grammar` - most often caused by `extends` directive (see compatibility warning)
+- Verify file extension in package.json: use `["py"]` not `[".py"]`
+- Confirm grammar file path is correct
+
+**LSP server not starting:**
+- Verify server is installed: `which <server-command>`
+- Check LSP logs for error messages
+- See [LSP server registry](https://microsoft.github.io/language-server-protocol/implementors/servers/) for correct invocation
+
+**Formatter not working:**
+- Verify formatter is installed: `which <formatter>`
+- Test manually: `<formatter> <args> <file>`
+- Check formatter documentation for correct arguments
 
 ## Publishing
 
@@ -229,7 +367,14 @@ contexts:
 2. Submit a PR to [fresh-plugins-registry](https://github.com/sinelaw/fresh-plugins-registry)
 3. Add your package to `languages.json`
 
-After approval, users can install with:
-```
-:pkg install your-language
+After approval, users can install via the command palette:
+1. Press `Ctrl+P` then type `>`
+2. Type `package` and select "Package: Install from URL"
+3. Enter your package name or git URL
+
+Users can also install directly from your git repository:
+```bash
+# In Fresh command palette
+Package: Install from URL
+# Then enter: https://github.com/username/your-language-pack
 ```

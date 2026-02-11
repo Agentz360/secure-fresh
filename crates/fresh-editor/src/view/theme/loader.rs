@@ -9,6 +9,15 @@ use std::path::{Path, PathBuf};
 
 use super::types::{Theme, ThemeFile, ThemeInfo, BUILTIN_THEMES};
 
+/// Normalize a theme name for consistent lookup and storage.
+///
+/// Converts to lowercase and replaces underscores and spaces with hyphens.
+/// This ensures that theme names can be matched regardless of how they appear
+/// in filenames vs. JSON content (e.g., "Catppuccin Mocha" matches "catppuccin-mocha").
+pub fn normalize_theme_name(name: &str) -> String {
+    name.to_lowercase().replace('_', "-").replace(' ', "-")
+}
+
 /// A registry holding all loaded themes.
 ///
 /// This is a pure data structure - no I/O operations.
@@ -24,8 +33,7 @@ pub struct ThemeRegistry {
 impl ThemeRegistry {
     /// Get a theme by name.
     pub fn get(&self, name: &str) -> Option<&Theme> {
-        let normalized = name.to_lowercase().replace('_', "-");
-        self.themes.get(&normalized)
+        self.themes.get(&normalize_theme_name(name))
     }
 
     /// Get a cloned theme by name.
@@ -45,8 +53,7 @@ impl ThemeRegistry {
 
     /// Check if a theme exists.
     pub fn contains(&self, name: &str) -> bool {
-        let normalized = name.to_lowercase().replace('_', "-");
-        self.themes.contains_key(&normalized)
+        self.themes.contains_key(&normalize_theme_name(name))
     }
 
     /// Number of themes in the registry.
@@ -94,8 +101,9 @@ impl ThemeLoader {
         for builtin in BUILTIN_THEMES {
             if let Ok(theme_file) = serde_json::from_str::<ThemeFile>(builtin.json) {
                 let theme: Theme = theme_file.into();
-                themes.insert(builtin.name.to_string(), theme);
-                theme_list.push(ThemeInfo::new(builtin.name, builtin.pack));
+                let normalized = normalize_theme_name(builtin.name);
+                themes.insert(normalized.clone(), theme);
+                theme_list.push(ThemeInfo::new(normalized, builtin.pack));
             }
         }
 
@@ -180,7 +188,7 @@ impl ThemeLoader {
                                 if let Ok(theme_file) = serde_json::from_str::<ThemeFile>(&content)
                                 {
                                     let theme: Theme = theme_file.into();
-                                    let normalized_name = name.to_lowercase().replace(' ', "-");
+                                    let normalized_name = normalize_theme_name(name);
                                     // Don't overwrite existing themes
                                     if !themes.contains_key(&normalized_name) {
                                         themes.insert(normalized_name.clone(), theme);
@@ -236,7 +244,8 @@ impl ThemeLoader {
                 self.scan_directory(&path, &new_pack, themes, theme_list);
             } else if path.extension().is_some_and(|ext| ext == "json") {
                 // Load theme file
-                let name = path.file_stem().unwrap().to_string_lossy().to_string();
+                let raw_name = path.file_stem().unwrap().to_string_lossy().to_string();
+                let name = normalize_theme_name(&raw_name);
 
                 // Skip if already loaded (embedded themes take priority)
                 if themes.contains_key(&name) {
@@ -298,10 +307,11 @@ mod tests {
         assert!(registry.get("light").is_some());
         assert!(registry.get("high-contrast").is_some());
 
-        // Name normalization
+        // Name normalization: casing, underscores, spaces
         assert!(registry.get("Dark").is_some());
         assert!(registry.get("DARK").is_some());
         assert!(registry.get("high_contrast").is_some());
+        assert!(registry.get("high contrast").is_some());
 
         // Non-existent
         assert!(registry.get("nonexistent-theme").is_none());
@@ -473,6 +483,67 @@ mod tests {
             theme_info.pack, "pkg/my-theme-pack",
             "Packaged theme should have correct pack name"
         );
+    }
+
+    #[test]
+    fn test_normalize_theme_name() {
+        assert_eq!(normalize_theme_name("dark"), "dark");
+        assert_eq!(normalize_theme_name("Dark"), "dark");
+        assert_eq!(normalize_theme_name("high_contrast"), "high-contrast");
+        assert_eq!(normalize_theme_name("Catppuccin Mocha"), "catppuccin-mocha");
+        assert_eq!(normalize_theme_name("My_Custom Theme"), "my-custom-theme");
+        assert_eq!(normalize_theme_name("SOLARIZED_DARK"), "solarized-dark");
+    }
+
+    /// Regression test for #1001: theme whose JSON "name" field differs from the
+    /// filename (e.g., filename "catppuccin-mocha.json" but JSON name "Catppuccin Mocha")
+    /// should be findable by either name after normalization.
+    #[test]
+    fn test_theme_name_mismatch_json_vs_filename() {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let themes_dir = temp_dir.path().to_path_buf();
+
+        // Simulate a theme where the JSON name has spaces/mixed case
+        // but the filename uses hyphens (common for community themes)
+        let theme_json = r#"{
+            "name": "Catppuccin Mocha",
+            "editor": {},
+            "ui": {},
+            "search": {},
+            "diagnostic": {},
+            "syntax": {}
+        }"#;
+        std::fs::write(themes_dir.join("catppuccin-mocha.json"), theme_json)
+            .expect("Failed to write theme file");
+
+        let loader = ThemeLoader::new(themes_dir);
+        let registry = loader.load_all();
+
+        // Should be findable by the normalized filename
+        assert!(
+            registry.contains("catppuccin-mocha"),
+            "Theme should be found by normalized filename"
+        );
+
+        // Should also be findable by the JSON name (spaces normalized to hyphens)
+        assert!(
+            registry.contains("Catppuccin Mocha"),
+            "Theme should be found by JSON name with spaces (normalized to hyphens)"
+        );
+
+        // Should also be findable with mixed casing
+        assert!(
+            registry.contains("CATPPUCCIN-MOCHA"),
+            "Theme should be found regardless of casing"
+        );
+
+        // The registry key should be the normalized form
+        let theme_list = registry.list();
+        let theme_info = theme_list
+            .iter()
+            .find(|t| t.name == "catppuccin-mocha")
+            .expect("Theme should appear with normalized name in theme list");
+        assert_eq!(theme_info.pack, "user");
     }
 
     /// Test that themes in subdirectories of the user themes directory are loaded.

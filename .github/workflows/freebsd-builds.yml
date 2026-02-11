@@ -24,24 +24,33 @@ jobs:
           run: |
             set -e  # Exit immediately on any error
 
-            # 1. Build project
-            cargo build --release --locked
+            # 1. Add swap space to avoid OOM during compilation.
+            #    The FreeBSD VM has limited RAM; heavy crates like rquickjs
+            #    (bindgen) and oxc can exhaust it when compiled in parallel.
+            dd if=/dev/zero of=/swapfile bs=1m count=4096 || true
+            chmod 0600 /swapfile
+            mdconfig -a -t vnode -f /swapfile -u 0 || true
+            swapon /dev/md0 || true
+
+            # 2. Build project with reduced parallelism to limit peak memory.
+            #    -j 2 prevents too many concurrent rustc instances.
+            CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 cargo build --release --locked -j 2
 
             # Verify binary was built
             ls -la target/release/fresh
 
-            # 2. Setup Variables
+            # 3. Setup Variables
             TARGET="x86_64-unknown-freebsd"
             ARCHIVE_NAME="fresh-editor-${TARGET}"
             mkdir -p "${ARCHIVE_NAME}"
 
-            # 3. Package assets
+            # 4. Package assets
             cp target/release/fresh "${ARCHIVE_NAME}/"
             cp README.md LICENSE CHANGELOG.md "${ARCHIVE_NAME}/" || true
             cp -r crates/fresh-editor/plugins "${ARCHIVE_NAME}/" || true
             cp -r crates/fresh-editor/themes "${ARCHIVE_NAME}/" || true
 
-            # 4. Create Archive
+            # 5. Create Archive
             tar -cJvf "${ARCHIVE_NAME}.tar.xz" "${ARCHIVE_NAME}"
             sha256 -q "${ARCHIVE_NAME}.tar.xz" > "${ARCHIVE_NAME}.tar.xz.sha256"
 

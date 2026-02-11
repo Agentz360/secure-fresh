@@ -1,6 +1,7 @@
 //! Action to event conversion - translates high-level actions into buffer events
 
 use crate::input::keybindings::Action;
+use crate::input::line_move::{move_lines, LineMoveDirection};
 use crate::model::buffer::{Buffer, LineEnding};
 use crate::model::cursor::{Position2D, SelectionMode};
 use crate::model::event::{CursorId, Event};
@@ -914,7 +915,7 @@ pub fn action_to_events(
                 let mut cursor_line_end_position: Option<usize> = None;
 
                 if auto_indent {
-                    let use_tabs = state.use_tabs;
+                    let use_tabs = state.buffer_settings.use_tabs;
                     if let Some(language) = state.highlighter.language() {
                         // Use tree-sitter-based indent when we have a highlighter
                         if let Some(indent_width) = state
@@ -1135,7 +1136,7 @@ pub fn action_to_events(
 
         Action::InsertTab => {
             // Insert a tab character or spaces based on language config
-            let tab_str = if state.use_tabs {
+            let tab_str = if state.buffer_settings.use_tabs {
                 "\t".to_string()
             } else {
                 " ".repeat(tab_size)
@@ -2272,6 +2273,24 @@ pub fn action_to_events(
             apply_deletions(state, deletions, &mut events);
         }
 
+        Action::MoveLineUp => {
+            move_lines(
+                state,
+                &mut events,
+                LineMoveDirection::Up,
+                estimated_line_length,
+            );
+        }
+
+        Action::MoveLineDown => {
+            move_lines(
+                state,
+                &mut events,
+                LineMoveDirection::Down,
+                estimated_line_length,
+            );
+        }
+
         Action::TransposeChars => {
             // Transpose the character before the cursor with the one at the cursor
             // Collect cursor positions first to avoid borrow issues
@@ -2369,6 +2388,85 @@ pub fn action_to_events(
             }
         }
 
+        Action::DuplicateLine => {
+            // Duplicate the current line (or selected lines) below
+            // Process cursors in reverse order to avoid position shifts
+            let mut cursor_data: Vec<_> = state
+                .cursors
+                .iter()
+                .filter_map(|(cursor_id, cursor)| {
+                    if let Some(range) = cursor.selection_range() {
+                        // Has selection: duplicate selected lines
+                        let start_line = state.buffer.get_line_number(range.start);
+                        let end_line = state
+                            .buffer
+                            .get_line_number(range.end.saturating_sub(1).max(range.start));
+                        let line_start = state.buffer.line_start_offset(start_line)?;
+                        // Get end of last line
+                        let mut iter = state.buffer.line_iterator(
+                            state.buffer.line_start_offset(end_line)?,
+                            estimated_line_length,
+                        );
+                        let end_line_start = iter.current_position();
+                        iter.next_line().map(|(_, content)| {
+                            let line_end = end_line_start + content.len();
+                            (cursor_id, line_start, line_end)
+                        })
+                    } else {
+                        // No selection: duplicate current line
+                        let mut iter = state
+                            .buffer
+                            .line_iterator(cursor.position, estimated_line_length);
+                        let line_start = iter.current_position();
+                        iter.next_line().map(|(_, content)| {
+                            let line_end = line_start + content.len();
+                            (cursor_id, line_start, line_end)
+                        })
+                    }
+                })
+                .collect();
+            cursor_data.sort_by_key(|(_, start, _)| std::cmp::Reverse(*start));
+
+            for (cursor_id, line_start, line_end) in cursor_data {
+                let line_text = state.get_text_range(line_start, line_end);
+                let line_ending = state.buffer.line_ending().as_str();
+                // If the line doesn't end with a newline, prepend one
+                let has_trailing_newline = line_text.ends_with('\n') || line_text.ends_with("\r\n");
+                let insert_text = if has_trailing_newline {
+                    line_text
+                } else {
+                    format!("{}{}", line_ending, line_text)
+                };
+                let insert_len = insert_text.len();
+                events.push(Event::Insert {
+                    position: line_end,
+                    text: insert_text,
+                    cursor_id,
+                });
+
+                // Move cursor to start of the newly duplicated line.
+                // After the Insert, apply_insert places cursor at line_end + insert_len.
+                // The new line starts at line_end (if original had trailing newline)
+                // or line_end + line_ending.len() (if we prepended a newline).
+                let new_line_start = if has_trailing_newline {
+                    line_end
+                } else {
+                    line_end + line_ending.len()
+                };
+                let cursor = state.cursors.get(cursor_id);
+                let old_sticky = cursor.map(|c| c.sticky_column).unwrap_or(0);
+                events.push(Event::MoveCursor {
+                    cursor_id,
+                    old_position: line_end + insert_len,
+                    new_position: new_line_start,
+                    old_anchor: None,
+                    new_anchor: None,
+                    old_sticky_column: old_sticky,
+                    new_sticky_column: 0,
+                });
+            }
+        }
+
         Action::Recenter => {
             // Scroll so that the cursor is centered in the view
             // This is handled specially - we emit a Recenter event
@@ -2421,6 +2519,7 @@ pub fn action_to_events(
         // Actions that don't generate events
         Action::Quit
         | Action::ForceQuit
+        | Action::Detach
         | Action::Save
         | Action::SaveAs
         | Action::Open
@@ -2560,6 +2659,7 @@ pub fn action_to_events(
         | Action::LspCodeActions
         | Action::LspRestart
         | Action::LspStop
+        | Action::LspToggleForBuffer
         | Action::ToggleInlayHints
         | Action::ToggleMouseHover
         | Action::ToggleLineNumbers
@@ -2623,7 +2723,8 @@ pub fn action_to_events(
         | Action::ShellCommand
         | Action::ShellCommandReplace
         | Action::CalibrateInput
-        | Action::EventDebug => return None,
+        | Action::EventDebug
+        | Action::OpenKeybindingEditor => return None,
 
         // Block/rectangular selection actions
         Action::BlockSelectLeft => {
@@ -2827,6 +2928,288 @@ mod tests {
         } else {
             panic!("Expected MoveCursor event");
         }
+    }
+
+    #[test]
+    fn test_move_line_up_without_trailing_newline() {
+        let mut state = EditorState::new(
+            80,
+            24,
+            crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
+            test_fs(),
+        );
+
+        state.apply(&Event::Insert {
+            position: 0,
+            text: "A\nB".to_string(),
+            cursor_id: CursorId(0),
+        });
+
+        state.apply(&Event::MoveCursor {
+            cursor_id: CursorId(0),
+            old_position: state.cursors.primary().position,
+            new_position: 2, // "B"
+            old_anchor: None,
+            new_anchor: None,
+            old_sticky_column: 0,
+            new_sticky_column: 0,
+        });
+
+        let events = action_to_events(&mut state, Action::MoveLineUp, 4, false, 80, 24).unwrap();
+        for event in events {
+            state.apply(&event);
+        }
+
+        assert_eq!(state.buffer.to_string().unwrap(), "B\nA");
+        assert_eq!(state.cursors.primary().position, 0);
+    }
+
+    #[test]
+    fn test_move_line_down_without_trailing_newline() {
+        let mut state = EditorState::new(
+            80,
+            24,
+            crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
+            test_fs(),
+        );
+
+        state.apply(&Event::Insert {
+            position: 0,
+            text: "A\nB".to_string(),
+            cursor_id: CursorId(0),
+        });
+
+        state.apply(&Event::MoveCursor {
+            cursor_id: CursorId(0),
+            old_position: state.cursors.primary().position,
+            new_position: 0, // "A"
+            old_anchor: None,
+            new_anchor: None,
+            old_sticky_column: 0,
+            new_sticky_column: 0,
+        });
+
+        let events = action_to_events(&mut state, Action::MoveLineDown, 4, false, 80, 24).unwrap();
+        for event in events {
+            state.apply(&event);
+        }
+
+        assert_eq!(state.buffer.to_string().unwrap(), "B\nA");
+        assert_eq!(state.cursors.primary().position, 2);
+    }
+
+    #[test]
+    fn test_move_line_up_first_line_noop() {
+        let mut state = EditorState::new(
+            80,
+            24,
+            crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
+            test_fs(),
+        );
+
+        state.apply(&Event::Insert {
+            position: 0,
+            text: "A\nB".to_string(),
+            cursor_id: CursorId(0),
+        });
+
+        state.apply(&Event::MoveCursor {
+            cursor_id: CursorId(0),
+            old_position: state.cursors.primary().position,
+            new_position: 0,
+            old_anchor: None,
+            new_anchor: None,
+            old_sticky_column: 0,
+            new_sticky_column: 0,
+        });
+
+        let events = action_to_events(&mut state, Action::MoveLineUp, 4, false, 80, 24).unwrap();
+        assert!(events.is_empty());
+        assert_eq!(state.buffer.to_string().unwrap(), "A\nB");
+        assert_eq!(state.cursors.primary().position, 0);
+    }
+
+    #[test]
+    fn test_move_line_down_last_line_noop() {
+        let mut state = EditorState::new(
+            80,
+            24,
+            crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
+            test_fs(),
+        );
+
+        state.apply(&Event::Insert {
+            position: 0,
+            text: "A\nB".to_string(),
+            cursor_id: CursorId(0),
+        });
+
+        state.apply(&Event::MoveCursor {
+            cursor_id: CursorId(0),
+            old_position: state.cursors.primary().position,
+            new_position: 2, // "B"
+            old_anchor: None,
+            new_anchor: None,
+            old_sticky_column: 0,
+            new_sticky_column: 0,
+        });
+
+        let events = action_to_events(&mut state, Action::MoveLineDown, 4, false, 80, 24).unwrap();
+        assert!(events.is_empty());
+        assert_eq!(state.buffer.to_string().unwrap(), "A\nB");
+        assert_eq!(state.cursors.primary().position, 2);
+    }
+
+    #[test]
+    fn test_move_line_up_multi_cursor_separate_lines() {
+        let mut state = EditorState::new(
+            80,
+            24,
+            crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
+            test_fs(),
+        );
+
+        state.apply(&Event::Insert {
+            position: 0,
+            text: "A\nB\nC\nD".to_string(),
+            cursor_id: CursorId(0),
+        });
+
+        state.apply(&Event::MoveCursor {
+            cursor_id: CursorId(0),
+            old_position: state.cursors.primary().position,
+            new_position: 2, // "B"
+            old_anchor: None,
+            new_anchor: None,
+            old_sticky_column: 0,
+            new_sticky_column: 0,
+        });
+
+        state.apply(&Event::AddCursor {
+            position: 6, // "D"
+            cursor_id: CursorId(1),
+            anchor: None,
+        });
+
+        let events = action_to_events(&mut state, Action::MoveLineUp, 4, false, 80, 24).unwrap();
+        for event in events {
+            state.apply(&event);
+        }
+
+        assert_eq!(state.buffer.to_string().unwrap(), "B\nA\nD\nC");
+        assert_eq!(state.cursors.get(CursorId(0)).unwrap().position, 0);
+        assert_eq!(state.cursors.get(CursorId(1)).unwrap().position, 4);
+    }
+
+    #[test]
+    fn test_move_line_up_large_file_unloaded_chunks() {
+        use crate::model::buffer::TextBuffer;
+        use std::fs;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let test_file = temp_dir.path().join("move_line_up_large_file.txt");
+
+        let mut content = String::new();
+        for i in 0..200 {
+            content.push_str(&format!("Line {i:04}\n"));
+        }
+        fs::write(&test_file, &content).unwrap();
+
+        let large_file_threshold = 500;
+        let buffer =
+            TextBuffer::load_from_file(&test_file, large_file_threshold, test_fs()).unwrap();
+
+        let mut state = EditorState::new(80, 24, large_file_threshold, test_fs());
+        state.buffer = buffer;
+
+        let line_len = "Line 0000\n".len();
+        let target_line = 120usize;
+        let target_start = line_len * target_line;
+
+        state.apply(&Event::MoveCursor {
+            cursor_id: CursorId(0),
+            old_position: state.cursors.primary().position,
+            new_position: target_start,
+            old_anchor: None,
+            new_anchor: None,
+            old_sticky_column: 0,
+            new_sticky_column: 0,
+        });
+
+        let events = action_to_events(&mut state, Action::MoveLineUp, 4, false, 80, 24).unwrap();
+        for event in events {
+            state.apply(&event);
+        }
+
+        let line_119_start = line_len * (target_line - 1);
+        let line_120_start = line_len * target_line;
+        let line_119 = state.get_text_range(line_119_start, line_119_start + line_len);
+        let line_120 = state.get_text_range(line_120_start, line_120_start + line_len);
+
+        assert_eq!(line_119, "Line 0120\n");
+        assert_eq!(line_120, "Line 0119\n");
+    }
+
+    #[test]
+    fn test_move_line_down_large_file_selection_block() {
+        use crate::model::buffer::TextBuffer;
+        use std::fs;
+        use tempfile::tempdir;
+
+        let temp_dir = tempdir().unwrap();
+        let test_file = temp_dir.path().join("move_line_down_large_file.txt");
+
+        let mut content = String::new();
+        for i in 0..200 {
+            content.push_str(&format!("Line {i:04}\n"));
+        }
+        fs::write(&test_file, &content).unwrap();
+
+        let large_file_threshold = 500;
+        let buffer =
+            TextBuffer::load_from_file(&test_file, large_file_threshold, test_fs()).unwrap();
+
+        let mut state = EditorState::new(80, 24, large_file_threshold, test_fs());
+        state.buffer = buffer;
+
+        let line_len = "Line 0000\n".len();
+        let start_line = 50usize;
+        let end_line_exclusive = 53usize; // selects lines 50..=52
+        let selection_start = line_len * start_line;
+        let selection_end = line_len * end_line_exclusive;
+
+        state.apply(&Event::MoveCursor {
+            cursor_id: CursorId(0),
+            old_position: state.cursors.primary().position,
+            new_position: selection_end,
+            old_anchor: None,
+            new_anchor: Some(selection_start),
+            old_sticky_column: 0,
+            new_sticky_column: 0,
+        });
+
+        let events = action_to_events(&mut state, Action::MoveLineDown, 4, false, 80, 24).unwrap();
+        for event in events {
+            state.apply(&event);
+        }
+
+        let line_50 = state.get_text_range(selection_start, selection_start + line_len);
+        let line_51 =
+            state.get_text_range(selection_start + line_len, selection_start + line_len * 2);
+        let line_52 = state.get_text_range(
+            selection_start + line_len * 2,
+            selection_start + line_len * 3,
+        );
+        let line_53 = state.get_text_range(
+            selection_start + line_len * 3,
+            selection_start + line_len * 4,
+        );
+
+        assert_eq!(line_50, "Line 0053\n");
+        assert_eq!(line_51, "Line 0050\n");
+        assert_eq!(line_52, "Line 0051\n");
+        assert_eq!(line_53, "Line 0052\n");
     }
 
     #[test]

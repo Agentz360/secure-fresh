@@ -111,6 +111,20 @@ impl StringBuffer {
                 // Load from file using the FileSystem trait
                 let buffer = fs.read_range(file_path, *file_offset as u64, *bytes)?;
 
+                // Defense-in-depth: panic if the FileSystem returned fewer bytes than requested.
+                // This violates the read_range contract (should return exactly `len` bytes or error).
+                // The piece tree references this buffer using the `bytes` value, so a mismatch
+                // would cause a panic later during save when slicing - better to fail fast here.
+                assert_eq!(
+                    buffer.len(),
+                    *bytes,
+                    "FileSystem::read_range violated contract: expected {} bytes at offset {}, got {} (path: {})",
+                    bytes,
+                    file_offset,
+                    buffer.len(),
+                    file_path.display()
+                );
+
                 // Replace with loaded data (no line indexing for lazy-loaded chunks)
                 self.data = BufferData::Loaded {
                     data: buffer,

@@ -2696,10 +2696,10 @@ globalThis.pkg_install_theme = async function(): Promise<void> {
 };
 
 /**
- * Install from git URL
+ * Install from git URL or local path
  */
 globalThis.pkg_install_url = function(): void {
-  editor.startPrompt("Git URL:", "pkg-install-url");
+  editor.startPrompt("Git URL or local path:", "pkg-install-url");
 };
 
 globalThis.onPkgInstallUrlConfirmed = async function(args: {
@@ -2713,7 +2713,7 @@ globalThis.onPkgInstallUrlConfirmed = async function(args: {
   if (url) {
     await installPackage(url);
   } else {
-    editor.setStatus("No URL provided");
+    editor.setStatus("No URL or path provided");
   }
 
   return true;

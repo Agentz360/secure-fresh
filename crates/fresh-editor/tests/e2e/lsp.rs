@@ -11,7 +11,7 @@ use crossterm::event::{KeyCode, KeyModifiers};
 #[test]
 fn test_lsp_completion_popup_text_not_mangled() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -20,6 +20,7 @@ fn test_lsp_completion_popup_text_not_mangled() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -88,7 +89,7 @@ fn test_lsp_completion_popup_text_not_mangled() -> anyhow::Result<()> {
 #[test]
 fn test_lsp_completion_replaces_word() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -105,6 +106,7 @@ fn test_lsp_completion_replaces_word() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -182,7 +184,7 @@ fn test_lsp_diagnostics_display() -> anyhow::Result<()> {
 #[test]
 fn test_lsp_completion_popup() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -195,6 +197,7 @@ fn test_lsp_completion_popup() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -353,7 +356,7 @@ fn test_lsp_clear_diagnostics() -> anyhow::Result<()> {
 #[test]
 fn test_lsp_completion_navigation() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -362,6 +365,7 @@ fn test_lsp_completion_navigation() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -420,7 +424,7 @@ fn test_lsp_completion_navigation() -> anyhow::Result<()> {
 #[test]
 fn test_lsp_completion_cancel() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -433,6 +437,7 @@ fn test_lsp_completion_cancel() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -476,7 +481,7 @@ fn test_lsp_completion_cancel() -> anyhow::Result<()> {
 #[test]
 fn test_lsp_completion_after_dot() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -489,6 +494,7 @@ fn test_lsp_completion_after_dot() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -540,7 +546,7 @@ fn test_lsp_completion_after_dot() -> anyhow::Result<()> {
 #[test]
 fn test_lsp_completion_after_dot_with_partial() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -553,6 +559,7 @@ fn test_lsp_completion_after_dot_with_partial() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -592,7 +599,7 @@ fn test_lsp_completion_after_dot_with_partial() -> anyhow::Result<()> {
 #[test]
 fn test_lsp_completion_filtering() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -607,6 +614,7 @@ fn test_lsp_completion_filtering() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -687,7 +695,7 @@ fn test_lsp_completion_filtering() -> anyhow::Result<()> {
 #[test]
 fn test_lsp_completion_popup_size() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -700,6 +708,7 @@ fn test_lsp_completion_popup_size() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -1285,7 +1294,7 @@ fn test_semantic_tokens_range_only_viewport_highlighting() -> anyhow::Result<()>
 #[test]
 fn test_lsp_completion_popup_hides_background() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -1306,6 +1315,7 @@ fn test_lsp_completion_popup_hides_background() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -3793,7 +3803,9 @@ fn test_stopped_lsp_does_not_auto_restart_on_edit() -> anyhow::Result<()> {
 /// 4. render_with_hover() tries to render the popup at an out-of-bounds position
 #[test]
 fn test_hover_popup_at_right_edge_does_not_panic() -> anyhow::Result<()> {
-    use fresh::model::event::{Event, PopupContentData, PopupData, PopupPositionData};
+    use fresh::model::event::{
+        Event, PopupContentData, PopupData, PopupKindHint, PopupPositionData,
+    };
 
     // Use the exact dimensions from the panic: width 199, height 44
     let mut harness = EditorTestHarness::new(199, 44)?;
@@ -3803,6 +3815,7 @@ fn test_hover_popup_at_right_edge_does_not_panic() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Text,
             title: Some("Hover".to_string()),
             description: None,
             transient: true,
@@ -3841,7 +3854,9 @@ fn test_hover_popup_at_right_edge_does_not_panic() -> anyhow::Result<()> {
 /// 4. Opening any prompt
 #[test]
 fn test_hover_popup_dismissed_on_focus_change() -> anyhow::Result<()> {
-    use fresh::model::event::{Event, PopupContentData, PopupData, PopupPositionData};
+    use fresh::model::event::{
+        Event, PopupContentData, PopupData, PopupKindHint, PopupPositionData,
+    };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
 
@@ -3850,6 +3865,7 @@ fn test_hover_popup_dismissed_on_focus_change() -> anyhow::Result<()> {
         let state = harness.editor_mut().active_state_mut();
         state.apply(&Event::ShowPopup {
             popup: PopupData {
+                kind: PopupKindHint::Text,
                 title: Some("Hover".to_string()),
                 description: None,
                 transient: true,
@@ -4075,7 +4091,9 @@ fn test_hover_popup_persists_within_symbol_and_popup() -> anyhow::Result<()> {
 /// a scrollbar should be rendered to indicate more content is available.
 #[test]
 fn test_hover_popup_shows_scrollbar_for_long_content() -> anyhow::Result<()> {
-    use fresh::model::event::{Event, PopupContentData, PopupData, PopupPositionData};
+    use fresh::model::event::{
+        Event, PopupContentData, PopupData, PopupKindHint, PopupPositionData,
+    };
 
     let mut harness = EditorTestHarness::new(100, 30)?;
 
@@ -4089,6 +4107,7 @@ fn test_hover_popup_shows_scrollbar_for_long_content() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Text,
             title: Some("Hover".to_string()),
             description: None,
             transient: true,
@@ -4148,7 +4167,9 @@ fn test_hover_popup_shows_scrollbar_for_long_content() -> anyhow::Result<()> {
 /// - Have a maximum of 40 rows
 #[test]
 fn test_hover_popup_dynamic_height() -> anyhow::Result<()> {
-    use fresh::model::event::{Event, PopupContentData, PopupData, PopupPositionData};
+    use fresh::model::event::{
+        Event, PopupContentData, PopupData, PopupKindHint, PopupPositionData,
+    };
 
     // Test with a tall terminal (60 rows)
     // 60% of 60 = 36, which is within the 15-40 range
@@ -4162,6 +4183,7 @@ fn test_hover_popup_dynamic_height() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Text,
             title: Some("Hover".to_string()),
             description: None,
             transient: true,
@@ -4197,7 +4219,9 @@ fn test_hover_popup_dynamic_height() -> anyhow::Result<()> {
 /// scrolling should scroll the popup content instead of dismissing it.
 #[test]
 fn test_hover_popup_mouse_scroll() -> anyhow::Result<()> {
-    use fresh::model::event::{Event, PopupContentData, PopupData, PopupPositionData};
+    use fresh::model::event::{
+        Event, PopupContentData, PopupData, PopupKindHint, PopupPositionData,
+    };
 
     let mut harness = EditorTestHarness::new(100, 30)?;
 
@@ -4208,6 +4232,7 @@ fn test_hover_popup_mouse_scroll() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Text,
             title: Some("Hover".to_string()),
             description: None,
             transient: true,
@@ -4270,7 +4295,9 @@ fn test_hover_popup_mouse_scroll() -> anyhow::Result<()> {
 /// count original lines.
 #[test]
 fn test_hover_popup_height_accounts_for_wrapped_lines() -> anyhow::Result<()> {
-    use fresh::model::event::{Event, PopupContentData, PopupData, PopupPositionData};
+    use fresh::model::event::{
+        Event, PopupContentData, PopupData, PopupKindHint, PopupPositionData,
+    };
 
     let mut harness = EditorTestHarness::new(100, 40)?;
 
@@ -4289,6 +4316,7 @@ fn test_hover_popup_height_accounts_for_wrapped_lines() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Text,
             title: Some("Hover".to_string()),
             description: None,
             transient: true,
@@ -4330,7 +4358,7 @@ fn test_hover_popup_height_accounts_for_wrapped_lines() -> anyhow::Result<()> {
 #[test]
 fn test_popup_home_key_selects_first_item() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -4348,6 +4376,7 @@ fn test_popup_home_key_selects_first_item() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -4389,7 +4418,7 @@ fn test_popup_home_key_selects_first_item() -> anyhow::Result<()> {
 #[test]
 fn test_popup_end_key_selects_last_item() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -4407,6 +4436,7 @@ fn test_popup_end_key_selects_last_item() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -4443,7 +4473,7 @@ fn test_popup_end_key_selects_last_item() -> anyhow::Result<()> {
 fn test_popup_mouse_wheel_scrolls() -> anyhow::Result<()> {
     use crossterm::event::{MouseEvent, MouseEventKind};
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -4461,6 +4491,7 @@ fn test_popup_mouse_wheel_scrolls() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -4528,7 +4559,7 @@ fn test_popup_mouse_wheel_scrolls() -> anyhow::Result<()> {
 #[test]
 fn test_popup_scrollbar_visible_for_long_list() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -4546,6 +4577,7 @@ fn test_popup_scrollbar_visible_for_long_list() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -4593,7 +4625,7 @@ fn test_popup_scrollbar_visible_for_long_list() -> anyhow::Result<()> {
 #[test]
 fn test_popup_no_scrollbar_for_short_list() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -4611,6 +4643,7 @@ fn test_popup_no_scrollbar_for_short_list() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -4646,7 +4679,7 @@ fn test_popup_no_scrollbar_for_short_list() -> anyhow::Result<()> {
 fn test_popup_mouse_wheel_scroll_up() -> anyhow::Result<()> {
     use crossterm::event::{MouseEvent, MouseEventKind};
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -4664,6 +4697,7 @@ fn test_popup_mouse_wheel_scroll_up() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -4736,7 +4770,7 @@ fn test_popup_mouse_wheel_scroll_up() -> anyhow::Result<()> {
 #[test]
 fn test_completion_type_to_filter_basic() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -4777,6 +4811,7 @@ fn test_completion_type_to_filter_basic() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -4864,7 +4899,7 @@ fn test_completion_type_to_filter_basic() -> anyhow::Result<()> {
 #[test]
 fn test_completion_type_to_filter_uppercase() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -4905,6 +4940,7 @@ fn test_completion_type_to_filter_uppercase() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -5005,7 +5041,7 @@ fn test_completion_type_to_filter_uppercase() -> anyhow::Result<()> {
 #[test]
 fn test_completion_type_to_filter_closes_on_no_match() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -5028,6 +5064,7 @@ fn test_completion_type_to_filter_closes_on_no_match() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -5076,7 +5113,7 @@ fn test_completion_type_to_filter_closes_on_no_match() -> anyhow::Result<()> {
 #[test]
 fn test_completion_backspace_refilters() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -5107,6 +5144,7 @@ fn test_completion_backspace_refilters() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -5171,7 +5209,7 @@ fn test_completion_backspace_refilters() -> anyhow::Result<()> {
 #[test]
 fn test_completion_type_to_filter_preserves_selection() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -5208,6 +5246,7 @@ fn test_completion_type_to_filter_preserves_selection() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -5287,7 +5326,7 @@ fn test_completion_type_to_filter_preserves_selection() -> anyhow::Result<()> {
 fn test_completion_accept_on_enter_off() -> anyhow::Result<()> {
     use fresh::config::AcceptSuggestionOnEnter;
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     // Configure accept_suggestion_on_enter to "off"
@@ -5313,6 +5352,7 @@ fn test_completion_accept_on_enter_off() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -5371,7 +5411,7 @@ fn test_completion_accept_on_enter_off() -> anyhow::Result<()> {
 fn test_completion_accept_on_enter_on() -> anyhow::Result<()> {
     use fresh::config::AcceptSuggestionOnEnter;
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     // Ensure accept_suggestion_on_enter is "on" (default)
@@ -5397,6 +5437,7 @@ fn test_completion_accept_on_enter_on() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -5449,7 +5490,7 @@ fn test_completion_accept_on_enter_on() -> anyhow::Result<()> {
 #[test]
 fn test_completion_snippet_cursor_position() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -5462,6 +5503,7 @@ fn test_completion_snippet_cursor_position() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -5503,7 +5545,7 @@ fn test_completion_snippet_cursor_position() -> anyhow::Result<()> {
 #[test]
 fn test_completion_snippet_with_default() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -5516,6 +5558,7 @@ fn test_completion_snippet_with_default() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -5560,7 +5603,7 @@ fn test_completion_snippet_with_default() -> anyhow::Result<()> {
 #[test]
 fn test_completion_plain_text_no_snippet() -> anyhow::Result<()> {
     use fresh::model::event::{
-        Event, PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+        Event, PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
     };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
@@ -5573,6 +5616,7 @@ fn test_completion_plain_text_no_snippet() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Completion,
             title: Some("Completion".to_string()),
             description: None,
             transient: false,
@@ -6244,7 +6288,9 @@ fn test_hover_popup_follows_mouse_when_lsp_returns_no_range() -> anyhow::Result<
 #[test]
 fn test_hover_popup_scrollbar_click_scrolls_content() -> anyhow::Result<()> {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    use fresh::model::event::{Event, PopupContentData, PopupData, PopupPositionData};
+    use fresh::model::event::{
+        Event, PopupContentData, PopupData, PopupKindHint, PopupPositionData,
+    };
 
     let mut harness = EditorTestHarness::new(100, 30)?;
 
@@ -6258,6 +6304,7 @@ fn test_hover_popup_scrollbar_click_scrolls_content() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Text,
             title: Some("Hover".to_string()),
             description: None,
             transient: true,
@@ -6630,7 +6677,9 @@ fn test_hover_no_duplicate_popup_when_moving_within_symbol() -> anyhow::Result<(
 /// 3. Double-click should also respect these rules
 #[test]
 fn test_hover_popup_click_dismissal() -> anyhow::Result<()> {
-    use fresh::model::event::{Event, PopupContentData, PopupData, PopupPositionData};
+    use fresh::model::event::{
+        Event, PopupContentData, PopupData, PopupKindHint, PopupPositionData,
+    };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
 
@@ -6649,6 +6698,7 @@ fn test_hover_popup_click_dismissal() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Text,
             title: Some("Hover Info".to_string()),
             description: None,
             transient: true, // This is key - hover popups are transient
@@ -6688,7 +6738,9 @@ fn test_hover_popup_click_dismissal() -> anyhow::Result<()> {
 /// Test that clicking inside a hover popup does NOT move the editor cursor
 #[test]
 fn test_hover_popup_click_inside_does_not_move_cursor() -> anyhow::Result<()> {
-    use fresh::model::event::{Event, PopupContentData, PopupData, PopupPositionData};
+    use fresh::model::event::{
+        Event, PopupContentData, PopupData, PopupKindHint, PopupPositionData,
+    };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
 
@@ -6706,6 +6758,7 @@ fn test_hover_popup_click_inside_does_not_move_cursor() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Text,
             title: Some("Hover Info".to_string()),
             description: None,
             transient: true,
@@ -6757,7 +6810,9 @@ fn test_hover_popup_click_inside_does_not_move_cursor() -> anyhow::Result<()> {
 #[test]
 fn test_hover_popup_double_click_dismissal() -> anyhow::Result<()> {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    use fresh::model::event::{Event, PopupContentData, PopupData, PopupPositionData};
+    use fresh::model::event::{
+        Event, PopupContentData, PopupData, PopupKindHint, PopupPositionData,
+    };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
 
@@ -6769,6 +6824,7 @@ fn test_hover_popup_double_click_dismissal() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Text,
             title: Some("Hover Info".to_string()),
             description: None,
             transient: true,
@@ -6835,7 +6891,9 @@ fn test_hover_popup_double_click_dismissal() -> anyhow::Result<()> {
 #[test]
 fn test_hover_popup_double_click_inside_blocked() -> anyhow::Result<()> {
     use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-    use fresh::model::event::{Event, PopupContentData, PopupData, PopupPositionData};
+    use fresh::model::event::{
+        Event, PopupContentData, PopupData, PopupKindHint, PopupPositionData,
+    };
 
     let mut harness = EditorTestHarness::new(80, 24)?;
 
@@ -6853,6 +6911,7 @@ fn test_hover_popup_double_click_inside_blocked() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Text,
             title: Some("Hover".to_string()),
             description: None,
             transient: true,
@@ -6921,7 +6980,9 @@ fn test_hover_popup_double_click_inside_blocked() -> anyhow::Result<()> {
 /// the user can scroll all the way to see the last line of content.
 #[test]
 fn test_hover_popup_scroll_to_bottom() -> anyhow::Result<()> {
-    use fresh::model::event::{Event, PopupContentData, PopupData, PopupPositionData};
+    use fresh::model::event::{
+        Event, PopupContentData, PopupData, PopupKindHint, PopupPositionData,
+    };
 
     let mut harness = EditorTestHarness::new(100, 30)?;
 
@@ -6990,6 +7051,7 @@ fn test_hover_popup_scroll_to_bottom() -> anyhow::Result<()> {
     let state = harness.editor_mut().active_state_mut();
     state.apply(&Event::ShowPopup {
         popup: PopupData {
+            kind: PopupKindHint::Text,
             title: Some("Hover Info".to_string()),
             description: None,
             transient: true,
@@ -7031,6 +7093,960 @@ fn test_hover_popup_scroll_to_bottom() -> anyhow::Result<()> {
     assert!(
         !screen_after.contains("pub fn process_data"),
         "First line should not be visible after scrolling to bottom. Screen:\n{screen_after}"
+    );
+
+    Ok(())
+}
+
+/// Test LSP toggle for buffer - enables/disables LSP via command palette
+#[test]
+fn test_lsp_toggle_for_buffer() -> anyhow::Result<()> {
+    let mut harness = EditorTestHarness::new(80, 24)?;
+
+    // Create a test file
+    let temp_dir = tempfile::TempDir::new()?;
+    let test_file = temp_dir.path().join("test.rs");
+    std::fs::write(&test_file, "fn main() {\n    let x = 5;\n}")?;
+
+    // Open the test file
+    harness.editor_mut().open_file(&test_file)?;
+    harness.render()?;
+
+    // Use command palette to toggle LSP off
+    harness.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)?;
+    harness.wait_for_prompt()?;
+    harness.type_text("Toggle LSP")?;
+    harness.render()?;
+
+    // Verify the toggle command exists
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Toggle LSP for Current Buffer") || screen.contains("toggle"),
+        "Command palette should show toggle LSP command"
+    );
+
+    // Execute the command
+    harness.send_key(KeyCode::Enter, KeyModifiers::NONE)?;
+    harness.render()?;
+
+    // Toggle LSP back using command palette
+    harness.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)?;
+    harness.wait_for_prompt()?;
+    harness.type_text("Toggle LSP")?;
+    harness.send_key(KeyCode::Enter, KeyModifiers::NONE)?;
+    harness.render()?;
+
+    Ok(())
+}
+
+/// Test that LSP document sync works correctly when didOpen is triggered
+/// by the first edit (auto_start path via send_lsp_changes_for_buffer).
+///
+/// This reproduces a bug where editing a buffer that hasn't been opened with
+/// the LSP server yet causes document corruption:
+/// 1. send_lsp_changes_for_buffer detects needs_open=true
+/// 2. It sends didOpen with the CURRENT (post-edit) buffer content
+/// 3. Then it sends didChange with PRE-EDIT changes
+/// 4. The server applies the didChange to the already-correct document, corrupting it
+///
+/// The fake LSP server tracks document content and echoes it back as a diagnostic
+/// message. The test verifies that after edits, the server's document matches
+/// the editor's buffer.
+#[test]
+#[cfg_attr(
+    target_os = "windows",
+    ignore = "FakeLspServer uses a Bash/Python script which is not available on Windows"
+)]
+fn test_lsp_didopen_didchange_document_sync() -> anyhow::Result<()> {
+    use fresh::view::overlay::OverlayNamespace;
+
+    // Create a Python-based fake LSP that tracks document content
+    let temp_dir = tempfile::tempdir()?;
+    let script_path = temp_dir.path().join("fake_lsp_tracking.py");
+    let log_path = temp_dir.path().join("lsp_doc_log.txt");
+    let log_path_str = log_path.to_string_lossy().to_string();
+
+    let script = format!(
+        r#"#!/usr/bin/env python3
+"""Fake LSP server that tracks document content and sends it as diagnostics."""
+import sys
+import json
+
+LOG_FILE = "{log_file}"
+
+documents = {{}}  # uri -> text
+
+def log(msg):
+    with open(LOG_FILE, "a") as f:
+        f.write(msg + "\n")
+        f.flush()
+
+def read_message():
+    """Read a JSON-RPC message from stdin."""
+    headers = {{}}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        line = line.decode("utf-8").strip()
+        if not line:
+            break
+        if ":" in line:
+            key, value = line.split(":", 1)
+            headers[key.strip()] = value.strip()
+    length = int(headers.get("Content-Length", 0))
+    if length == 0:
+        return None
+    body = sys.stdin.buffer.read(length)
+    return json.loads(body.decode("utf-8"))
+
+def send_message(msg):
+    """Send a JSON-RPC message to stdout."""
+    body = json.dumps(msg)
+    header = f"Content-Length: {{len(body)}}\r\n\r\n"
+    sys.stdout.buffer.write(header.encode("utf-8"))
+    sys.stdout.buffer.write(body.encode("utf-8"))
+    sys.stdout.buffer.flush()
+
+def send_diagnostics(uri, text):
+    """Send diagnostics based on document content."""
+    diagnostics = []
+    # If document contains BADIDENT, report an error
+    for i, line in enumerate(text.split("\n")):
+        col = line.find("BADIDENT")
+        if col >= 0:
+            diagnostics.append({{
+                "range": {{
+                    "start": {{"line": i, "character": col}},
+                    "end": {{"line": i, "character": col + 8}}
+                }},
+                "severity": 1,
+                "source": "fake-lsp",
+                "message": f"DOCSTATE:{{text}}"
+            }})
+    if not diagnostics:
+        # Send empty diagnostics with document state in a special way
+        # We use a hint-level diagnostic to convey the document state
+        diagnostics = []
+    send_message({{
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": {{
+            "uri": uri,
+            "diagnostics": diagnostics
+        }}
+    }})
+    log(f"DIAGNOSTICS: count={{len(diagnostics)}} uri={{uri}}")
+
+def apply_change(text, change):
+    """Apply a single textDocument/didChange content change."""
+    if "range" not in change or change["range"] is None:
+        # Full document replacement
+        return change["text"]
+    start = change["range"]["start"]
+    end = change["range"]["end"]
+    lines = text.split("\n")
+    # Convert line/character to offset
+    offset = 0
+    for i in range(start["line"]):
+        if i < len(lines):
+            offset += len(lines[i]) + 1  # +1 for newline
+    start_offset = offset + start["character"]
+
+    offset = 0
+    for i in range(end["line"]):
+        if i < len(lines):
+            offset += len(lines[i]) + 1
+    end_offset = offset + end["character"]
+
+    return text[:start_offset] + change["text"] + text[end_offset:]
+
+log("STARTED")
+
+while True:
+    msg = read_message()
+    if msg is None:
+        break
+
+    method = msg.get("method", "")
+    msg_id = msg.get("id")
+    params = msg.get("params", {{}})
+
+    if method == "initialize":
+        send_message({{
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {{
+                "capabilities": {{
+                    "textDocumentSync": 2,
+                    "diagnosticProvider": {{
+                        "interFileDependencies": False,
+                        "workspaceDiagnostics": False
+                    }}
+                }}
+            }}
+        }})
+        log("INITIALIZED")
+    elif method == "initialized":
+        pass
+    elif method == "textDocument/didOpen":
+        uri = params["textDocument"]["uri"]
+        text = params["textDocument"]["text"]
+        documents[uri] = text
+        log(f"DID_OPEN: uri={{uri}} len={{len(text)}}")
+        log(f"DID_OPEN_CONTENT: {{repr(text)}}")
+        send_diagnostics(uri, text)
+    elif method == "textDocument/didChange":
+        uri = params["textDocument"]["uri"]
+        text = documents.get(uri, "")
+        for change in params.get("contentChanges", []):
+            log(f"DID_CHANGE_RAW: {{json.dumps(change)}}")
+            text = apply_change(text, change)
+        documents[uri] = text
+        log(f"DID_CHANGE: uri={{uri}} len={{len(text)}}")
+        log(f"DID_CHANGE_CONTENT: {{repr(text)}}")
+        send_diagnostics(uri, text)
+    elif method == "textDocument/diagnostic":
+        uri = params["textDocument"]["uri"]
+        send_message({{
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {{
+                "kind": "full",
+                "items": [],
+                "resultId": None
+            }}
+        }})
+    elif method == "textDocument/inlayHint":
+        send_message({{
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": []
+        }})
+    elif method == "shutdown":
+        send_message({{
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": None
+        }})
+        break
+    elif method == "exit":
+        break
+
+log("STOPPED")
+"#,
+        log_file = log_path_str
+    );
+
+    std::fs::write(&script_path, &script)?;
+    #[cfg(unix)]
+    {
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script_path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms)?;
+        }
+    }
+
+    // Create test file with valid code containing a known identifier
+    let test_file = temp_dir.path().join("test.c");
+    std::fs::write(
+        &test_file,
+        "int main() {\n    BADIDENT;\n    return 0;\n}\n",
+    )?;
+
+    // Configure editor to use the tracking fake LSP with auto_start: true
+    // auto_start means the LSP is spawned lazily on first edit via
+    // send_lsp_changes_for_buffer, which triggers the didOpen+didChange bug
+    let mut config = fresh::config::Config::default();
+    config.lsp.insert(
+        "c".to_string(),
+        fresh::types::LspServerConfig {
+            command: "python3".to_string(),
+            args: vec![script_path.to_string_lossy().to_string()],
+            enabled: true,
+            auto_start: true,
+            process_limits: fresh::types::ProcessLimits::default(),
+            initialization_options: None,
+        },
+    );
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        120,
+        30,
+        config,
+        temp_dir.path().to_path_buf(),
+    )?;
+
+    harness.editor_mut().open_file(&test_file)?;
+    harness.render()?;
+
+    // Verify we see the initial content
+    let content = harness.get_buffer_content().unwrap();
+    assert!(
+        content.contains("BADIDENT"),
+        "Should have BADIDENT initially"
+    );
+
+    // Now make an edit: go to BADIDENT and replace it with "return 1"
+    // This is the FIRST edit, which triggers LSP spawn + didOpen + didChange
+    // With the bug: didOpen sends post-edit content, didChange sends pre-edit changes
+    // Result: server document is corrupted
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE)?; // line 2 (BADIDENT line)
+    harness.send_key(KeyCode::Home, KeyModifiers::NONE)?;
+    // Move to start of BADIDENT (skip 4 spaces)
+    for _ in 0..4 {
+        harness.send_key(KeyCode::Right, KeyModifiers::NONE)?;
+    }
+    // Select BADIDENT (8 chars)
+    for _ in 0..8 {
+        harness.send_key(KeyCode::Right, KeyModifiers::SHIFT)?;
+    }
+    // Type replacement (valid code)
+    harness.type_text("return 1")?;
+    harness.render()?;
+
+    // Verify the editor buffer is correct
+    let content = harness.get_buffer_content().unwrap();
+    assert!(
+        !content.contains("BADIDENT"),
+        "Buffer should not contain BADIDENT after fix"
+    );
+    assert!(
+        content.contains("return 1"),
+        "Buffer should contain 'return 1' after fix"
+    );
+
+    // Wait for the LSP to process messages and send diagnostics
+    for _ in 0..30 {
+        harness.process_async_and_render()?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // Read the LSP log to see what document state the server has
+    let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+    println!("=== LSP Document Tracking Log ===");
+    println!("{}", log_content);
+    println!("=================================");
+
+    // The server should have received the document and applied changes.
+    // After the fix, the server's document should NOT contain BADIDENT.
+    // With the bug, the server's document is corrupted because didOpen sent
+    // post-edit content and then didChange applied pre-edit changes on top.
+
+    // Check overlays: if the server has corrupted content, it might still
+    // report BADIDENT diagnostics or have garbled text that causes errors
+    let diagnostic_ns = OverlayNamespace::from_string("lsp-diagnostic".to_string());
+    let diag_overlays: Vec<_> = harness
+        .editor()
+        .active_state()
+        .overlays
+        .all()
+        .iter()
+        .filter(|o| o.namespace.as_ref() == Some(&diagnostic_ns))
+        .collect();
+
+    // After replacing BADIDENT with "return 1", the server should see valid code
+    // and send 0 diagnostics. Any remaining diagnostic overlays indicate
+    // the server's document is out of sync (the bug).
+    let diag_count = diag_overlays.len();
+
+    // Also check the log for the final document content
+    let final_content_line = log_content
+        .lines()
+        .filter(|l| l.starts_with("DID_CHANGE_CONTENT:") || l.starts_with("DID_OPEN_CONTENT:"))
+        .last()
+        .unwrap_or("");
+    println!("Final server document: {}", final_content_line);
+
+    // The editor's buffer content
+    let editor_content = harness.get_buffer_content().unwrap();
+    println!("Editor buffer content: {:?}", editor_content);
+
+    // The key assertion: if the server document contains "BADIDENT" but the
+    // editor doesn't, the document sync is broken (the bug).
+    // With the bug: server has corrupted content, may still contain BADIDENT
+    // or have garbled text that triggers error diagnostics
+    assert_eq!(
+        diag_count, 0,
+        "After replacing BADIDENT with valid code, there should be 0 diagnostic overlays. \
+         Found {} overlays. This indicates the LSP server's document is out of sync \
+         with the editor buffer (didOpen+didChange corruption bug).\n\
+         Server log:\n{}",
+        diag_count, log_content
+    );
+
+    Ok(())
+}
+
+/// Test that LSP diagnostics are displayed in rendered output and update correctly after edits.
+///
+/// This is an end-to-end test that examines the final rendered screen output (per README
+/// guidelines) rather than internal state. It verifies:
+/// 1. Diagnostic indicators appear in rendered output when code has errors
+/// 2. After editing to fix the error, diagnostic indicators disappear from rendered output
+/// 3. The LSP server's document stays in sync through selection replacement (bulk edit path)
+///
+/// Uses a Python-based fake LSP server that tracks document content and sends diagnostics
+/// based on whether "BADIDENT" appears in the document.
+#[test]
+#[cfg_attr(
+    target_os = "windows",
+    ignore = "Uses Python-based fake LSP server which may not be available on Windows"
+)]
+fn test_lsp_diagnostics_rendered_after_selection_replace() -> anyhow::Result<()> {
+    // Create a Python-based fake LSP that tracks document content
+    let temp_dir = tempfile::tempdir()?;
+    let script_path = temp_dir.path().join("fake_lsp_render.py");
+    let log_path = temp_dir.path().join("lsp_render_log.txt");
+    let log_path_str = log_path.to_string_lossy().to_string();
+
+    let script = format!(
+        r#"#!/usr/bin/env python3
+"""Fake LSP server that sends diagnostics based on document content."""
+import sys
+import json
+
+LOG_FILE = "{log_file}"
+
+documents = {{}}
+
+def log(msg):
+    with open(LOG_FILE, "a") as f:
+        f.write(msg + "\n")
+        f.flush()
+
+def read_message():
+    headers = {{}}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        line = line.decode("utf-8").strip()
+        if not line:
+            break
+        if ":" in line:
+            key, value = line.split(":", 1)
+            headers[key.strip()] = value.strip()
+    length = int(headers.get("Content-Length", 0))
+    if length == 0:
+        return None
+    body = sys.stdin.buffer.read(length)
+    return json.loads(body.decode("utf-8"))
+
+def send_message(msg):
+    body = json.dumps(msg)
+    header = f"Content-Length: {{len(body)}}\r\n\r\n"
+    sys.stdout.buffer.write(header.encode("utf-8"))
+    sys.stdout.buffer.write(body.encode("utf-8"))
+    sys.stdout.buffer.flush()
+
+def send_diagnostics(uri, text):
+    diagnostics = []
+    for i, line in enumerate(text.split("\n")):
+        col = line.find("BADIDENT")
+        if col >= 0:
+            diagnostics.append({{
+                "range": {{
+                    "start": {{"line": i, "character": col}},
+                    "end": {{"line": i, "character": col + 8}}
+                }},
+                "severity": 1,
+                "source": "fake-lsp",
+                "message": "Unknown identifier BADIDENT"
+            }})
+    send_message({{
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": {{
+            "uri": uri,
+            "diagnostics": diagnostics
+        }}
+    }})
+    log(f"DIAGNOSTICS: count={{len(diagnostics)}}")
+
+def apply_change(text, change):
+    if "range" not in change or change["range"] is None:
+        return change["text"]
+    start = change["range"]["start"]
+    end = change["range"]["end"]
+    lines = text.split("\n")
+    offset = 0
+    for i in range(start["line"]):
+        if i < len(lines):
+            offset += len(lines[i]) + 1
+    start_offset = offset + start["character"]
+    offset = 0
+    for i in range(end["line"]):
+        if i < len(lines):
+            offset += len(lines[i]) + 1
+    end_offset = offset + end["character"]
+    return text[:start_offset] + change["text"] + text[end_offset:]
+
+log("STARTED")
+
+while True:
+    msg = read_message()
+    if msg is None:
+        break
+
+    method = msg.get("method", "")
+    msg_id = msg.get("id")
+    params = msg.get("params", {{}})
+
+    if method == "initialize":
+        send_message({{
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {{
+                "capabilities": {{
+                    "textDocumentSync": 2,
+                    "diagnosticProvider": {{
+                        "interFileDependencies": False,
+                        "workspaceDiagnostics": False
+                    }}
+                }}
+            }}
+        }})
+        log("INITIALIZED")
+    elif method == "initialized":
+        pass
+    elif method == "textDocument/didOpen":
+        uri = params["textDocument"]["uri"]
+        text = params["textDocument"]["text"]
+        documents[uri] = text
+        log(f"DID_OPEN: len={{len(text)}}")
+        send_diagnostics(uri, text)
+    elif method == "textDocument/didChange":
+        uri = params["textDocument"]["uri"]
+        text = documents.get(uri, "")
+        for change in params.get("contentChanges", []):
+            text = apply_change(text, change)
+        documents[uri] = text
+        log(f"DID_CHANGE: len={{len(text)}}")
+        send_diagnostics(uri, text)
+    elif method == "textDocument/diagnostic":
+        send_message({{
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {{
+                "kind": "full",
+                "items": [],
+                "resultId": None
+            }}
+        }})
+    elif method == "textDocument/inlayHint":
+        send_message({{
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": []
+        }})
+    elif method == "shutdown":
+        send_message({{
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": None
+        }})
+        break
+    elif method == "exit":
+        break
+
+log("STOPPED")
+"#,
+        log_file = log_path_str
+    );
+
+    std::fs::write(&script_path, &script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script_path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms)?;
+    }
+
+    // Create test file: valid code EXCEPT line with BADIDENT
+    let test_file = temp_dir.path().join("test.c");
+    std::fs::write(
+        &test_file,
+        "int main() {\n    BADIDENT;\n    return 0;\n}\n",
+    )?;
+
+    let mut config = fresh::config::Config::default();
+    config.lsp.insert(
+        "c".to_string(),
+        fresh::types::LspServerConfig {
+            command: "python3".to_string(),
+            args: vec![script_path.to_string_lossy().to_string()],
+            enabled: true,
+            auto_start: true,
+            process_limits: fresh::types::ProcessLimits::default(),
+            initialization_options: None,
+        },
+    );
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        120,
+        30,
+        config,
+        temp_dir.path().to_path_buf(),
+    )?;
+
+    harness.editor_mut().open_file(&test_file)?;
+    harness.render()?;
+
+    // Trigger LSP spawn by making a trivial edit (auto_start LSP spawns on first edit).
+    // Go to end of file, type a space and delete it.
+    harness.send_key(KeyCode::End, KeyModifiers::CONTROL)?;
+    harness.type_text(" ")?;
+    harness.send_key(KeyCode::Backspace, KeyModifiers::NONE)?;
+    harness.render()?;
+
+    // Wait for LSP to start and send initial diagnostics
+    for _ in 0..30 {
+        harness.process_async_and_render()?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // === Step 1: Verify diagnostics are visible in rendered output ===
+    let screen = harness.screen_to_string();
+    let status_bar = harness.get_status_bar();
+    println!("Initial screen (with BADIDENT):");
+    println!("Status bar: {}", status_bar);
+
+    assert!(
+        screen.contains("E:") || screen.contains("\u{25CF}"),
+        "Expected diagnostic indicators in rendered output when BADIDENT is present.\n\
+         Status bar: {}\nScreen:\n{}",
+        status_bar,
+        screen
+    );
+
+    // === Step 2: Select BADIDENT and replace with valid code ===
+    // Navigate to BADIDENT on line 2 (cursor may be at end, so go to top first)
+    harness.send_key(KeyCode::Home, KeyModifiers::CONTROL)?;
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE)?;
+    harness.send_key(KeyCode::Home, KeyModifiers::NONE)?;
+    for _ in 0..4 {
+        harness.send_key(KeyCode::Right, KeyModifiers::NONE)?;
+    }
+    // Select BADIDENT (8 chars)
+    for _ in 0..8 {
+        harness.send_key(KeyCode::Right, KeyModifiers::SHIFT)?;
+    }
+    // Type replacement - this goes through the bulk edit path (Delete + Insert)
+    harness.type_text("return 1")?;
+    harness.render()?;
+
+    // Verify buffer content is correct
+    let content = harness.get_buffer_content().unwrap();
+    assert!(
+        !content.contains("BADIDENT"),
+        "Buffer should not contain BADIDENT after replacement"
+    );
+    assert!(
+        content.contains("return 1"),
+        "Buffer should contain 'return 1' after replacement"
+    );
+
+    // Wait for LSP to process the changes and send updated diagnostics
+    for _ in 0..30 {
+        harness.process_async_and_render()?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // === Step 3: Verify diagnostics are GONE from rendered output ===
+    let screen_after = harness.screen_to_string();
+    let status_bar_after = harness.get_status_bar();
+    let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+
+    println!("Screen after fix (BADIDENT replaced with return 1):");
+    println!("Status bar: {}", status_bar_after);
+    println!("LSP log:\n{}", log_content);
+
+    // The status bar should NOT contain error indicators
+    assert!(
+        !status_bar_after.contains("E:"),
+        "After replacing BADIDENT with valid code, rendered status bar should not show error \
+         indicators. This means the LSP server's document is out of sync with the editor.\n\
+         Status bar: {}\nLSP log:\n{}",
+        status_bar_after,
+        log_content
+    );
+
+    Ok(())
+}
+
+/// Test that the diagnostic gutter marker (●) appears on a trailing error line.
+///
+/// This reproduces the bug where opening a file like:
+/// ```
+/// int main() {
+///     return 0;
+/// }
+///     int x
+/// ```
+/// shows `E:1` in the status bar but NO `●` gutter marker on the trailing error line.
+#[test]
+#[cfg_attr(
+    target_os = "windows",
+    ignore = "Uses Python-based fake LSP server which may not be available on Windows"
+)]
+fn test_lsp_diagnostic_gutter_marker_on_trailing_line() -> anyhow::Result<()> {
+    // Create a Python-based fake LSP that sends diagnostics for bare "int x" (no semicolon)
+    let temp_dir = tempfile::tempdir()?;
+    let script_path = temp_dir.path().join("fake_lsp_gutter.py");
+    let log_path = temp_dir.path().join("lsp_gutter_log.txt");
+    let log_path_str = log_path.to_string_lossy().to_string();
+
+    let script = format!(
+        r#"#!/usr/bin/env python3
+"""Fake LSP server that sends diagnostics for bare 'int x' declarations (no semicolon)."""
+import sys
+import json
+
+LOG_FILE = "{log_file}"
+
+documents = {{}}
+
+def log(msg):
+    with open(LOG_FILE, "a") as f:
+        f.write(msg + "\n")
+        f.flush()
+
+def read_message():
+    headers = {{}}
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        line = line.decode("utf-8").strip()
+        if not line:
+            break
+        if ":" in line:
+            key, value = line.split(":", 1)
+            headers[key.strip()] = value.strip()
+    length = int(headers.get("Content-Length", 0))
+    if length == 0:
+        return None
+    body = sys.stdin.buffer.read(length)
+    return json.loads(body.decode("utf-8"))
+
+def send_message(msg):
+    body = json.dumps(msg)
+    header = f"Content-Length: {{len(body)}}\r\n\r\n"
+    sys.stdout.buffer.write(header.encode("utf-8"))
+    sys.stdout.buffer.write(body.encode("utf-8"))
+    sys.stdout.buffer.flush()
+
+def send_diagnostics(uri, text):
+    diagnostics = []
+    for i, line in enumerate(text.split("\n")):
+        stripped = line.strip()
+        # Detect bare "int x" without semicolon - mimics clangd behavior exactly:
+        # clangd reports the diagnostic as a zero-width range at the START of the
+        # NEXT line (line i+1, char 0), not on the "int x" line itself.
+        if stripped == "int x":
+            diagnostics.append({{
+                "range": {{
+                    "start": {{"line": i + 1, "character": 0}},
+                    "end": {{"line": i + 1, "character": 0}}
+                }},
+                "severity": 1,
+                "source": "fake-lsp",
+                "message": "Expected ';' after top level declarator"
+            }})
+    send_message({{
+        "jsonrpc": "2.0",
+        "method": "textDocument/publishDiagnostics",
+        "params": {{
+            "uri": uri,
+            "diagnostics": diagnostics
+        }}
+    }})
+    log(f"DIAGNOSTICS: count={{len(diagnostics)}}")
+
+def apply_change(text, change):
+    if "range" not in change or change["range"] is None:
+        return change["text"]
+    start = change["range"]["start"]
+    end = change["range"]["end"]
+    lines = text.split("\n")
+    offset = 0
+    for i in range(start["line"]):
+        if i < len(lines):
+            offset += len(lines[i]) + 1
+    start_offset = offset + start["character"]
+    offset = 0
+    for i in range(end["line"]):
+        if i < len(lines):
+            offset += len(lines[i]) + 1
+    end_offset = offset + end["character"]
+    return text[:start_offset] + change["text"] + text[end_offset:]
+
+log("STARTED")
+
+while True:
+    msg = read_message()
+    if msg is None:
+        break
+
+    method = msg.get("method", "")
+    msg_id = msg.get("id")
+    params = msg.get("params", {{}})
+
+    if method == "initialize":
+        send_message({{
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {{
+                "capabilities": {{
+                    "textDocumentSync": 2,
+                    "diagnosticProvider": {{
+                        "interFileDependencies": False,
+                        "workspaceDiagnostics": False
+                    }}
+                }}
+            }}
+        }})
+        log("INITIALIZED")
+    elif method == "initialized":
+        pass
+    elif method == "textDocument/didOpen":
+        uri = params["textDocument"]["uri"]
+        text = params["textDocument"]["text"]
+        documents[uri] = text
+        log(f"DID_OPEN: len={{len(text)}}")
+        send_diagnostics(uri, text)
+    elif method == "textDocument/didChange":
+        uri = params["textDocument"]["uri"]
+        text = documents.get(uri, "")
+        for change in params.get("contentChanges", []):
+            text = apply_change(text, change)
+        documents[uri] = text
+        log(f"DID_CHANGE: len={{len(text)}}")
+        send_diagnostics(uri, text)
+    elif method == "textDocument/diagnostic":
+        send_message({{
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {{
+                "kind": "full",
+                "items": [],
+                "resultId": None
+            }}
+        }})
+    elif method == "textDocument/inlayHint":
+        send_message({{
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": []
+        }})
+    elif method == "shutdown":
+        send_message({{
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": None
+        }})
+        break
+    elif method == "exit":
+        break
+
+log("STOPPED")
+"#,
+        log_file = log_path_str
+    );
+
+    std::fs::write(&script_path, &script)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&script_path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&script_path, perms)?;
+    }
+
+    // Create test file with bare `int x` on the LAST content line (trailing error).
+    // This matches the original bug scenario exactly.
+    let test_file = temp_dir.path().join("test.c");
+    std::fs::write(&test_file, "int main() {\n    return 0;\n}\n    int x\n")?;
+
+    let mut config = fresh::config::Config::default();
+    config.lsp.insert(
+        "c".to_string(),
+        fresh::types::LspServerConfig {
+            command: "python3".to_string(),
+            args: vec![script_path.to_string_lossy().to_string()],
+            enabled: true,
+            auto_start: true,
+            process_limits: fresh::types::ProcessLimits::default(),
+            initialization_options: None,
+        },
+    );
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        120,
+        30,
+        config,
+        temp_dir.path().to_path_buf(),
+    )?;
+
+    harness.editor_mut().open_file(&test_file)?;
+    harness.render()?;
+
+    // Trigger LSP spawn with a trivial edit
+    harness.send_key(KeyCode::End, KeyModifiers::CONTROL)?;
+    harness.type_text(" ")?;
+    harness.send_key(KeyCode::Backspace, KeyModifiers::NONE)?;
+    harness.render()?;
+
+    // Wait for LSP to start and send initial diagnostics
+    for _ in 0..30 {
+        harness.process_async_and_render()?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // Verify status bar shows error indicator
+    let screen = harness.screen_to_string();
+    let status_bar = harness.get_status_bar();
+    let log_content = std::fs::read_to_string(&log_path).unwrap_or_default();
+
+    println!("Full screen:");
+    println!("{}", screen);
+    println!("Status bar: {}", status_bar);
+    println!("LSP log:\n{}", log_content);
+
+    assert!(
+        status_bar.contains("E:"),
+        "Status bar should show error indicator E: for the trailing 'int x' line.\n\
+         Status bar: {}\nLSP log:\n{}",
+        status_bar,
+        log_content
+    );
+
+    // Clangd reports the diagnostic at line 5 (0-indexed), char 0 - the empty line
+    // AFTER "int x". The ● gutter marker should appear on that line or the int x line.
+    // Content area starts at screen row 2 (after menu bar and tab bar).
+    // File line 4 (int x) = screen row 5, file line 5 (empty) = screen row 6.
+    let intx_row = 2 + 3; // file line 4 (1-indexed) → screen row 5
+    let diag_row = 2 + 4; // file line 5 (1-indexed, empty trailing line) → screen row 6
+    let intx_content = harness.get_screen_row(intx_row);
+    let diag_content = harness.get_screen_row(diag_row);
+
+    println!("Screen row {} (int x line): '{}'", intx_row, intx_content);
+    println!("Screen row {} (diag line):  '{}'", diag_row, diag_content);
+
+    // The ● gutter marker should appear on at least one of these rows
+    let has_marker = intx_content.contains("●") || diag_content.contains("●");
+    assert!(
+        has_marker,
+        "Expected diagnostic gutter marker ● near the trailing 'int x' error line.\n\
+         Row {} (int x): '{}'\n\
+         Row {} (diag):  '{}'\n\
+         This reproduces the bug where E:N shows in the status bar but the ● gutter marker \
+         is missing on trailing error lines.\nFull screen:\n{}",
+        intx_row, intx_content, diag_row, diag_content, screen
     );
 
     Ok(())

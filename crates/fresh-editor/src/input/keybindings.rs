@@ -254,6 +254,8 @@ pub enum Action {
     MoveWordEnd, // Move to end of current word
     MoveLineStart,
     MoveLineEnd,
+    MoveLineUp,
+    MoveLineDown,
     MovePageUp,
     MovePageDown,
     MoveDocumentStart,
@@ -296,6 +298,7 @@ pub enum Action {
     DeleteToLineStart,
     TransposeChars,
     OpenLine,
+    DuplicateLine,
 
     // View
     Recenter,
@@ -331,6 +334,7 @@ pub enum Action {
     CloseTab,
     Quit,
     ForceQuit,
+    Detach,
     Revert,
     ToggleAutoRevert,
     FormatBuffer,
@@ -504,6 +508,7 @@ pub enum Action {
     LspCodeActions,
     LspRestart,
     LspStop,
+    LspToggleForBuffer,
     ToggleInlayHints,
     ToggleMouseHover,
 
@@ -588,8 +593,53 @@ pub enum Action {
     // Event debug
     EventDebug, // Open the event debug dialog
 
+    // Keybinding editor
+    OpenKeybindingEditor, // Open the keybinding editor modal
+
     // No-op
     None,
+}
+
+/// Macro that generates both `Action::from_str` and `Action::all_action_names` from a single
+/// definition, ensuring the list of valid action name strings is always in sync at compile time.
+///
+/// The first argument (`$args_name`) is the identifier used for the args parameter in custom
+/// bodies. This is needed so that macro hygiene allows the custom body expressions to reference
+/// the function parameter (both the definition and usage share the call-site span).
+///
+/// Three categories of action mappings:
+/// - `simple`: `"name" => Variant` — no args needed
+/// - `with_char`: `"name" => Variant` — passes through `with_char(args, ...)` for char-arg actions
+/// - `custom`: `"name" => { body }` — arbitrary expression using `$args_name` for complex arg parsing
+macro_rules! define_action_str_mapping {
+    (
+        $args_name:ident;
+        simple { $($s_name:literal => $s_variant:ident),* $(,)? }
+        with_char { $($c_name:literal => $c_variant:ident),* $(,)? }
+        custom { $($x_name:literal => $x_body:expr),* $(,)? }
+    ) => {
+        /// Parse action from string (used when loading from config)
+        pub fn from_str(s: &str, $args_name: &HashMap<String, serde_json::Value>) -> Option<Self> {
+            Some(match s {
+                $($s_name => Self::$s_variant,)*
+                $($c_name => return Self::with_char($args_name, Self::$c_variant),)*
+                $($x_name => $x_body,)*
+                _ => return None,
+            })
+        }
+
+        /// All valid action name strings, sorted alphabetically.
+        /// Generated from the same macro as `from_str`, guaranteeing compile-time completeness.
+        pub fn all_action_names() -> Vec<String> {
+            let mut names = vec![
+                $($s_name.to_string(),)*
+                $($c_name.to_string(),)*
+                $($x_name.to_string(),)*
+            ];
+            names.sort();
+            names
+        }
+    };
 }
 
 impl Action {
@@ -604,318 +654,315 @@ impl Action {
         }
     }
 
-    /// Parse action from string (used when loading from config)
-    pub fn from_str(s: &str, args: &HashMap<String, serde_json::Value>) -> Option<Self> {
-        Some(match s {
-            "insert_char" => return Self::with_char(args, Self::InsertChar),
-            "insert_newline" => Self::InsertNewline,
-            "insert_tab" => Self::InsertTab,
+    define_action_str_mapping! {
+        args;
+        simple {
+            "insert_newline" => InsertNewline,
+            "insert_tab" => InsertTab,
 
-            "move_left" => Self::MoveLeft,
-            "move_right" => Self::MoveRight,
-            "move_up" => Self::MoveUp,
-            "move_down" => Self::MoveDown,
-            "move_word_left" => Self::MoveWordLeft,
-            "move_word_right" => Self::MoveWordRight,
-            "move_word_end" => Self::MoveWordEnd,
-            "move_line_start" => Self::MoveLineStart,
-            "move_line_end" => Self::MoveLineEnd,
-            "move_page_up" => Self::MovePageUp,
-            "move_page_down" => Self::MovePageDown,
-            "move_document_start" => Self::MoveDocumentStart,
-            "move_document_end" => Self::MoveDocumentEnd,
+            "move_left" => MoveLeft,
+            "move_right" => MoveRight,
+            "move_up" => MoveUp,
+            "move_down" => MoveDown,
+            "move_word_left" => MoveWordLeft,
+            "move_word_right" => MoveWordRight,
+            "move_word_end" => MoveWordEnd,
+            "move_line_start" => MoveLineStart,
+            "move_line_end" => MoveLineEnd,
+            "move_line_up" => MoveLineUp,
+            "move_line_down" => MoveLineDown,
+            "move_page_up" => MovePageUp,
+            "move_page_down" => MovePageDown,
+            "move_document_start" => MoveDocumentStart,
+            "move_document_end" => MoveDocumentEnd,
 
-            "select_left" => Self::SelectLeft,
-            "select_right" => Self::SelectRight,
-            "select_up" => Self::SelectUp,
-            "select_down" => Self::SelectDown,
-            "select_to_paragraph_up" => Self::SelectToParagraphUp,
-            "select_to_paragraph_down" => Self::SelectToParagraphDown,
-            "select_word_left" => Self::SelectWordLeft,
-            "select_word_right" => Self::SelectWordRight,
-            "select_word_end" => Self::SelectWordEnd,
-            "select_line_start" => Self::SelectLineStart,
-            "select_line_end" => Self::SelectLineEnd,
-            "select_document_start" => Self::SelectDocumentStart,
-            "select_document_end" => Self::SelectDocumentEnd,
-            "select_page_up" => Self::SelectPageUp,
-            "select_page_down" => Self::SelectPageDown,
-            "select_all" => Self::SelectAll,
-            "select_word" => Self::SelectWord,
-            "select_line" => Self::SelectLine,
-            "expand_selection" => Self::ExpandSelection,
+            "select_left" => SelectLeft,
+            "select_right" => SelectRight,
+            "select_up" => SelectUp,
+            "select_down" => SelectDown,
+            "select_to_paragraph_up" => SelectToParagraphUp,
+            "select_to_paragraph_down" => SelectToParagraphDown,
+            "select_word_left" => SelectWordLeft,
+            "select_word_right" => SelectWordRight,
+            "select_word_end" => SelectWordEnd,
+            "select_line_start" => SelectLineStart,
+            "select_line_end" => SelectLineEnd,
+            "select_document_start" => SelectDocumentStart,
+            "select_document_end" => SelectDocumentEnd,
+            "select_page_up" => SelectPageUp,
+            "select_page_down" => SelectPageDown,
+            "select_all" => SelectAll,
+            "select_word" => SelectWord,
+            "select_line" => SelectLine,
+            "expand_selection" => ExpandSelection,
 
-            // Block/rectangular selection
-            "block_select_left" => Self::BlockSelectLeft,
-            "block_select_right" => Self::BlockSelectRight,
-            "block_select_up" => Self::BlockSelectUp,
-            "block_select_down" => Self::BlockSelectDown,
+            "block_select_left" => BlockSelectLeft,
+            "block_select_right" => BlockSelectRight,
+            "block_select_up" => BlockSelectUp,
+            "block_select_down" => BlockSelectDown,
 
-            "delete_backward" => Self::DeleteBackward,
-            "delete_forward" => Self::DeleteForward,
-            "delete_word_backward" => Self::DeleteWordBackward,
-            "delete_word_forward" => Self::DeleteWordForward,
-            "delete_line" => Self::DeleteLine,
-            "delete_to_line_end" => Self::DeleteToLineEnd,
-            "delete_to_line_start" => Self::DeleteToLineStart,
-            "transpose_chars" => Self::TransposeChars,
-            "open_line" => Self::OpenLine,
-            "recenter" => Self::Recenter,
-            "set_mark" => Self::SetMark,
+            "delete_backward" => DeleteBackward,
+            "delete_forward" => DeleteForward,
+            "delete_word_backward" => DeleteWordBackward,
+            "delete_word_forward" => DeleteWordForward,
+            "delete_line" => DeleteLine,
+            "delete_to_line_end" => DeleteToLineEnd,
+            "delete_to_line_start" => DeleteToLineStart,
+            "transpose_chars" => TransposeChars,
+            "open_line" => OpenLine,
+            "duplicate_line" => DuplicateLine,
+            "recenter" => Recenter,
+            "set_mark" => SetMark,
 
-            "copy" => Self::Copy,
+            "copy" => Copy,
+            "cut" => Cut,
+            "paste" => Paste,
+
+            "yank_word_forward" => YankWordForward,
+            "yank_word_backward" => YankWordBackward,
+            "yank_to_line_end" => YankToLineEnd,
+            "yank_to_line_start" => YankToLineStart,
+
+            "add_cursor_above" => AddCursorAbove,
+            "add_cursor_below" => AddCursorBelow,
+            "add_cursor_next_match" => AddCursorNextMatch,
+            "remove_secondary_cursors" => RemoveSecondaryCursors,
+
+            "save" => Save,
+            "save_as" => SaveAs,
+            "open" => Open,
+            "switch_project" => SwitchProject,
+            "new" => New,
+            "close" => Close,
+            "close_tab" => CloseTab,
+            "quit" => Quit,
+            "force_quit" => ForceQuit,
+            "detach" => Detach,
+            "revert" => Revert,
+            "toggle_auto_revert" => ToggleAutoRevert,
+            "format_buffer" => FormatBuffer,
+            "goto_line" => GotoLine,
+            "goto_matching_bracket" => GoToMatchingBracket,
+            "jump_to_next_error" => JumpToNextError,
+            "jump_to_previous_error" => JumpToPreviousError,
+
+            "smart_home" => SmartHome,
+            "dedent_selection" => DedentSelection,
+            "toggle_comment" => ToggleComment,
+
+            "list_bookmarks" => ListBookmarks,
+
+            "toggle_search_case_sensitive" => ToggleSearchCaseSensitive,
+            "toggle_search_whole_word" => ToggleSearchWholeWord,
+            "toggle_search_regex" => ToggleSearchRegex,
+            "toggle_search_confirm_each" => ToggleSearchConfirmEach,
+
+            "start_macro_recording" => StartMacroRecording,
+            "stop_macro_recording" => StopMacroRecording,
+
+            "list_macros" => ListMacros,
+            "prompt_record_macro" => PromptRecordMacro,
+            "prompt_play_macro" => PromptPlayMacro,
+            "play_last_macro" => PlayLastMacro,
+            "prompt_set_bookmark" => PromptSetBookmark,
+            "prompt_jump_to_bookmark" => PromptJumpToBookmark,
+
+            "undo" => Undo,
+            "redo" => Redo,
+
+            "scroll_up" => ScrollUp,
+            "scroll_down" => ScrollDown,
+            "show_help" => ShowHelp,
+            "keyboard_shortcuts" => ShowKeyboardShortcuts,
+            "show_warnings" => ShowWarnings,
+            "show_status_log" => ShowStatusLog,
+            "show_lsp_status" => ShowLspStatus,
+            "clear_warnings" => ClearWarnings,
+            "command_palette" => CommandPalette,
+            "quick_open" => QuickOpen,
+            "toggle_line_wrap" => ToggleLineWrap,
+            "toggle_compose_mode" => ToggleComposeMode,
+            "set_compose_width" => SetComposeWidth,
+
+            "next_buffer" => NextBuffer,
+            "prev_buffer" => PrevBuffer,
+
+            "navigate_back" => NavigateBack,
+            "navigate_forward" => NavigateForward,
+
+            "split_horizontal" => SplitHorizontal,
+            "split_vertical" => SplitVertical,
+            "close_split" => CloseSplit,
+            "next_split" => NextSplit,
+            "prev_split" => PrevSplit,
+            "increase_split_size" => IncreaseSplitSize,
+            "decrease_split_size" => DecreaseSplitSize,
+            "toggle_maximize_split" => ToggleMaximizeSplit,
+
+            "prompt_confirm" => PromptConfirm,
+            "prompt_cancel" => PromptCancel,
+            "prompt_backspace" => PromptBackspace,
+            "prompt_move_left" => PromptMoveLeft,
+            "prompt_move_right" => PromptMoveRight,
+            "prompt_move_start" => PromptMoveStart,
+            "prompt_move_end" => PromptMoveEnd,
+            "prompt_select_prev" => PromptSelectPrev,
+            "prompt_select_next" => PromptSelectNext,
+            "prompt_page_up" => PromptPageUp,
+            "prompt_page_down" => PromptPageDown,
+            "prompt_accept_suggestion" => PromptAcceptSuggestion,
+            "prompt_delete_word_forward" => PromptDeleteWordForward,
+            "prompt_delete_word_backward" => PromptDeleteWordBackward,
+            "prompt_delete_to_line_end" => PromptDeleteToLineEnd,
+            "prompt_copy" => PromptCopy,
+            "prompt_cut" => PromptCut,
+            "prompt_paste" => PromptPaste,
+            "prompt_move_left_selecting" => PromptMoveLeftSelecting,
+            "prompt_move_right_selecting" => PromptMoveRightSelecting,
+            "prompt_move_home_selecting" => PromptMoveHomeSelecting,
+            "prompt_move_end_selecting" => PromptMoveEndSelecting,
+            "prompt_select_word_left" => PromptSelectWordLeft,
+            "prompt_select_word_right" => PromptSelectWordRight,
+            "prompt_select_all" => PromptSelectAll,
+            "file_browser_toggle_hidden" => FileBrowserToggleHidden,
+            "file_browser_toggle_detect_encoding" => FileBrowserToggleDetectEncoding,
+            "prompt_move_word_left" => PromptMoveWordLeft,
+            "prompt_move_word_right" => PromptMoveWordRight,
+            "prompt_delete" => PromptDelete,
+
+            "popup_select_next" => PopupSelectNext,
+            "popup_select_prev" => PopupSelectPrev,
+            "popup_page_up" => PopupPageUp,
+            "popup_page_down" => PopupPageDown,
+            "popup_confirm" => PopupConfirm,
+            "popup_cancel" => PopupCancel,
+
+            "toggle_file_explorer" => ToggleFileExplorer,
+            "toggle_menu_bar" => ToggleMenuBar,
+            "toggle_tab_bar" => ToggleTabBar,
+            "focus_file_explorer" => FocusFileExplorer,
+            "focus_editor" => FocusEditor,
+            "file_explorer_up" => FileExplorerUp,
+            "file_explorer_down" => FileExplorerDown,
+            "file_explorer_page_up" => FileExplorerPageUp,
+            "file_explorer_page_down" => FileExplorerPageDown,
+            "file_explorer_expand" => FileExplorerExpand,
+            "file_explorer_collapse" => FileExplorerCollapse,
+            "file_explorer_open" => FileExplorerOpen,
+            "file_explorer_refresh" => FileExplorerRefresh,
+            "file_explorer_new_file" => FileExplorerNewFile,
+            "file_explorer_new_directory" => FileExplorerNewDirectory,
+            "file_explorer_delete" => FileExplorerDelete,
+            "file_explorer_rename" => FileExplorerRename,
+            "file_explorer_toggle_hidden" => FileExplorerToggleHidden,
+            "file_explorer_toggle_gitignored" => FileExplorerToggleGitignored,
+            "file_explorer_search_clear" => FileExplorerSearchClear,
+            "file_explorer_search_backspace" => FileExplorerSearchBackspace,
+
+            "lsp_completion" => LspCompletion,
+            "lsp_goto_definition" => LspGotoDefinition,
+            "lsp_references" => LspReferences,
+            "lsp_rename" => LspRename,
+            "lsp_hover" => LspHover,
+            "lsp_signature_help" => LspSignatureHelp,
+            "lsp_code_actions" => LspCodeActions,
+            "lsp_restart" => LspRestart,
+            "lsp_stop" => LspStop,
+            "lsp_toggle_for_buffer" => LspToggleForBuffer,
+            "toggle_inlay_hints" => ToggleInlayHints,
+            "toggle_mouse_hover" => ToggleMouseHover,
+
+            "toggle_line_numbers" => ToggleLineNumbers,
+            "toggle_mouse_capture" => ToggleMouseCapture,
+            "toggle_debug_highlights" => ToggleDebugHighlights,
+            "set_background" => SetBackground,
+            "set_background_blend" => SetBackgroundBlend,
+            "select_theme" => SelectTheme,
+            "select_keybinding_map" => SelectKeybindingMap,
+            "select_locale" => SelectLocale,
+
+            "set_tab_size" => SetTabSize,
+            "set_line_ending" => SetLineEnding,
+            "set_encoding" => SetEncoding,
+            "reload_with_encoding" => ReloadWithEncoding,
+            "toggle_indentation_style" => ToggleIndentationStyle,
+            "toggle_tab_indicators" => ToggleTabIndicators,
+            "reset_buffer_settings" => ResetBufferSettings,
+
+            "dump_config" => DumpConfig,
+
+            "search" => Search,
+            "find_in_selection" => FindInSelection,
+            "find_next" => FindNext,
+            "find_previous" => FindPrevious,
+            "find_selection_next" => FindSelectionNext,
+            "find_selection_previous" => FindSelectionPrevious,
+            "replace" => Replace,
+            "query_replace" => QueryReplace,
+
+            "menu_activate" => MenuActivate,
+            "menu_close" => MenuClose,
+            "menu_left" => MenuLeft,
+            "menu_right" => MenuRight,
+            "menu_up" => MenuUp,
+            "menu_down" => MenuDown,
+            "menu_execute" => MenuExecute,
+
+            "open_terminal" => OpenTerminal,
+            "close_terminal" => CloseTerminal,
+            "focus_terminal" => FocusTerminal,
+            "terminal_escape" => TerminalEscape,
+            "toggle_keyboard_capture" => ToggleKeyboardCapture,
+            "terminal_paste" => TerminalPaste,
+
+            "shell_command" => ShellCommand,
+            "shell_command_replace" => ShellCommandReplace,
+
+            "to_upper_case" => ToUpperCase,
+            "to_lower_case" => ToLowerCase,
+            "sort_lines" => SortLines,
+
+            "calibrate_input" => CalibrateInput,
+            "event_debug" => EventDebug,
+            "open_keybinding_editor" => OpenKeybindingEditor,
+
+            "noop" => None,
+
+            "open_settings" => OpenSettings,
+            "close_settings" => CloseSettings,
+            "settings_save" => SettingsSave,
+            "settings_reset" => SettingsReset,
+            "settings_toggle_focus" => SettingsToggleFocus,
+            "settings_activate" => SettingsActivate,
+            "settings_search" => SettingsSearch,
+            "settings_help" => SettingsHelp,
+            "settings_increment" => SettingsIncrement,
+            "settings_decrement" => SettingsDecrement,
+        }
+        with_char {
+            "insert_char" => InsertChar,
+            "set_bookmark" => SetBookmark,
+            "jump_to_bookmark" => JumpToBookmark,
+            "clear_bookmark" => ClearBookmark,
+            "play_macro" => PlayMacro,
+            "toggle_macro_recording" => ToggleMacroRecording,
+            "show_macro" => ShowMacro,
+        }
+        custom {
             "copy_with_theme" => {
                 // Empty theme = open theme picker prompt
                 let theme = args.get("theme").and_then(|v| v.as_str()).unwrap_or("");
                 Self::CopyWithTheme(theme.to_string())
-            }
-            "cut" => Self::Cut,
-            "paste" => Self::Paste,
-
-            // Vi-style yank actions
-            "yank_word_forward" => Self::YankWordForward,
-            "yank_word_backward" => Self::YankWordBackward,
-            "yank_to_line_end" => Self::YankToLineEnd,
-            "yank_to_line_start" => Self::YankToLineStart,
-
-            "add_cursor_above" => Self::AddCursorAbove,
-            "add_cursor_below" => Self::AddCursorBelow,
-            "add_cursor_next_match" => Self::AddCursorNextMatch,
-            "remove_secondary_cursors" => Self::RemoveSecondaryCursors,
-
-            "save" => Self::Save,
-            "save_as" => Self::SaveAs,
-            "open" => Self::Open,
-            "switch_project" => Self::SwitchProject,
-            "new" => Self::New,
-            "close" => Self::Close,
-            "close_tab" => Self::CloseTab,
-            "quit" => Self::Quit,
-            "force_quit" => Self::ForceQuit,
-            "revert" => Self::Revert,
-            "toggle_auto_revert" => Self::ToggleAutoRevert,
-            "format_buffer" => Self::FormatBuffer,
-            "goto_line" => Self::GotoLine,
-            "goto_matching_bracket" => Self::GoToMatchingBracket,
-            "jump_to_next_error" => Self::JumpToNextError,
-            "jump_to_previous_error" => Self::JumpToPreviousError,
-
-            "smart_home" => Self::SmartHome,
-            "dedent_selection" => Self::DedentSelection,
-            "toggle_comment" => Self::ToggleComment,
-
-            "set_bookmark" => return Self::with_char(args, Self::SetBookmark),
-            "jump_to_bookmark" => return Self::with_char(args, Self::JumpToBookmark),
-            "clear_bookmark" => return Self::with_char(args, Self::ClearBookmark),
-
-            "list_bookmarks" => Self::ListBookmarks,
-
-            "toggle_search_case_sensitive" => Self::ToggleSearchCaseSensitive,
-            "toggle_search_whole_word" => Self::ToggleSearchWholeWord,
-            "toggle_search_regex" => Self::ToggleSearchRegex,
-            "toggle_search_confirm_each" => Self::ToggleSearchConfirmEach,
-
-            "start_macro_recording" => Self::StartMacroRecording,
-            "stop_macro_recording" => Self::StopMacroRecording,
-            "play_macro" => return Self::with_char(args, Self::PlayMacro),
-            "toggle_macro_recording" => return Self::with_char(args, Self::ToggleMacroRecording),
-
-            "show_macro" => return Self::with_char(args, Self::ShowMacro),
-
-            "list_macros" => Self::ListMacros,
-            "prompt_record_macro" => Self::PromptRecordMacro,
-            "prompt_play_macro" => Self::PromptPlayMacro,
-            "play_last_macro" => Self::PlayLastMacro,
-            "prompt_set_bookmark" => Self::PromptSetBookmark,
-            "prompt_jump_to_bookmark" => Self::PromptJumpToBookmark,
-
-            "undo" => Self::Undo,
-            "redo" => Self::Redo,
-
-            "scroll_up" => Self::ScrollUp,
-            "scroll_down" => Self::ScrollDown,
-            "show_help" => Self::ShowHelp,
-            "keyboard_shortcuts" => Self::ShowKeyboardShortcuts,
-            "show_warnings" => Self::ShowWarnings,
-            "show_status_log" => Self::ShowStatusLog,
-            "show_lsp_status" => Self::ShowLspStatus,
-            "clear_warnings" => Self::ClearWarnings,
-            "command_palette" => Self::CommandPalette,
-            "quick_open" => Self::QuickOpen,
-            "toggle_line_wrap" => Self::ToggleLineWrap,
-            "toggle_compose_mode" => Self::ToggleComposeMode,
-            "set_compose_width" => Self::SetComposeWidth,
-
-            "next_buffer" => Self::NextBuffer,
-            "prev_buffer" => Self::PrevBuffer,
-
-            "navigate_back" => Self::NavigateBack,
-            "navigate_forward" => Self::NavigateForward,
-
-            "split_horizontal" => Self::SplitHorizontal,
-            "split_vertical" => Self::SplitVertical,
-            "close_split" => Self::CloseSplit,
-            "next_split" => Self::NextSplit,
-            "prev_split" => Self::PrevSplit,
-            "increase_split_size" => Self::IncreaseSplitSize,
-            "decrease_split_size" => Self::DecreaseSplitSize,
-            "toggle_maximize_split" => Self::ToggleMaximizeSplit,
-
-            "prompt_confirm" => Self::PromptConfirm,
-            "prompt_cancel" => Self::PromptCancel,
-            "prompt_backspace" => Self::PromptBackspace,
-            "prompt_move_left" => Self::PromptMoveLeft,
-            "prompt_move_right" => Self::PromptMoveRight,
-            "prompt_move_start" => Self::PromptMoveStart,
-            "prompt_move_end" => Self::PromptMoveEnd,
-            "prompt_select_prev" => Self::PromptSelectPrev,
-            "prompt_select_next" => Self::PromptSelectNext,
-            "prompt_page_up" => Self::PromptPageUp,
-            "prompt_page_down" => Self::PromptPageDown,
-            "prompt_accept_suggestion" => Self::PromptAcceptSuggestion,
-            "prompt_delete_word_forward" => Self::PromptDeleteWordForward,
-            "prompt_delete_word_backward" => Self::PromptDeleteWordBackward,
-            "prompt_delete_to_line_end" => Self::PromptDeleteToLineEnd,
-            "prompt_copy" => Self::PromptCopy,
-            "prompt_cut" => Self::PromptCut,
-            "prompt_paste" => Self::PromptPaste,
-            "prompt_move_left_selecting" => Self::PromptMoveLeftSelecting,
-            "prompt_move_right_selecting" => Self::PromptMoveRightSelecting,
-            "prompt_move_home_selecting" => Self::PromptMoveHomeSelecting,
-            "prompt_move_end_selecting" => Self::PromptMoveEndSelecting,
-            "prompt_select_word_left" => Self::PromptSelectWordLeft,
-            "prompt_select_word_right" => Self::PromptSelectWordRight,
-            "prompt_select_all" => Self::PromptSelectAll,
-            "file_browser_toggle_hidden" => Self::FileBrowserToggleHidden,
-            "file_browser_toggle_detect_encoding" => Self::FileBrowserToggleDetectEncoding,
-            "prompt_move_word_left" => Self::PromptMoveWordLeft,
-            "prompt_move_word_right" => Self::PromptMoveWordRight,
-            "prompt_delete" => Self::PromptDelete,
-
-            "popup_select_next" => Self::PopupSelectNext,
-            "popup_select_prev" => Self::PopupSelectPrev,
-            "popup_page_up" => Self::PopupPageUp,
-            "popup_page_down" => Self::PopupPageDown,
-            "popup_confirm" => Self::PopupConfirm,
-            "popup_cancel" => Self::PopupCancel,
-
-            "toggle_file_explorer" => Self::ToggleFileExplorer,
-            "toggle_menu_bar" => Self::ToggleMenuBar,
-            "toggle_tab_bar" => Self::ToggleTabBar,
-            "focus_file_explorer" => Self::FocusFileExplorer,
-            "focus_editor" => Self::FocusEditor,
-            "file_explorer_up" => Self::FileExplorerUp,
-            "file_explorer_down" => Self::FileExplorerDown,
-            "file_explorer_page_up" => Self::FileExplorerPageUp,
-            "file_explorer_page_down" => Self::FileExplorerPageDown,
-            "file_explorer_expand" => Self::FileExplorerExpand,
-            "file_explorer_collapse" => Self::FileExplorerCollapse,
-            "file_explorer_open" => Self::FileExplorerOpen,
-            "file_explorer_refresh" => Self::FileExplorerRefresh,
-            "file_explorer_new_file" => Self::FileExplorerNewFile,
-            "file_explorer_new_directory" => Self::FileExplorerNewDirectory,
-            "file_explorer_delete" => Self::FileExplorerDelete,
-            "file_explorer_rename" => Self::FileExplorerRename,
-            "file_explorer_toggle_hidden" => Self::FileExplorerToggleHidden,
-            "file_explorer_toggle_gitignored" => Self::FileExplorerToggleGitignored,
-            "file_explorer_search_clear" => Self::FileExplorerSearchClear,
-            "file_explorer_search_backspace" => Self::FileExplorerSearchBackspace,
-
-            "lsp_completion" => Self::LspCompletion,
-            "lsp_goto_definition" => Self::LspGotoDefinition,
-            "lsp_references" => Self::LspReferences,
-            "lsp_rename" => Self::LspRename,
-            "lsp_hover" => Self::LspHover,
-            "lsp_signature_help" => Self::LspSignatureHelp,
-            "lsp_code_actions" => Self::LspCodeActions,
-            "lsp_restart" => Self::LspRestart,
-            "lsp_stop" => Self::LspStop,
-            "toggle_inlay_hints" => Self::ToggleInlayHints,
-            "toggle_mouse_hover" => Self::ToggleMouseHover,
-
-            "toggle_line_numbers" => Self::ToggleLineNumbers,
-            "toggle_mouse_capture" => Self::ToggleMouseCapture,
-            "toggle_debug_highlights" => Self::ToggleDebugHighlights,
-            "set_background" => Self::SetBackground,
-            "set_background_blend" => Self::SetBackgroundBlend,
-            "select_theme" => Self::SelectTheme,
-            "select_keybinding_map" => Self::SelectKeybindingMap,
-            "select_locale" => Self::SelectLocale,
-
-            // Buffer settings
-            "set_tab_size" => Self::SetTabSize,
-            "set_line_ending" => Self::SetLineEnding,
-            "set_encoding" => Self::SetEncoding,
-            "reload_with_encoding" => Self::ReloadWithEncoding,
-            "toggle_indentation_style" => Self::ToggleIndentationStyle,
-            "toggle_tab_indicators" => Self::ToggleTabIndicators,
-            "reset_buffer_settings" => Self::ResetBufferSettings,
-
-            "dump_config" => Self::DumpConfig,
-
-            "search" => Self::Search,
-            "find_in_selection" => Self::FindInSelection,
-            "find_next" => Self::FindNext,
-            "find_previous" => Self::FindPrevious,
-            "find_selection_next" => Self::FindSelectionNext,
-            "find_selection_previous" => Self::FindSelectionPrevious,
-            "replace" => Self::Replace,
-            "query_replace" => Self::QueryReplace,
-
-            "menu_activate" => Self::MenuActivate,
-            "menu_close" => Self::MenuClose,
-            "menu_left" => Self::MenuLeft,
-            "menu_right" => Self::MenuRight,
-            "menu_up" => Self::MenuUp,
-            "menu_down" => Self::MenuDown,
-            "menu_execute" => Self::MenuExecute,
+            },
             "menu_open" => {
                 let name = args.get("name")?.as_str()?;
                 Self::MenuOpen(name.to_string())
-            }
-
+            },
             "switch_keybinding_map" => {
                 let map_name = args.get("map")?.as_str()?;
                 Self::SwitchKeybindingMap(map_name.to_string())
-            }
-
-            // Terminal actions
-            "open_terminal" => Self::OpenTerminal,
-            "close_terminal" => Self::CloseTerminal,
-            "focus_terminal" => Self::FocusTerminal,
-            "terminal_escape" => Self::TerminalEscape,
-            "toggle_keyboard_capture" => Self::ToggleKeyboardCapture,
-            "terminal_paste" => Self::TerminalPaste,
-
-            // Shell command actions
-            "shell_command" => Self::ShellCommand,
-            "shell_command_replace" => Self::ShellCommandReplace,
-
-            // Case conversion
-            "to_upper_case" => Self::ToUpperCase,
-            "to_lower_case" => Self::ToLowerCase,
-            "sort_lines" => Self::SortLines,
-
-            // Input calibration
-            "calibrate_input" => Self::CalibrateInput,
-
-            // Event debug
-            "event_debug" => Self::EventDebug,
-
-            // Settings actions
-            "open_settings" => Self::OpenSettings,
-            "close_settings" => Self::CloseSettings,
-            "settings_save" => Self::SettingsSave,
-            "settings_reset" => Self::SettingsReset,
-            "settings_toggle_focus" => Self::SettingsToggleFocus,
-            "settings_activate" => Self::SettingsActivate,
-            "settings_search" => Self::SettingsSearch,
-            "settings_help" => Self::SettingsHelp,
-            "settings_increment" => Self::SettingsIncrement,
-            "settings_decrement" => Self::SettingsDecrement,
-
-            _ => return None,
-        })
+            },
+        }
     }
 
     /// Check if this action is a movement or editing action that should be
@@ -975,6 +1022,9 @@ impl Action {
                 | Action::DeleteToLineStart
                 | Action::TransposeChars
                 | Action::OpenLine
+                | Action::DuplicateLine
+                | Action::MoveLineUp
+                | Action::MoveLineDown
                 // Clipboard editing (but not Copy)
                 | Action::Cut
                 | Action::Paste
@@ -1001,6 +1051,9 @@ impl Action {
                 | Action::DeleteToLineStart
                 | Action::TransposeChars
                 | Action::OpenLine
+                | Action::DuplicateLine
+                | Action::MoveLineUp
+                | Action::MoveLineDown
                 | Action::Cut
                 | Action::Paste
         )
@@ -1693,6 +1746,8 @@ impl KeybindingResolver {
             Action::MoveWordEnd => t!("action.move_word_end"),
             Action::MoveLineStart => t!("action.move_line_start"),
             Action::MoveLineEnd => t!("action.move_line_end"),
+            Action::MoveLineUp => t!("action.move_line_up"),
+            Action::MoveLineDown => t!("action.move_line_down"),
             Action::MovePageUp => t!("action.move_page_up"),
             Action::MovePageDown => t!("action.move_page_down"),
             Action::MoveDocumentStart => t!("action.move_document_start"),
@@ -1729,6 +1784,7 @@ impl KeybindingResolver {
             Action::DeleteToLineStart => t!("action.delete_to_line_start"),
             Action::TransposeChars => t!("action.transpose_chars"),
             Action::OpenLine => t!("action.open_line"),
+            Action::DuplicateLine => t!("action.duplicate_line"),
             Action::Recenter => t!("action.recenter"),
             Action::SetMark => t!("action.set_mark"),
             Action::Copy => t!("action.copy"),
@@ -1753,6 +1809,7 @@ impl KeybindingResolver {
             Action::CloseTab => t!("action.close_tab"),
             Action::Quit => t!("action.quit"),
             Action::ForceQuit => t!("action.force_quit"),
+            Action::Detach => t!("action.detach"),
             Action::Revert => t!("action.revert"),
             Action::ToggleAutoRevert => t!("action.toggle_auto_revert"),
             Action::FormatBuffer => t!("action.format_buffer"),
@@ -1882,6 +1939,7 @@ impl KeybindingResolver {
             Action::LspCodeActions => t!("action.lsp_code_actions"),
             Action::LspRestart => t!("action.lsp_restart"),
             Action::LspStop => t!("action.lsp_stop"),
+            Action::LspToggleForBuffer => t!("action.lsp_toggle_for_buffer"),
             Action::ToggleInlayHints => t!("action.toggle_inlay_hints"),
             Action::ToggleMouseHover => t!("action.toggle_mouse_hover"),
             Action::ToggleLineNumbers => t!("action.toggle_line_numbers"),
@@ -1947,9 +2005,53 @@ impl KeybindingResolver {
             Action::SortLines => t!("action.sort_lines"),
             Action::CalibrateInput => t!("action.calibrate_input"),
             Action::EventDebug => t!("action.event_debug"),
+            Action::OpenKeybindingEditor => "Keybinding Editor".into(),
             Action::None => t!("action.none"),
         }
         .to_string()
+    }
+
+    /// Public wrapper for parse_key (for keybinding editor)
+    pub fn parse_key_public(key: &str) -> Option<KeyCode> {
+        Self::parse_key(key)
+    }
+
+    /// Public wrapper for parse_modifiers (for keybinding editor)
+    pub fn parse_modifiers_public(modifiers: &[String]) -> KeyModifiers {
+        Self::parse_modifiers(modifiers)
+    }
+
+    /// Format an action name string as a human-readable description.
+    /// Used by the keybinding editor to display action names without needing
+    /// a full Action enum parse.
+    pub fn format_action_from_str(action_name: &str) -> String {
+        // Try to parse as Action enum first
+        if let Some(action) = Action::from_str(action_name, &std::collections::HashMap::new()) {
+            Self::format_action(&action)
+        } else {
+            // Fallback: convert snake_case to Title Case
+            action_name
+                .split('_')
+                .map(|word| {
+                    let mut chars = word.chars();
+                    match chars.next() {
+                        Some(c) => {
+                            let upper: String = c.to_uppercase().collect();
+                            format!("{}{}", upper, chars.as_str())
+                        }
+                        None => String::new(),
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+    }
+
+    /// Return a sorted list of all valid action name strings.
+    /// Delegates to `Action::all_action_names()` which is generated by the
+    /// `define_action_str_mapping!` macro (same source of truth as `Action::from_str`).
+    pub fn all_action_names() -> Vec<String> {
+        Action::all_action_names()
     }
 
     /// Get the keybinding string for an action in a specific context

@@ -131,9 +131,10 @@ impl Editor {
 
         // Show the popup
         use crate::model::event::{
-            PopupContentData, PopupData, PopupListItemData, PopupPositionData,
+            PopupContentData, PopupData, PopupKindHint, PopupListItemData, PopupPositionData,
         };
         let popup_data = PopupData {
+            kind: PopupKindHint::Completion,
             title: Some(t!("lsp.popup_completion").to_string()),
             description: None,
             transient: false,
@@ -1774,6 +1775,11 @@ impl Editor {
             if let Some(metadata) = self.buffer_metadata.get_mut(&buffer_id) {
                 metadata.lsp_opened_with.insert(handle_id);
             }
+
+            // didOpen already contains the full current buffer content, so we must
+            // NOT also send didChange (which carries pre-edit incremental changes).
+            // Sending both would corrupt the server's view of the document.
+            return;
         }
 
         // Now send didChange

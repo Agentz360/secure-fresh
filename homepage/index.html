@@ -124,6 +124,74 @@
             filter: invert(1);
         }
 
+        /* Hamburger Menu */
+        .hamburger {
+            display: none;
+            flex-direction: column;
+            gap: 5px;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            padding: 8px;
+        }
+
+        .hamburger span {
+            width: 24px;
+            height: 2px;
+            background: var(--accent-green);
+            transition: all 0.3s;
+            border-radius: 2px;
+        }
+
+        .hamburger.active span:nth-child(1) {
+            transform: rotate(45deg) translate(7px, 7px);
+        }
+
+        .hamburger.active span:nth-child(2) {
+            opacity: 0;
+        }
+
+        .hamburger.active span:nth-child(3) {
+            transform: rotate(-45deg) translate(7px, -7px);
+        }
+
+        .mobile-menu {
+            display: none;
+            position: fixed;
+            top: 60px;
+            left: 0;
+            right: 0;
+            background: var(--bg-darker);
+            border-bottom: 1px solid var(--border-color);
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+            z-index: 99;
+        }
+
+        .mobile-menu.active {
+            max-height: 400px;
+        }
+
+        .mobile-menu-content {
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
+            gap: 8px;
+        }
+
+        .mobile-menu-content a {
+            padding: 12px 16px;
+            border-radius: 6px;
+            color: var(--text-light);
+            font-size: 0.9rem;
+            transition: background 0.2s;
+        }
+
+        .mobile-menu-content a:hover {
+            background: var(--bg-card);
+        }
+
         /* Hero Section */
         .hero {
             min-height: 100vh;
@@ -754,17 +822,38 @@
 
         /* Responsive */
         @media (max-width: 768px) {
-            .nav-links {
-                gap: 16px;
+            nav {
+                position: relative;
             }
 
-            .nav-links > a[href^="#"] {
+            .nav-container {
+                height: 60px;
+                flex-direction: row;
+                align-items: center;
+                justify-content: space-between;
+                padding: 0 16px;
+            }
+
+            .nav-logo {
+                width: auto;
+            }
+
+            .nav-links {
                 display: none;
             }
 
-            .btn-github {
-                padding: 6px 12px;
-                font-size: 0.8rem;
+            .hamburger {
+                display: flex;
+            }
+
+            .mobile-menu {
+                display: block;
+                position: absolute;
+                top: 60px;
+            }
+
+            #version-badge {
+                display: none;
             }
 
             .footer-links {
@@ -786,7 +875,7 @@
             }
 
             .hero {
-                padding: 60px 16px 24px;
+                padding: 40px 16px 24px;
                 min-height: auto;
                 justify-content: flex-start;
             }
@@ -893,11 +982,20 @@
             <a href="#" class="nav-logo">
                 >_ Fresh <span id="version-badge"></span>
             </a>
+            <button class="hamburger" onclick="toggleMobileMenu()" aria-label="Menu">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
             <div class="nav-links">
                 <a href="#features">Features</a>
                 <a href="#install">Install</a>
                 <a href="docs/">Docs</a>
                 <a href="https://github.com/sinelaw/fresh/blob/master/CHANGELOG.md" target="_blank">Changelog</a>
+                <a href="https://discord.gg/qUutBj9t" target="_blank" class="btn-github">
+                    <img src="public/discord-icon.svg" alt="Discord" width="16" height="16">
+                    Discord
+                </a>
                 <a href="https://github.com/sinelaw/fresh" target="_blank" class="btn-github">
                     <img src="public/github-icon.svg" alt="GitHub" width="16" height="16">
                     GitHub
@@ -905,6 +1003,18 @@
             </div>
         </div>
     </nav>
+
+    <!-- Mobile Menu -->
+    <div class="mobile-menu" id="mobile-menu">
+        <div class="mobile-menu-content">
+            <a href="#features" onclick="toggleMobileMenu()">Features</a>
+            <a href="#install" onclick="toggleMobileMenu()">Install</a>
+            <a href="docs/">Docs</a>
+            <a href="https://github.com/sinelaw/fresh/blob/master/CHANGELOG.md" target="_blank">Changelog</a>
+            <a href="https://discord.gg/qUutBj9t" target="_blank">Discord</a>
+            <a href="https://github.com/sinelaw/fresh" target="_blank">GitHub</a>
+        </div>
+    </div>
 
     <!-- Hero Section -->
     <section class="hero">
@@ -1047,6 +1157,33 @@
                 <a href="public/assets/fresh-i18nlight.png" target="_blank"><img src="public/assets/fresh-i18nlight.png" alt="Fresh with Japanese interface and light theme"></a>
             </div>
         </div>
+
+        <div class="feature-section">
+            <div class="feature-content">
+                <h2>Session Persistence</h2>
+                <p>Detach and reattach to sessions that survive terminal disconnections and restarts. Open files in a running session from other apps like file managers or scripts.</p>
+                <ul class="feature-list">
+                    <li>Detach and reattach with <code style="color: var(--accent-green);">fresh -a</code></li>
+                    <li>Manage sessions from the CLI</li>
+                    <li>Open files in a running session from other apps</li>
+                </ul>
+            </div>
+            <div class="feature-visual">
+                <div class="feature-visual-dots">
+                    <span></span><span></span><span></span>
+                </div>
+                <div class="feature-code">
+                    <span class="code-line"><span class="code-comment"># Start a named session</span></span>
+                    <span class="code-line"><span class="code-function">fresh</span> <span class="code-string">-a myproject</span></span>
+                    <span class="code-line"></span>
+                    <span class="code-line"><span class="code-comment"># List active sessions</span></span>
+                    <span class="code-line"><span class="code-function">fresh</span> <span class="code-string">--cmd session list</span></span>
+                    <span class="code-line"></span>
+                    <span class="code-line"><span class="code-comment"># Open a file in a running session</span></span>
+                    <span class="code-line"><span class="code-function">fresh</span> <span class="code-string">--cmd session open-file myproject src/main.rs</span></span>
+                </div>
+            </div>
+        </div>
     </section>
 
     <!-- Installation Section -->
@@ -1093,7 +1230,7 @@
                 <div class="install-card">
                     <h3>Cargo</h3>
                     <div class="copyable">
-                        <code id="cmd-cargo">cargo install fresh-editor</code>
+                        <code id="cmd-cargo">cargo install --locked fresh-editor</code>
                         <button class="copy-btn" onclick="copyCode('cmd-cargo', this)">
                             <img src="public/copy-icon.svg" alt="Copy">
                         </button>
@@ -1108,6 +1245,16 @@
                     <div class="copyable">
                         <code id="cmd-deb">sudo dpkg -i fresh-editor_*.deb</code>
                         <button class="copy-btn" onclick="copyCode('cmd-deb', this)">
+                            <img src="public/copy-icon.svg" alt="Copy">
+                        </button>
+                    </div>
+                </div>
+
+                <div class="install-card">
+                    <h3>Windows (winget)</h3>
+                    <div class="copyable">
+                        <code id="cmd-winget">winget install fresh-editor</code>
+                        <button class="copy-btn" onclick="copyCode('cmd-winget', this)">
                             <img src="public/copy-icon.svg" alt="Copy">
                         </button>
                     </div>
@@ -1130,7 +1277,7 @@
         <div class="features-grid">
             <div class="feature-card">
                 <h3>File Management</h3>
-                <p>Open, save, new, close files. Built-in file explorer with git status indicators, tabs, auto-revert, and fuzzy file finder.</p>
+                <p>Open, save, new, close files. Built-in file explorer with git status indicators, tabs, auto-revert, fuzzy file finder, and text encoding support (UTF-16, Latin-1, and more).</p>
             </div>
             <div class="feature-card">
                 <h3>Editing</h3>
@@ -1170,7 +1317,15 @@
             </div>
             <div class="feature-card">
                 <h3>Settings UI</h3>
-                <p>Graphical settings editor with search, keyboard navigation, and mouse support. No config file editing required.</p>
+                <p>Graphical settings editor and keybinding editor with search, conflict detection, and mouse support. No config file editing required.</p>
+            </div>
+            <div class="feature-card">
+                <h3>Package Manager</h3>
+                <p>Browse, install, and uninstall plugins, themes, and language packs from the official registry. Scaffold new packages with --init.</p>
+            </div>
+            <div class="feature-card">
+                <h3>Remote Editing</h3>
+                <p>Edit files on remote machines via SSH. Supports password/key auth, sudo save, and file explorer integration.</p>
             </div>
             <div class="feature-card">
                 <h3>Productivity</h3>
@@ -1208,6 +1363,7 @@
     <footer>
         <div class="footer-links">
             <a href="https://github.com/sinelaw/fresh" target="_blank">GitHub</a>
+            <a href="https://discord.gg/qUutBj9t" target="_blank">Discord</a>
             <a href="docs/">Documentation</a>
             <a href="https://github.com/sinelaw/fresh/releases" target="_blank">Releases</a>
             <a href="https://github.com/sinelaw/fresh/blob/master/CHANGELOG.md" target="_blank">Changelog</a>
@@ -1220,6 +1376,13 @@
     </footer>
 
     <script>
+        function toggleMobileMenu() {
+            const menu = document.getElementById('mobile-menu');
+            const hamburger = document.querySelector('.hamburger');
+            menu.classList.toggle('active');
+            hamburger.classList.toggle('active');
+        }
+
         function copyCode(elementId, btn) {
             const text = document.getElementById(elementId).textContent;
             navigator.clipboard.writeText(text).then(() => {
@@ -1238,8 +1401,8 @@
                 full: 'brew install sinelaw/fresh/fresh-editor'
             },
             windows: {
-                display: 'npm i -g @fresh-editor/fresh-editor',
-                full: 'npm install -g @fresh-editor/fresh-editor'
+                display: 'winget install fresh-editor',
+                full: 'winget install fresh-editor'
             }
         };
 

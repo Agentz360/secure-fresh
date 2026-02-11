@@ -212,12 +212,13 @@ impl Editor {
         // with fallback to global editor config for tab_size
         // Use the buffer's stored language (already set by from_file_with_languages)
         if let Some(lang_config) = self.config.languages.get(&state.language) {
-            state.show_whitespace_tabs = lang_config.show_whitespace_tabs;
-            state.use_tabs = lang_config.use_tabs;
+            state.buffer_settings.show_whitespace_tabs = lang_config.show_whitespace_tabs;
+            state.buffer_settings.use_tabs = lang_config.use_tabs;
             // Use language-specific tab_size if set, otherwise fall back to global
-            state.tab_size = lang_config.tab_size.unwrap_or(self.config.editor.tab_size);
+            state.buffer_settings.tab_size =
+                lang_config.tab_size.unwrap_or(self.config.editor.tab_size);
         } else {
-            state.tab_size = self.config.editor.tab_size;
+            state.buffer_settings.tab_size = self.config.editor.tab_size;
         }
 
         // Apply line_numbers default from config
@@ -591,10 +592,10 @@ impl Editor {
     /// This looks up the file's saved state from the global file states store
     /// and applies it to both the EditorState (cursor) and SplitViewState (viewport).
     fn restore_global_file_state(&mut self, buffer_id: BufferId, path: &Path, split_id: SplitId) {
-        use crate::session::PersistedFileSession;
+        use crate::workspace::PersistedFileWorkspace;
 
-        // Load the per-file session for this path (lazy load from disk)
-        let file_state = match PersistedFileSession::load(path) {
+        // Load the per-file state for this path (lazy load from disk)
+        let file_state = match PersistedFileWorkspace::load(path) {
             Some(state) => state,
             None => return, // No saved state for this file
         };
@@ -622,8 +623,8 @@ impl Editor {
 
     /// Save file state when a buffer is closed (for per-file session persistence)
     fn save_file_state_on_close(&self, buffer_id: BufferId) {
-        use crate::session::{
-            PersistedFileSession, SerializedCursor, SerializedFileState, SerializedScroll,
+        use crate::workspace::{
+            PersistedFileWorkspace, SerializedCursor, SerializedFileState, SerializedScroll,
         };
 
         // Get the file path for this buffer
@@ -672,7 +673,7 @@ impl Editor {
         };
 
         // Save to disk
-        PersistedFileSession::save(&abs_path, file_state);
+        PersistedFileWorkspace::save(&abs_path, file_state);
         tracing::debug!("Saved file state on close for {:?}", abs_path);
     }
 
@@ -737,6 +738,14 @@ impl Editor {
 
             if let Some(state) = self.buffers.get_mut(&buffer_id) {
                 state.apply(&event);
+            }
+
+            // Also update the split view state cursor (which is what's actually displayed)
+            let split_id = self.split_manager.active_split();
+            if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
+                view_state.cursors.primary_mut().position = position;
+                view_state.cursors.primary_mut().anchor = None;
+                view_state.cursors.primary_mut().sticky_column = target_col;
             }
         }
     }
@@ -856,7 +865,7 @@ impl Editor {
         state.buffer.clear_modified();
 
         // Set tab size from config
-        state.tab_size = self.config.editor.tab_size;
+        state.buffer_settings.tab_size = self.config.editor.tab_size;
 
         // Apply line_numbers default from config
         state

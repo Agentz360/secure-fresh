@@ -153,7 +153,7 @@ impl FileSystem for RemoteFileSystem {
 
     fn read_range(&self, path: &Path, offset: u64, len: usize) -> io::Result<Vec<u8>> {
         let path_str = path.to_string_lossy();
-        let (data_chunks, _result) = self
+        let (data_chunks, result) = self
             .channel
             .request_with_data_blocking("read", read_params(&path_str, Some(offset), Some(len)))
             .map_err(Self::to_io_error)?;
@@ -166,6 +166,29 @@ impl FileSystem for RemoteFileSystem {
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 content.extend(decoded);
             }
+        }
+
+        // Get the size reported by the agent (how many bytes it actually read from the file)
+        let agent_reported_size = result
+            .get("size")
+            .and_then(|v| v.as_u64())
+            .map(|s| s as usize);
+
+        // Validate that we received the expected number of bytes.
+        // This matches LocalFileSystem::read_range which uses read_exact.
+        // Short reads indicate file truncation, race conditions, or metadata mismatch.
+        if content.len() != len {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                format!(
+                    "read_range: expected {} bytes at offset {}, got {} (agent reported: {:?}, path: {})",
+                    len,
+                    offset,
+                    content.len(),
+                    agent_reported_size,
+                    path_str
+                ),
+            ));
         }
 
         Ok(content)

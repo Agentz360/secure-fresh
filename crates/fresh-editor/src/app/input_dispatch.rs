@@ -25,7 +25,8 @@ impl Editor {
             || self.active_state().popups.is_visible()
             || self.menu_state.active_menu.is_some()
             || self.settings_state.as_ref().is_some_and(|s| s.visible)
-            || self.calibration_wizard.is_some();
+            || self.calibration_wizard.is_some()
+            || self.keybinding_editor.is_some();
 
         if in_modal {
             return None;
@@ -41,9 +42,12 @@ impl Editor {
             return Some(result);
         }
 
-        // Check for keys that should re-enter terminal mode from read-only view
+        // Check for keys that should re-enter terminal mode from scrollback view.
+        // Any plain character key exits scrollback and is forwarded to the terminal.
         if self.is_terminal_buffer(self.active_buffer()) && should_enter_terminal_mode(event) {
             self.enter_terminal_mode();
+            // Forward the key to the terminal so the user's input isn't lost
+            self.send_terminal_key(event.code, event.modifiers);
             return Some(InputResult::Consumed);
         }
 
@@ -64,6 +68,12 @@ impl Editor {
                 self.process_deferred_actions(ctx);
                 return Some(result);
             }
+        }
+
+        // Keybinding editor is next
+        if self.keybinding_editor.is_some() {
+            let result = self.handle_keybinding_editor_input(event);
+            return Some(result);
         }
 
         // Calibration wizard is next (modal, blocks all other input)
@@ -156,7 +166,12 @@ impl Editor {
                 .popups
                 .dispatch_input(event, &mut ctx);
             self.process_deferred_actions(ctx);
-            return Some(result);
+            // If the popup handler returned Ignored (e.g., non-word character,
+            // Ctrl+key, arrow keys), fall through to normal input handling.
+            // The deferred ClosePopup action was already processed above.
+            if result != InputResult::Ignored {
+                return Some(result);
+            }
         }
 
         None

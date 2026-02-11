@@ -292,8 +292,16 @@ def cmd_patch(id, p):
         with open(src, "rb") as orig, open(tmp, "wb") as out:
             for op in ops:
                 if "copy" in op:
-                    orig.seek(op["copy"]["off"])
-                    data = orig.read(op["copy"]["len"])
+                    off = op["copy"]["off"]
+                    length = op["copy"]["len"]
+                    orig.seek(off)
+                    data = orig.read(length)
+                    # Validate we read the expected number of bytes
+                    if len(data) != length:
+                        raise IOError(
+                            f"cmd_patch copy: expected {length} bytes at offset {off}, "
+                            f"got {len(data)} (src: {src})"
+                        )
                     out.write(data)
                 elif "insert" in op:
                     out.write(unb64(op["insert"]["data"]))

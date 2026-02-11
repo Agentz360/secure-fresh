@@ -1,8 +1,12 @@
 // E2E tests for the theme system
 
-use crate::common::harness::EditorTestHarness;
+use crate::common::harness::{EditorTestHarness, HarnessOptions};
+use crossterm::event::{KeyCode, KeyModifiers};
 use fresh::config::Config;
+use fresh::config_io::DirectoryContext;
 use ratatui::style::Color;
+use std::fs;
+use tempfile::TempDir;
 
 #[test]
 fn test_default_theme_is_dark() {
@@ -290,4 +294,249 @@ fn test_theme_with_underscore_variant() {
 
     // Should still load high-contrast theme (accepts both - and _)
     assert_eq!(theme.name, "high-contrast");
+}
+
+/// Minimal custom theme JSON for issue #1001 regression tests.
+///
+/// The JSON "name" field intentionally uses spaces and mixed case ("Catppuccin Mocha")
+/// while the file is saved as "catppuccin-mocha.json" — this mismatch is the root
+/// cause of the bug. Only editor.bg is set to a distinctive value (Rgb(30,30,46))
+/// so the tests can distinguish it from the high-contrast fallback (Black).
+/// All other sections use serde defaults — no external resources needed.
+fn custom_catppuccin_theme_json() -> &'static str {
+    r#"{
+        "name": "Catppuccin Mocha",
+        "editor": { "bg": [30, 30, 46] },
+        "ui": {},
+        "search": {},
+        "diagnostic": {},
+        "syntax": {}
+    }"#
+}
+
+/// Issue #1001: Theme not found after restart when JSON name differs from filename.
+///
+/// Regression test: Simulates a user selecting a custom theme whose JSON "name" field
+/// ("Catppuccin Mocha") differs from its filename ("catppuccin-mocha.json"). After
+/// selecting the theme through the UI and "restarting" (creating a new editor instance
+/// with the same config directory), the theme must still load correctly.
+///
+/// Without the fix:
+///   - apply_theme() saves "Catppuccin Mocha" (the JSON name) to config.json
+///   - On restart, the lookup normalizes "Catppuccin Mocha" → "catppuccin mocha"
+///     (spaces NOT converted to hyphens) which doesn't match the key "catppuccin-mocha"
+///   - Falls back to default "high-contrast" theme
+///
+/// With the fix:
+///   - apply_theme() saves "catppuccin-mocha" (the normalized registry key) to config
+///   - On restart, the lookup finds it correctly
+#[test]
+fn test_issue_1001_theme_persists_after_restart_with_name_mismatch() {
+    // --- Setup: create isolated temp dir with a custom theme ---
+    let temp_dir = TempDir::new().unwrap();
+    let dir_context = DirectoryContext::for_testing(temp_dir.path());
+
+    // Create themes directory and install the custom theme
+    let themes_dir = temp_dir.path().join("config").join("themes");
+    fs::create_dir_all(&themes_dir).unwrap();
+    fs::write(
+        themes_dir.join("catppuccin-mocha.json"),
+        custom_catppuccin_theme_json(),
+    )
+    .unwrap();
+
+    // Create project root & empty plugins dir for isolation
+    let project_root = temp_dir.path().join("project_root");
+    let plugins_dir = project_root.join("plugins");
+    fs::create_dir_all(&plugins_dir).unwrap();
+
+    // --- Session 1: Select the custom theme via keyboard ---
+    let mut harness = EditorTestHarness::create(
+        100,
+        40,
+        HarnessOptions::new()
+            .with_working_dir(project_root.clone())
+            .with_shared_dir_context(dir_context.clone())
+            .without_empty_plugins_dir(),
+    )
+    .unwrap();
+    harness.render().unwrap();
+
+    // Verify default theme is high-contrast (the fallback)
+    let default_style = harness.get_cell_style(5, 3);
+    let default_bg = default_style.and_then(|s| s.bg);
+    assert_eq!(
+        default_bg,
+        Some(Color::Black),
+        "Editor should start with high-contrast theme (black background)"
+    );
+
+    // Open command palette (Ctrl+P)
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.wait_for_prompt().unwrap();
+
+    // Type "Select Theme" and execute the command
+    harness.type_text("Select Theme").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Wait for the theme selection prompt to appear
+    harness.wait_for_screen_contains("Select theme").unwrap();
+
+    // Clear the pre-filled input (current theme name "high-contrast" = 13 chars)
+    // Use Backspace to clear, then type the new theme name
+    for _ in 0..20 {
+        harness
+            .send_key(KeyCode::Backspace, KeyModifiers::NONE)
+            .unwrap();
+    }
+
+    // Type the custom theme name to filter suggestions
+    harness.type_text("catppuccin").unwrap();
+    harness.render().unwrap();
+
+    // Confirm the selection
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.wait_for_prompt_closed().unwrap();
+    harness.render().unwrap();
+
+    // Verify the theme was applied by checking rendered editor background color.
+    // Catppuccin Mocha uses Rgb(30, 30, 46), NOT black.
+    let catppuccin_bg = Color::Rgb(30, 30, 46);
+    let applied_style = harness.get_cell_style(5, 3);
+    let applied_bg = applied_style.and_then(|s| s.bg);
+    assert_eq!(
+        applied_bg,
+        Some(catppuccin_bg),
+        "After selection, editor should render with catppuccin-mocha background (30,30,46), got {:?}",
+        applied_bg
+    );
+
+    // Verify the config file was persisted with the NORMALIZED name.
+    // This is the core assertion: the config must contain "catppuccin-mocha"
+    // (the registry key), NOT "Catppuccin Mocha" (the JSON name field).
+    let config_path = temp_dir.path().join("config").join("config.json");
+    let saved_config = fs::read_to_string(&config_path).unwrap();
+    let saved_json: serde_json::Value = serde_json::from_str(&saved_config).unwrap();
+
+    let saved_theme = saved_json
+        .get("theme")
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
+    assert_eq!(
+        saved_theme, "catppuccin-mocha",
+        "BUG #1001: Config should contain normalized theme name 'catppuccin-mocha', \
+         not the JSON name field. Got: '{}'. Config content: {}",
+        saved_theme, saved_config
+    );
+
+    // Drop the first harness (simulates closing the editor)
+    drop(harness);
+
+    // --- Session 2: "Restart" — create a new editor with the same config directory ---
+    // Read the persisted config.json to determine what theme name was saved,
+    // then pass it as the Config for the new editor (simulating production startup).
+    let restart_config_str = fs::read_to_string(&config_path).unwrap();
+    let restart_json: serde_json::Value = serde_json::from_str(&restart_config_str).unwrap();
+    let restart_theme_name = restart_json
+        .get("theme")
+        .and_then(|t| t.as_str())
+        .unwrap_or("high-contrast");
+
+    let mut harness2 = EditorTestHarness::create(
+        100,
+        40,
+        HarnessOptions::new()
+            .with_config(Config {
+                theme: restart_theme_name.into(),
+                ..Default::default()
+            })
+            .with_working_dir(project_root)
+            .with_shared_dir_context(dir_context)
+            .without_empty_plugins_dir(),
+    )
+    .unwrap();
+    harness2.render().unwrap();
+
+    // The restarted editor should load catppuccin-mocha, NOT fall back to high-contrast.
+    // Verify by checking the rendered editor background color.
+    let restarted_style = harness2.get_cell_style(5, 3);
+    let restarted_bg = restarted_style.and_then(|s| s.bg);
+    assert_eq!(
+        restarted_bg,
+        Some(catppuccin_bg),
+        "BUG #1001: After restart, editor should render with catppuccin-mocha background (30,30,46). \
+         Got {:?} — theme was likely not found and fell back to high-contrast (black). \
+         Config persisted theme as '{}', config file: {}",
+        restarted_bg,
+        restart_theme_name,
+        restart_config_str
+    );
+
+    // Keep temp_dir alive until test completes
+    drop(temp_dir);
+}
+
+/// Issue #1001 variant: Config already has a space-containing theme name from old version.
+///
+/// This simulates a user who previously had their config written by the buggy code:
+/// config.json contains "Catppuccin Mocha" (the JSON name with spaces), and the
+/// theme file is "catppuccin-mocha.json". The normalization fix must handle this
+/// gracefully by normalizing the lookup (spaces → hyphens).
+#[test]
+fn test_issue_1001_config_with_spaces_in_theme_name_loads_correctly() {
+    let temp_dir = TempDir::new().unwrap();
+    let dir_context = DirectoryContext::for_testing(temp_dir.path());
+
+    // Create themes directory and install the custom theme
+    let themes_dir = temp_dir.path().join("config").join("themes");
+    fs::create_dir_all(&themes_dir).unwrap();
+    fs::write(
+        themes_dir.join("catppuccin-mocha.json"),
+        custom_catppuccin_theme_json(),
+    )
+    .unwrap();
+
+    // Create project root & empty plugins dir
+    let project_root = temp_dir.path().join("project_root");
+    let plugins_dir = project_root.join("plugins");
+    fs::create_dir_all(&plugins_dir).unwrap();
+
+    // Simulate what the old buggy code would have saved: the JSON "name" field
+    // with spaces and mixed case, NOT the normalized filename.
+    let mut harness = EditorTestHarness::create(
+        100,
+        40,
+        HarnessOptions::new()
+            .with_config(Config {
+                theme: "Catppuccin Mocha".into(),
+                ..Default::default()
+            })
+            .with_working_dir(project_root)
+            .with_shared_dir_context(dir_context)
+            .without_empty_plugins_dir(),
+    )
+    .unwrap();
+    harness.render().unwrap();
+
+    // The editor should normalize "Catppuccin Mocha" → "catppuccin-mocha" on lookup
+    // and find the theme. Verify by checking rendered background.
+    let catppuccin_bg = Color::Rgb(30, 30, 46);
+    let style = harness.get_cell_style(5, 3);
+    let bg = style.and_then(|s| s.bg);
+    assert_eq!(
+        bg,
+        Some(catppuccin_bg),
+        "BUG #1001: Config has 'Catppuccin Mocha' (with spaces). Normalization should \
+         convert this to 'catppuccin-mocha' and find the theme file. Instead got bg={:?}, \
+         which suggests fallback to high-contrast (black).",
+        bg
+    );
+
+    drop(temp_dir);
 }

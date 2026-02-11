@@ -38,6 +38,7 @@ Installers:
     InstallerSha256: HASH_PLACEHOLDER
     # Portable apps are inherently user-scoped (no admin required)
     NestedInstallerType: portable
+    UpgradeBehavior: uninstallPrevious
     NestedInstallerFiles:
       - RelativeFilePath: fresh.exe
         PortableCommandAlias: fresh
