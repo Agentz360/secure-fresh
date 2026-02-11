@@ -5,6 +5,7 @@ pub mod auto_revert;
 pub mod basic;
 pub mod binary_file;
 pub mod block_selection;
+pub mod blog_showcases;
 pub mod buffer_lifecycle;
 pub mod buffer_settings_commands;
 pub mod case_conversion;
