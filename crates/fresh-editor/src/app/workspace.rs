@@ -152,6 +152,7 @@ impl Editor {
             &self.working_dir,
             &self.terminal_buffers,
             &terminal_indices,
+            self.split_manager.labels(),
         );
 
         // Build a map of split_id -> active_buffer_id from the split tree
@@ -763,6 +764,7 @@ impl Editor {
             SerializedSplitNode::Leaf {
                 file_path,
                 split_id,
+                label,
             } => {
                 // Get the buffer for this file, or use the default buffer
                 let buffer_id = file_path
@@ -783,6 +785,12 @@ impl Editor {
                 // Map old split ID to new one
                 split_id_map.insert(*split_id, current_split_id);
 
+                // Restore label if present
+                if let Some(label) = label {
+                    self.split_manager
+                        .set_label(current_split_id, label.clone());
+                }
+
                 // Restore the view state for this split
                 self.restore_split_view_state(
                     current_split_id,
@@ -795,6 +803,7 @@ impl Editor {
             SerializedSplitNode::Terminal {
                 terminal_index,
                 split_id,
+                label,
             } => {
                 let buffer_id = terminal_buffers
                     .get(terminal_index)
@@ -810,6 +819,12 @@ impl Editor {
                 };
 
                 split_id_map.insert(*split_id, current_split_id);
+
+                // Restore label if present
+                if let Some(label) = label {
+                    self.split_manager
+                        .set_label(current_split_id, label.clone());
+                }
 
                 let _ = self
                     .split_manager
@@ -1048,17 +1063,21 @@ fn serialize_split_node(
     working_dir: &Path,
     terminal_buffers: &HashMap<BufferId, TerminalId>,
     terminal_indices: &HashMap<TerminalId, usize>,
+    split_labels: &HashMap<SplitId, String>,
 ) -> SerializedSplitNode {
     match node {
         SplitNode::Leaf {
             buffer_id,
             split_id,
         } => {
+            let label = split_labels.get(split_id).cloned();
+
             if let Some(terminal_id) = terminal_buffers.get(buffer_id) {
                 if let Some(index) = terminal_indices.get(terminal_id) {
                     return SerializedSplitNode::Terminal {
                         terminal_index: *index,
                         split_id: split_id.0,
+                        label,
                     };
                 }
             }
@@ -1076,6 +1095,7 @@ fn serialize_split_node(
             SerializedSplitNode::Leaf {
                 file_path,
                 split_id: split_id.0,
+                label,
             }
         }
         SplitNode::Split {
@@ -1095,6 +1115,7 @@ fn serialize_split_node(
                 working_dir,
                 terminal_buffers,
                 terminal_indices,
+                split_labels,
             )),
             second: Box::new(serialize_split_node(
                 second,
@@ -1102,6 +1123,7 @@ fn serialize_split_node(
                 working_dir,
                 terminal_buffers,
                 terminal_indices,
+                split_labels,
             )),
             ratio: *ratio,
             split_id: split_id.0,

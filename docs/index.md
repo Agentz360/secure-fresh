@@ -2,6 +2,10 @@
 
 Fresh is a terminal text editor. These docs cover core features, configuration, and plugins.
 
+## Blog
+- **[Editing Features](./blog/editing/)** — multi-cursor, search & replace, move lines, block selection, sort, case conversion, and more
+- **[Productivity Features](./blog/productivity/)** — command palette, split view, file explorer, keybinding editor, terminal, settings UI, and more
+
 ## User Guide
 - **[Getting Started](./getting-started/)**
 - **[Features](./features/)**

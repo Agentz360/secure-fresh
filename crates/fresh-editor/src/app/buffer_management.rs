@@ -23,6 +23,17 @@ use super::help;
 use super::Editor;
 
 impl Editor {
+    /// Get the preferred split for opening a file.
+    /// If the active split has no label, use it (normal case).
+    /// Otherwise find an unlabeled leaf so files don't open in labeled splits (e.g., sidebars).
+    fn preferred_split_for_file(&self) -> SplitId {
+        let active = self.split_manager.active_split();
+        if self.split_manager.get_label(active).is_none() {
+            return active;
+        }
+        self.split_manager.find_unlabeled_leaf().unwrap_or(active)
+    }
+
     /// Open a file and return its buffer ID
     ///
     /// If the file doesn't exist, creates an unsaved buffer with that filename.
@@ -152,7 +163,7 @@ impl Editor {
         // Note: Don't replace composite buffers (they appear empty but are special views)
         let replace_current = {
             let current_state = self.buffers.get(&self.active_buffer()).unwrap();
-            !current_state.is_composite_buffer
+            !current_state.compose.is_composite_buffer
                 && current_state.buffer.is_empty()
                 && !current_state.buffer.is_modified()
                 && current_state.buffer.file_path().is_none()
@@ -249,9 +260,10 @@ impl Editor {
         // Store metadata for this buffer
         self.buffer_metadata.insert(buffer_id, metadata);
 
-        // Add buffer to the active split's tabs (but don't switch to it)
-        let active_split = self.split_manager.active_split();
-        if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
+        // Add buffer to the preferred split's tabs (but don't switch to it)
+        // Uses preferred_split_for_file() to avoid opening in labeled splits (e.g., sidebars)
+        let target_split = self.preferred_split_for_file();
+        if let Some(view_state) = self.split_view_states.get_mut(&target_split) {
             view_state.add_buffer(buffer_id);
             // Apply line_wrap default from config (per-view setting, applies to split)
             view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
@@ -259,7 +271,7 @@ impl Editor {
 
         // Restore global file state (scroll/cursor position) if available
         // This persists file positions across projects and editor instances
-        self.restore_global_file_state(buffer_id, path, active_split);
+        self.restore_global_file_state(buffer_id, path, target_split);
 
         // Emit control event
         self.emit_event(
@@ -340,9 +352,9 @@ impl Editor {
             super::types::BufferMetadata::with_file(path.to_path_buf(), &self.working_dir);
         self.buffer_metadata.insert(buffer_id, metadata);
 
-        // Add to active split's tabs
-        let active_split = self.split_manager.active_split();
-        if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
+        // Add to preferred split's tabs (avoids labeled splits like sidebars)
+        let target_split = self.preferred_split_for_file();
+        if let Some(view_state) = self.split_view_states.get_mut(&target_split) {
             view_state.add_buffer(buffer_id);
             view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
         }
@@ -438,9 +450,9 @@ impl Editor {
             super::types::BufferMetadata::with_file(path.to_path_buf(), &self.working_dir);
         self.buffer_metadata.insert(buffer_id, metadata);
 
-        // Add to active split's tabs
-        let active_split = self.split_manager.active_split();
-        if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
+        // Add to preferred split's tabs (avoids labeled splits like sidebars)
+        let target_split = self.preferred_split_for_file();
+        if let Some(view_state) = self.split_view_states.get_mut(&target_split) {
             view_state.add_buffer(buffer_id);
             view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
         }
@@ -566,9 +578,9 @@ impl Editor {
             super::types::BufferMetadata::with_file(path.to_path_buf(), &self.working_dir);
         self.buffer_metadata.insert(buffer_id, metadata);
 
-        // Add to active split's tabs
-        let active_split = self.split_manager.active_split();
-        if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
+        // Add to preferred split's tabs (avoids labeled splits like sidebars)
+        let target_split = self.preferred_split_for_file();
+        if let Some(view_state) = self.split_view_states.get_mut(&target_split) {
             view_state.add_buffer(buffer_id);
             view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
         }
@@ -827,7 +839,7 @@ impl Editor {
         // Note: Don't replace composite buffers (they appear empty but are special views)
         let replace_current = {
             let current_state = self.buffers.get(&self.active_buffer()).unwrap();
-            !current_state.is_composite_buffer
+            !current_state.compose.is_composite_buffer
                 && current_state.buffer.is_empty()
                 && !current_state.buffer.is_modified()
                 && current_state.buffer.file_path().is_none()

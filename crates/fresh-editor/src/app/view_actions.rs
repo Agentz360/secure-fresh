@@ -17,7 +17,7 @@ impl Editor {
             if let Some(vs) = self.split_view_states.get(&active_split) {
                 vs.view_mode.clone()
             } else {
-                self.active_state().view_mode.clone()
+                self.active_state().compose.view_mode.clone()
             }
         };
 
@@ -58,12 +58,12 @@ impl Editor {
         // Keep buffer-level view mode for status/use
         {
             let state = self.active_state_mut();
-            state.view_mode = view_mode.clone();
+            state.compose.view_mode = view_mode.clone();
             // Note: viewport.line_wrap_enabled is now handled in SplitViewState above
             // Clear compose state when switching to Source mode
             if matches!(view_mode, ViewMode::Source) {
-                state.compose_width = None;
-                state.view_transform = None;
+                state.compose.compose_width = None;
+                state.compose.view_transform = None;
             }
         }
 

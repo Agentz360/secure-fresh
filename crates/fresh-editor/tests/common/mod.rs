@@ -2,6 +2,9 @@
 
 #[cfg(test)]
 #[allow(dead_code)]
+pub mod blog_showcase;
+#[cfg(test)]
+#[allow(dead_code)]
 pub mod fake_lsp;
 #[cfg(test)]
 #[allow(dead_code)]

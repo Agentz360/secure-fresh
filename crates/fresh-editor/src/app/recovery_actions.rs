@@ -172,7 +172,7 @@ impl Editor {
             .iter()
             .filter_map(|(buffer_id, state)| {
                 // Skip composite buffers - they are virtual views, not real content
-                if state.is_composite_buffer {
+                if state.compose.is_composite_buffer {
                     return None;
                 }
                 // Skip hidden buffers - they are managed by other buffers (e.g., diff sources)

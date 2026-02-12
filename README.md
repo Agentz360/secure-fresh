@@ -1,51 +1,54 @@
 # Fresh
 
-A terminal-based text editor. [Official Website →](https://sinelaw.github.io/fresh/)
+A modern, full-featured terminal text editor, **with zero configuration**. Familiar keybindings, mouse support, and IDE-level features — no learning curve required.
 
-**[📦 Installation Instructions](#installation)**
+[Official Website](https://sinelaw.github.io/fresh/) &nbsp;·&nbsp; [Documentation](https://getfresh.dev/docs) &nbsp;·&nbsp; [Discord](https://discord.gg/qUutBj9t) &nbsp;·&nbsp; [Contributing](#contributing)
 
-**[Contributing](#contributing)**
+**[Quick Install](#installation):** &nbsp; `curl https://raw.githubusercontent.com/sinelaw/fresh/refs/heads/master/scripts/install.sh | sh`
 
-**[Discord](https://discord.gg/qUutBj9t)**
-
-## Why?
-
-Why another text editor? Fresh brings the intuitive, conventional UX of editors like VS Code and Sublime Text to the terminal.
-
-While veterans like Emacs and Vim - and newer editors like Neovim and Helix - are excellent for power users who prefer modal, highly specialized workflows, they often present a steep learning curve for those used to standard GUI interactions. Fresh is built for the developer who wants a familiar, non-modal experience out-of-the-box, without sacrificing the speed and portability of the command line. Keyboard bindings, mouse support, menus, command palette etc. are all designed to be familiar to most modern users.
-
-Architecturally, Fresh is built to handle multi-gigabyte files or slow network streams efficiently, maintaining a negligible memory overhead regardless of file size. While traditional editors struggle with latency and RAM bloat on large files, Fresh delivers consistent, high-speed performance on any scale.
-
-The goal for Fresh is to be an intuitive and accessible, high-performance terminal-based editor that "just works" on any hardware, for everyone.
-
-## Discovery & Ease of Use
-
-Fresh is designed for discovery. It features native UIs, a full Menu system, and a powerful Command Palette. With full mouse support, transitioning from graphical editors is seamless.
-
-## Modern Extensibility
-
-Extend Fresh easily using modern tools. Plugins are written in TypeScript and run securely in a sandboxed Deno environment, providing access to a modern JavaScript ecosystem without compromising stability.
-
-## Low-Latency Performance
-
-Fresh is engineered for speed. It delivers a low-latency experience, with text appearing instantly. The editor is designed to be light and fast, reliably opening and editing [huge files up to multi-gigabyte sizes](https://noamlewis.com/blog/2025/12/09/how-fresh-loads-huge-files-fast) without slowdown.
-
-## Comprehensive Feature Set
-
-- **File Management**: open/save/new/close, file explorer, tabs, auto-revert, git file finder
-- **Editing**: undo/redo, multi-cursor, block selection, smart indent, comments, clipboard
-- **Search & Replace**: incremental search, find in selection, query replace, git grep
-- **Navigation**: go to line/bracket, word movement, position history, bookmarks, error navigation
-- **Views & Layout**: split panes, line numbers, line wrap, backgrounds, markdown preview
-- **Language Server (LSP)**: go to definition, references, hover, code actions, rename, diagnostics, autocompletion
-- **Productivity**: command palette, menu bar, keyboard macros, git log, diagnostics panel
-- **Plugins & Extensibility**: TypeScript plugins, color highlighter, TODO highlighter, merge conflicts, path complete, keymaps
-- **Internationalization**: Multiple language support (see [`locales/`](locales/) for available languages), plugin translation system
+---
 
 ![Fresh Demo](docs/fresh-demo2.gif)
-![Fresh Screenshot](docs/public/images/screenshot1.png)
-![Fresh Screenshot](docs/public/images/screenshot2.png)
-![Fresh Screenshot](docs/public/images/screenshot3.png)
+
+Fresh brings the intuitive UX of VS Code and Sublime Text to the terminal. Standard keybindings, full mouse support, menus, and a command palette — everything works the way you'd expect, right out of the box. No modes, no memorizing shortcuts.
+
+Built for real-world performance: Fresh handles [multi-gigabyte files](https://noamlewis.com/blog/2025/12/09/how-fresh-loads-huge-files-fast) with negligible memory overhead and delivers consistently low-latency input, regardless of file size.
+
+### Command Palette & Fuzzy Finder
+
+One shortcut to find files, run commands, switch buffers, and jump to any line.
+
+![Command Palette](docs/blog/productivity/command-palette/showcase.gif)
+
+### Multi-Cursor Editing
+
+Select and edit multiple occurrences simultaneously — the same workflow you know from graphical editors.
+
+![Multi-Cursor](docs/blog/editing/multi-cursor/showcase.gif)
+
+### Themes & Customization
+
+Browse and apply color themes instantly. Full settings UI and interactive keybinding editor included.
+
+![Select Theme](docs/blog/themes/select-theme/showcase.gif)
+
+See more feature demos: [Editing](https://getfresh.dev/docs/blog/editing) (search & replace, block selection, sort lines, ...) · [Productivity](https://getfresh.dev/docs/blog/productivity) (file explorer, split view, integrated terminal, ...) · [Themes](https://getfresh.dev/docs/blog/themes)
+
+---
+
+## Feature Overview
+
+| Category | Features |
+|----------|----------|
+| **File Management** | open/save/new/close, file explorer, tabs, auto-revert, git file finder |
+| **Editing** | undo/redo, multi-cursor, block selection, smart indent, comments, clipboard |
+| **Search & Replace** | incremental search, find in selection, query replace, git grep |
+| **Navigation** | go to line/bracket, word movement, position history, bookmarks, error navigation |
+| **Views & Layout** | split panes, line numbers, line wrap, backgrounds, markdown preview |
+| **Language Server (LSP)** | go to definition, references, hover, code actions, rename, diagnostics, autocompletion |
+| **Productivity** | command palette, menu bar, keyboard macros, git log, diagnostics panel |
+| **Extensibility** | TypeScript plugins (sandboxed Deno), color highlighter, TODO highlighter, merge conflicts, path complete, keymaps |
+| **Internationalization** | Multiple language support (see [`locales/`](locales/)), plugin translation system |
 
 ## Installation
 

@@ -74,6 +74,37 @@ impl Default for BufferSettings {
     }
 }
 
+/// Compose/view-transform rendering state.
+///
+/// These fields control the compose (semi-WYSIWYG) rendering pipeline and are
+/// never touched by the core editing path (`apply_insert`/`apply_delete`/cursor movement).
+/// They are duplicated in `SplitViewState` for per-split overrides and extracted
+/// into `ViewPreferences` at render time.
+#[derive(Debug, Clone)]
+pub struct ComposeState {
+    pub view_mode: ViewMode,
+    pub compose_width: Option<u16>,
+    pub compose_prev_line_numbers: Option<bool>,
+    pub compose_column_guides: Option<Vec<u16>>,
+    pub view_transform: Option<fresh_core::api::ViewTransformPayload>,
+    pub is_composite_buffer: bool,
+    pub debug_highlight_mode: bool,
+}
+
+impl Default for ComposeState {
+    fn default() -> Self {
+        Self {
+            view_mode: ViewMode::Source,
+            compose_width: None,
+            compose_prev_line_numbers: None,
+            compose_column_guides: None,
+            view_transform: None,
+            is_composite_buffer: false,
+            debug_highlight_mode: false,
+        }
+    }
+}
+
 /// The complete editor state - everything needed to represent the current editing session
 ///
 /// NOTE: Viewport is NOT stored here - it lives in SplitViewState.
@@ -127,11 +158,6 @@ pub struct EditorState {
     /// but navigation, selection, and copy are still allowed
     pub editing_disabled: bool,
 
-    /// Whether this buffer is a composite buffer (multi-pane view)
-    /// When true, the buffer content is rendered by the composite renderer
-    /// instead of the normal buffer rendering path
-    pub is_composite_buffer: bool,
-
     /// Per-buffer user settings (tab size, indentation style, etc.)
     /// These settings are preserved across file reloads (auto-revert)
     pub buffer_settings: BufferSettings,
@@ -139,24 +165,8 @@ pub struct EditorState {
     /// Semantic highlighter for word occurrence highlighting
     pub reference_highlighter: ReferenceHighlighter,
 
-    /// View mode for this buffer (Source or Compose)
-    pub view_mode: ViewMode,
-
-    /// Debug mode: show highlight/overlay byte ranges
-    /// When enabled, each character shows its byte position and highlight info
-    pub debug_highlight_mode: bool,
-
-    /// Optional compose width for centered rendering
-    pub compose_width: Option<u16>,
-
-    /// Previously configured line number visibility (to restore after Compose)
-    pub compose_prev_line_numbers: Option<bool>,
-
-    /// Optional column guides (e.g., for tables) supplied by layout hints
-    pub compose_column_guides: Option<Vec<u16>>,
-
-    /// Optional transformed view payload for current viewport (tokens + map)
-    pub view_transform: Option<fresh_core::api::ViewTransformPayload>,
+    /// Compose/view-transform rendering state
+    pub compose: ComposeState,
 
     /// Debounced semantic highlight cache
     pub reference_highlight_overlay: ReferenceHighlightOverlay,
@@ -197,15 +207,9 @@ impl EditorState {
             text_properties: TextPropertyManager::new(),
             show_cursors: true,
             editing_disabled: false,
-            is_composite_buffer: false,
             buffer_settings: BufferSettings::default(),
             reference_highlighter: ReferenceHighlighter::new(),
-            view_mode: ViewMode::Source,
-            debug_highlight_mode: false,
-            compose_width: None,
-            compose_prev_line_numbers: None,
-            compose_column_guides: None,
-            view_transform: None,
+            compose: ComposeState::default(),
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
@@ -288,15 +292,9 @@ impl EditorState {
             text_properties: TextPropertyManager::new(),
             show_cursors: true,
             editing_disabled: false,
-            is_composite_buffer: false,
             buffer_settings: BufferSettings::default(),
             reference_highlighter,
-            view_mode: ViewMode::Source,
-            debug_highlight_mode: false,
-            compose_width: None,
-            compose_prev_line_numbers: None,
-            compose_column_guides: None,
-            view_transform: None,
+            compose: ComposeState::default(),
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
@@ -354,15 +352,9 @@ impl EditorState {
             text_properties: TextPropertyManager::new(),
             show_cursors: true,
             editing_disabled: false,
-            is_composite_buffer: false,
             buffer_settings: BufferSettings::default(),
             reference_highlighter,
-            view_mode: ViewMode::Source,
-            debug_highlight_mode: false,
-            compose_width: None,
-            compose_prev_line_numbers: None,
-            compose_column_guides: None,
-            view_transform: None,
+            compose: ComposeState::default(),
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
@@ -405,15 +397,9 @@ impl EditorState {
             text_properties: TextPropertyManager::new(),
             show_cursors: true,
             editing_disabled: false,
-            is_composite_buffer: false,
             buffer_settings: BufferSettings::default(),
             reference_highlighter,
-            view_mode: ViewMode::Source,
-            debug_highlight_mode: false,
-            compose_width: None,
-            compose_prev_line_numbers: None,
-            compose_column_guides: None,
-            view_transform: None,
+            compose: ComposeState::default(),
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,

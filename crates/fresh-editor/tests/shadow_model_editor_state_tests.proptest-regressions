@@ -1,0 +1,11 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 80c7ed795bcd44875d6a16a1182d761519bdc26180c8e68401971a2bdb0f6e3d # shrinks to op1 = Enter, op2 = MoveLineUp
+cc 2dc8dd6aee0d491cbc26b34dd86d7196b0535ddcf9d67eca33382a8d354d51a1 # shrinks to ops = [TypeChar(' '), TypeChar('a'), MoveLineUp, Undo, TypeChar('a'), TypeChar(' '), TypeChar('a')]
+cc 61614711b281eb4b549c4c69e7b65e49c3ee08fee45e7e3b7f7b25abf886efb8 # shrinks to ops = [Enter, MoveLineUp]
+cc 8c7f1dc4667245565ba16d773a4978935740993bede81aea66c3269dca88dafa # shrinks to ops = [TypeChar(' '), TypeChar('0'), TypeChar(' '), Left, Undo, Redo, TypeChar('A')]
+cc 32cede30a6d180ff9f4cedf37bb928599b7e39e53ee46b5683590d0c51974913 # shrinks to ops = [Enter, Delete, Enter, Enter, TypeChar('A'), Right, TypeChar(' '), TypeChar('0'), TypeChar('a'), TypeChar(' '), TypeChar(' '), TypeChar(' '), Left, TypeChar(' '), Home, Left, Enter, MoveLineUp, Undo]

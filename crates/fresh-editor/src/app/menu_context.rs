@@ -76,7 +76,7 @@ impl Editor {
     fn is_compose_mode(&self) -> bool {
         self.buffers
             .get(&self.active_buffer())
-            .map(|state| state.view_mode == crate::state::ViewMode::Compose)
+            .map(|state| state.compose.view_mode == crate::state::ViewMode::Compose)
             .unwrap_or(false)
     }
 

@@ -702,15 +702,25 @@ impl EventLog {
 
     /// Append an event to the log
     pub fn append(&mut self, event: Event) -> usize {
-        // If we're not at the end, truncate future events
+        // When redo history exists (after undo), only write actions are logged.
+        // Non-write events (MoveCursor, Scroll, etc.) are still applied to the
+        // editor state but not recorded in the log, preserving redo history.
+        // This matches standard editor behavior (VS Code, Sublime, etc.) where
+        // navigation after undo does not destroy the redo chain.
         if self.current_index < self.entries.len() {
-            self.entries.truncate(self.current_index);
+            if event.is_write_action() {
+                // Write action: truncate redo history and log normally
+                self.entries.truncate(self.current_index);
 
-            // Invalidate saved_at_index if it pointed to a truncated entry
-            if let Some(saved_idx) = self.saved_at_index {
-                if saved_idx > self.current_index {
-                    self.saved_at_index = None;
+                // Invalidate saved_at_index if it pointed to a truncated entry
+                if let Some(saved_idx) = self.saved_at_index {
+                    if saved_idx > self.current_index {
+                        self.saved_at_index = None;
+                    }
                 }
+            } else {
+                // Non-write event while redo exists: skip logging to preserve redo
+                return self.current_index;
             }
         }
 
@@ -1114,6 +1124,84 @@ mod tests {
 
         assert_eq!(log.entries().len(), 2);
         assert_eq!(log.current_index(), 2);
+    }
+
+    #[test]
+    fn test_navigation_after_undo_preserves_redo() {
+        // Regression test: navigation after undo should not destroy redo history.
+        // Standard editors (VS Code, Sublime) allow: type, undo, move around, redo.
+        let mut log = EventLog::new();
+
+        // Type 'a' (Insert + MoveCursor)
+        log.append(Event::Insert {
+            position: 0,
+            text: "a".to_string(),
+            cursor_id: CursorId(0),
+        });
+        log.append(Event::MoveCursor {
+            cursor_id: CursorId(0),
+            old_position: 0,
+            new_position: 1,
+            old_anchor: None,
+            new_anchor: None,
+            old_sticky_column: 0,
+            new_sticky_column: 0,
+        });
+        assert_eq!(log.current_index(), 2);
+
+        // Undo (walks back past MoveCursor and Insert)
+        let undo_events = log.undo();
+        assert!(!undo_events.is_empty());
+        assert_eq!(log.current_index(), 0);
+        assert!(log.can_redo());
+
+        // Navigate (MoveCursor) — should NOT destroy redo
+        log.append(Event::MoveCursor {
+            cursor_id: CursorId(0),
+            old_position: 0,
+            new_position: 0,
+            old_anchor: None,
+            new_anchor: None,
+            old_sticky_column: 0,
+            new_sticky_column: 0,
+        });
+        assert!(
+            log.can_redo(),
+            "Navigation after undo should preserve redo history"
+        );
+
+        // Redo should still work
+        let redo_events = log.redo();
+        assert!(
+            !redo_events.is_empty(),
+            "Redo should return events after navigation"
+        );
+    }
+
+    #[test]
+    fn test_write_action_after_undo_clears_redo() {
+        // Write actions after undo SHOULD still clear redo history
+        let mut log = EventLog::new();
+
+        log.append(Event::Insert {
+            position: 0,
+            text: "a".to_string(),
+            cursor_id: CursorId(0),
+        });
+
+        log.undo();
+        assert!(log.can_redo());
+
+        // New write action should truncate redo
+        log.append(Event::Insert {
+            position: 0,
+            text: "b".to_string(),
+            cursor_id: CursorId(0),
+        });
+        assert!(
+            !log.can_redo(),
+            "Write action after undo should clear redo history"
+        );
     }
 
     /// Test for v0.1.77 panic: "range end index 148 out of range for slice of length 125"

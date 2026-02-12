@@ -94,10 +94,16 @@ pub enum SerializedSplitNode {
         /// File path relative to working_dir (None for scratch buffers)
         file_path: Option<PathBuf>,
         split_id: usize,
+        /// Optional label set by plugins (e.g., "claude-sidebar")
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
     },
     Terminal {
         terminal_index: usize,
         split_id: usize,
+        /// Optional label set by plugins
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
     },
     Split {
         direction: SerializedSplitDirection,
@@ -717,6 +723,7 @@ impl Workspace {
             split_layout: SerializedSplitNode::Leaf {
                 file_path: None,
                 split_id: 0,
+                label: None,
             },
             active_split_id: 0,
             split_states: HashMap::new(),
@@ -835,10 +842,12 @@ mod tests {
             first: Box::new(SerializedSplitNode::Leaf {
                 file_path: Some(PathBuf::from("src/main.rs")),
                 split_id: 1,
+                label: None,
             }),
             second: Box::new(SerializedSplitNode::Leaf {
                 file_path: Some(PathBuf::from("src/lib.rs")),
                 split_id: 2,
+                label: None,
             }),
             ratio: 0.5,
             split_id: 0,
@@ -951,10 +960,12 @@ mod tests {
             first: Box::new(SerializedSplitNode::Leaf {
                 file_path: Some(PathBuf::from("README.md")),
                 split_id: 1,
+                label: None,
             }),
             second: Box::new(SerializedSplitNode::Leaf {
                 file_path: Some(PathBuf::from("Cargo.toml")),
                 split_id: 2,
+                label: None,
             }),
             ratio: 0.6,
             split_id: 0,

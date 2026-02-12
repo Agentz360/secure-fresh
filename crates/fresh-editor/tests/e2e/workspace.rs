@@ -1286,3 +1286,251 @@ fn test_session_restores_file_explorer_hidden_and_gitignored_settings() {
         );
     }
 }
+
+/// Test that each split shows only its own file after restore, not all files in all splits.
+///
+/// Regression test: the user reported that after workspace restore, all file-backed buffers
+/// were opened in all splits instead of each split keeping its own buffer assignment.
+#[test]
+fn test_session_restores_buffer_to_split_mapping() {
+    let temp_dir = TempDir::new().unwrap();
+    let project_dir = temp_dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+
+    let file1 = project_dir.join("left_only.txt");
+    let file2 = project_dir.join("right_only.txt");
+    std::fs::write(&file1, "LEFT SPLIT CONTENT").unwrap();
+    std::fs::write(&file2, "RIGHT SPLIT CONTENT").unwrap();
+
+    // First session: create two splits, each with a different file
+    {
+        let mut harness = EditorTestHarness::with_config_and_working_dir(
+            100,
+            24,
+            Config::default(),
+            project_dir.clone(),
+        )
+        .unwrap();
+
+        // Open first file in the initial split
+        harness.open_file(&file1).unwrap();
+        harness.assert_buffer_content("LEFT SPLIT CONTENT");
+
+        // Create a vertical split (new split becomes active)
+        split_vertical(&mut harness);
+
+        // Open second file in the new (right) split
+        harness.open_file(&file2).unwrap();
+        harness.assert_buffer_content("RIGHT SPLIT CONTENT");
+
+        // Verify both files are visible side-by-side (not just in tabs)
+        harness.render().unwrap();
+        let screen = harness.screen_to_string();
+        assert!(
+            screen.contains("LEFT SPLIT CONTENT") && screen.contains("RIGHT SPLIT CONTENT"),
+            "Both files should be visible in split view before save.\nScreen:\n{}",
+            screen
+        );
+
+        harness.editor_mut().save_workspace().unwrap();
+    }
+
+    // Second session: restore and verify each split shows ONLY its own file
+    {
+        let mut harness = EditorTestHarness::with_config_and_working_dir(
+            100,
+            24,
+            Config::default(),
+            project_dir.clone(),
+        )
+        .unwrap();
+
+        harness.editor_mut().try_restore_workspace().unwrap();
+        harness.render().unwrap();
+
+        // The active (right) split should show right_only.txt
+        harness.assert_buffer_content("RIGHT SPLIT CONTENT");
+
+        // Switch to left split
+        prev_split(&mut harness);
+        harness.render().unwrap();
+
+        // The left split should show left_only.txt, NOT right_only.txt
+        harness.assert_buffer_content("LEFT SPLIT CONTENT");
+
+        // Both contents should be visible on screen simultaneously (two splits)
+        let screen = harness.screen_to_string();
+        assert!(
+            screen.contains("LEFT SPLIT CONTENT") && screen.contains("RIGHT SPLIT CONTENT"),
+            "Both split contents should be visible after restore.\nScreen:\n{}",
+            screen
+        );
+    }
+}
+
+/// Test that splits with different tab counts restore correctly.
+///
+/// Regression test: when one split has multiple tabs and another has a single tab,
+/// restore should preserve the exact tab-to-split assignment — not dump all files
+/// into all splits.
+#[test]
+fn test_session_restores_tabs_per_split() {
+    let temp_dir = TempDir::new().unwrap();
+    let project_dir = temp_dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+
+    let file_a = project_dir.join("a.txt");
+    let file_b = project_dir.join("b.txt");
+    let file_c = project_dir.join("c.txt");
+    std::fs::write(&file_a, "Content A").unwrap();
+    std::fs::write(&file_b, "Content B").unwrap();
+    std::fs::write(&file_c, "Content C").unwrap();
+
+    // First session: left split has 2 tabs (a, b), right split has 1 tab (c)
+    {
+        let mut harness = EditorTestHarness::with_config_and_working_dir(
+            120,
+            24,
+            Config::default(),
+            project_dir.clone(),
+        )
+        .unwrap();
+
+        // Open a.txt and b.txt in the initial (left) split
+        harness.open_file(&file_a).unwrap();
+        harness.open_file(&file_b).unwrap();
+        harness.render().unwrap();
+
+        // Both tabs should be visible in this split
+        harness.assert_screen_contains("a.txt");
+        harness.assert_screen_contains("b.txt");
+
+        // Create vertical split (new right split becomes active)
+        split_vertical(&mut harness);
+
+        // Open only c.txt in the right split
+        harness.open_file(&file_c).unwrap();
+        harness.assert_buffer_content("Content C");
+
+        harness.render().unwrap();
+        let screen = harness.screen_to_string();
+        eprintln!("Before save:\n{}", screen);
+
+        harness.editor_mut().save_workspace().unwrap();
+    }
+
+    // Second session: restore and verify tab assignment
+    {
+        let mut harness = EditorTestHarness::with_config_and_working_dir(
+            120,
+            24,
+            Config::default(),
+            project_dir.clone(),
+        )
+        .unwrap();
+
+        harness.editor_mut().try_restore_workspace().unwrap();
+        harness.render().unwrap();
+
+        let screen = harness.screen_to_string();
+        eprintln!("After restore:\n{}", screen);
+
+        // Right split (active) should show c.txt
+        harness.assert_buffer_content("Content C");
+
+        // Right split should NOT have a.txt or b.txt in its tabs
+        // Count occurrences: c.txt should appear in right split's tab bar,
+        // a.txt and b.txt should only appear in left split's tab bar
+        // We can't easily check per-split tabs from screen, but we can verify
+        // that switching to left split shows the right files.
+
+        // Switch to left split
+        prev_split(&mut harness);
+        harness.render().unwrap();
+
+        // Left split should have b.txt active (last opened there)
+        harness.assert_buffer_content("Content B");
+
+        // Left split's tab bar should show both a.txt and b.txt
+        let left_screen = harness.screen_to_string();
+        eprintln!("Left split after restore:\n{}", left_screen);
+        assert!(
+            left_screen.contains("a.txt") && left_screen.contains("b.txt"),
+            "Left split should have both a.txt and b.txt tabs.\nScreen:\n{}",
+            left_screen
+        );
+    }
+}
+
+/// Test that split labels survive a save → restore cycle.
+///
+/// Plugins (like Claude Code) use split labels to identify splits by purpose
+/// (e.g., "claude-sidebar"). After restoring a workspace, the plugin must be
+/// able to find its labeled split again.
+#[test]
+fn test_session_restores_split_labels() {
+    use fresh::model::event::SplitId;
+    use fresh::services::plugins::api::PluginCommand;
+
+    let temp_dir = TempDir::new().unwrap();
+    let project_dir = temp_dir.path().join("project");
+    std::fs::create_dir(&project_dir).unwrap();
+
+    let file1 = project_dir.join("main.txt");
+    let file2 = project_dir.join("sidebar.txt");
+    std::fs::write(&file1, "Main content").unwrap();
+    std::fs::write(&file2, "Sidebar content").unwrap();
+
+    // First session: create labeled split, save workspace
+    {
+        let mut harness = EditorTestHarness::with_config_and_working_dir(
+            100,
+            24,
+            Config::default(),
+            project_dir.clone(),
+        )
+        .unwrap();
+
+        harness.open_file(&file1).unwrap();
+        split_vertical(&mut harness);
+        harness.open_file(&file2).unwrap();
+
+        // Label the active (right) split as "my-sidebar"
+        // Discover the actual split ID from the captured workspace
+        let active_split = harness.editor().capture_workspace().active_split_id;
+        harness
+            .editor_mut()
+            .handle_plugin_command(PluginCommand::SetSplitLabel {
+                split_id: SplitId(active_split),
+                label: "my-sidebar".to_string(),
+            })
+            .unwrap();
+
+        harness.render().unwrap();
+        harness.editor_mut().save_workspace().unwrap();
+    }
+
+    // Second session: restore and verify the label is present
+    {
+        let mut harness = EditorTestHarness::with_config_and_working_dir(
+            100,
+            24,
+            Config::default(),
+            project_dir.clone(),
+        )
+        .unwrap();
+
+        harness.editor_mut().try_restore_workspace().unwrap();
+        harness.render().unwrap();
+
+        // Capture the restored workspace — the label should be in the serialized JSON
+        let workspace = harness.editor().capture_workspace();
+        let json = serde_json::to_string_pretty(&workspace).unwrap();
+
+        assert!(
+            json.contains("my-sidebar"),
+            "Restored workspace should contain the split label 'my-sidebar'.\nJSON:\n{}",
+            json
+        );
+    }
+}

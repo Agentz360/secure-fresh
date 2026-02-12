@@ -880,7 +880,11 @@ impl Editor {
         let mut buffers = HashMap::new();
         let mut event_logs = HashMap::new();
 
-        let buffer_id = BufferId(0);
+        // Buffer IDs start at 1 (not 0) because the plugin API returns 0 to
+        // mean "no active buffer" from getActiveBufferId().  JavaScript treats
+        // 0 as falsy (`if (!bufferId)` would wrongly reject buffer 0), so
+        // using 1-based IDs avoids this entire class of bugs in plugins.
+        let buffer_id = BufferId(1);
         let mut state = EditorState::new(
             width,
             height,
@@ -1096,7 +1100,7 @@ impl Editor {
         let mut editor = Editor {
             buffers,
             event_logs,
-            next_buffer_id: 1,
+            next_buffer_id: 2,
             config,
             user_config_raw,
             dir_context: dir_context.clone(),
@@ -4293,11 +4297,17 @@ impl Editor {
             snapshot.buffer_text_properties.clear();
 
             for (buffer_id, state) in &self.buffers {
+                let is_virtual = self
+                    .buffer_metadata
+                    .get(buffer_id)
+                    .map(|m| m.is_virtual())
+                    .unwrap_or(false);
                 let buffer_info = BufferInfo {
                     id: *buffer_id,
                     path: state.buffer.file_path().map(|p| p.to_path_buf()),
                     modified: state.buffer.is_modified(),
                     length: state.buffer.len(),
+                    is_virtual,
                 };
                 snapshot.buffers.insert(*buffer_id, buffer_info);
 
@@ -4549,6 +4559,19 @@ impl Editor {
             }
             PluginCommand::SetSplitRatio { split_id, ratio } => {
                 self.handle_set_split_ratio(split_id, ratio);
+            }
+            PluginCommand::SetSplitLabel { split_id, label } => {
+                self.split_manager.set_label(split_id, label);
+            }
+            PluginCommand::ClearSplitLabel { split_id } => {
+                self.split_manager.clear_label(split_id);
+            }
+            PluginCommand::GetSplitByLabel { label, request_id } => {
+                let split_id = self.split_manager.find_split_by_label(&label);
+                let callback_id = fresh_core::api::JsCallbackId::from(request_id);
+                let json = serde_json::to_string(&split_id.map(|s| s.0))
+                    .unwrap_or_else(|_| "null".to_string());
+                self.plugin_manager.resolve_callback(callback_id, json);
             }
             PluginCommand::DistributeSplitsEvenly { split_ids: _ } => {
                 self.handle_distribute_splits_evenly();
@@ -5033,6 +5056,7 @@ impl Editor {
                 show_cursors,
                 editing_disabled,
                 line_wrap,
+                before,
                 request_id,
             } => {
                 // Check if this panel already exists (for idempotent operations)
@@ -5131,37 +5155,39 @@ impl Editor {
                 };
 
                 // Create a split with the new buffer
-                let created_split_id =
-                    match self.split_manager.split_active(split_dir, buffer_id, ratio) {
-                        Ok(new_split_id) => {
-                            // Create independent view state for the new split with the buffer in tabs
-                            let mut view_state = SplitViewState::with_buffer(
-                                self.terminal_width,
-                                self.terminal_height,
-                                buffer_id,
-                            );
-                            view_state.viewport.line_wrap_enabled =
-                                line_wrap.unwrap_or(self.config.editor.line_wrap);
-                            self.split_view_states.insert(new_split_id, view_state);
+                let created_split_id = match self
+                    .split_manager
+                    .split_active_positioned(split_dir, buffer_id, ratio, before)
+                {
+                    Ok(new_split_id) => {
+                        // Create independent view state for the new split with the buffer in tabs
+                        let mut view_state = SplitViewState::with_buffer(
+                            self.terminal_width,
+                            self.terminal_height,
+                            buffer_id,
+                        );
+                        view_state.viewport.line_wrap_enabled =
+                            line_wrap.unwrap_or(self.config.editor.line_wrap);
+                        self.split_view_states.insert(new_split_id, view_state);
 
-                            // Focus the new split (the diagnostics panel)
-                            self.split_manager.set_active_split(new_split_id);
-                            // NOTE: split tree was updated by split_active, active_buffer derives from it
+                        // Focus the new split (the diagnostics panel)
+                        self.split_manager.set_active_split(new_split_id);
+                        // NOTE: split tree was updated by split_active, active_buffer derives from it
 
-                            tracing::info!(
-                                "Created {:?} split with virtual buffer {:?}",
-                                split_dir,
-                                buffer_id
-                            );
-                            Some(new_split_id)
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to create split: {}", e);
-                            // Fall back to just switching to the buffer
-                            self.set_active_buffer(buffer_id);
-                            None
-                        }
-                    };
+                        tracing::info!(
+                            "Created {:?} split with virtual buffer {:?}",
+                            split_dir,
+                            buffer_id
+                        );
+                        Some(new_split_id)
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create split: {}", e);
+                        // Fall back to just switching to the buffer
+                        self.set_active_buffer(buffer_id);
+                        None
+                    }
+                };
 
                 // Send response with buffer ID and split ID via callback resolution
                 // NOTE: Using VirtualBufferResult type for type-safe JSON serialization
@@ -5540,6 +5566,177 @@ impl Editor {
             | PluginCommand::ReloadPlugin { .. }
             | PluginCommand::ListPlugins { .. } => {
                 tracing::warn!("Plugin management commands require the 'plugins' feature");
+            }
+
+            // ==================== Terminal Commands ====================
+            PluginCommand::CreateTerminal {
+                cwd,
+                direction,
+                ratio,
+                focus,
+                request_id,
+            } => {
+                let (cols, rows) = self.get_terminal_dimensions();
+
+                // Set up async bridge for terminal manager if not already done
+                if let Some(ref bridge) = self.async_bridge {
+                    self.terminal_manager.set_async_bridge(bridge.clone());
+                }
+
+                // Determine working directory
+                let working_dir = cwd
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| self.working_dir.clone());
+
+                // Prepare persistent storage paths
+                let terminal_root = self.dir_context.terminal_dir_for(&working_dir);
+                let _ = self.filesystem.create_dir_all(&terminal_root);
+                let predicted_terminal_id = self.terminal_manager.next_terminal_id();
+                let log_path =
+                    terminal_root.join(format!("fresh-terminal-{}.log", predicted_terminal_id.0));
+                let backing_path =
+                    terminal_root.join(format!("fresh-terminal-{}.txt", predicted_terminal_id.0));
+                self.terminal_backing_files
+                    .insert(predicted_terminal_id, backing_path);
+                let backing_path_for_spawn = self
+                    .terminal_backing_files
+                    .get(&predicted_terminal_id)
+                    .cloned();
+
+                match self.terminal_manager.spawn(
+                    cols,
+                    rows,
+                    Some(working_dir),
+                    Some(log_path.clone()),
+                    backing_path_for_spawn,
+                ) {
+                    Ok(terminal_id) => {
+                        // Track log file path
+                        self.terminal_log_files
+                            .insert(terminal_id, log_path.clone());
+                        // Fix up backing path if predicted ID differs
+                        if terminal_id != predicted_terminal_id {
+                            self.terminal_backing_files.remove(&predicted_terminal_id);
+                            let backing_path =
+                                terminal_root.join(format!("fresh-terminal-{}.txt", terminal_id.0));
+                            self.terminal_backing_files
+                                .insert(terminal_id, backing_path);
+                        }
+
+                        // Create buffer attached to the active split
+                        let active_split = self.split_manager.active_split();
+                        let buffer_id =
+                            self.create_terminal_buffer_attached(terminal_id, active_split);
+
+                        // If direction is specified, create a new split for the terminal.
+                        // If direction is None, just place the terminal in the active split
+                        // (no new split created — useful when the plugin manages layout).
+                        let created_split_id = if let Some(dir_str) = direction.as_deref() {
+                            let split_dir = match dir_str {
+                                "horizontal" => crate::model::event::SplitDirection::Horizontal,
+                                _ => crate::model::event::SplitDirection::Vertical,
+                            };
+
+                            let split_ratio = ratio.unwrap_or(0.5);
+                            match self
+                                .split_manager
+                                .split_active(split_dir, buffer_id, split_ratio)
+                            {
+                                Ok(new_split_id) => {
+                                    let mut view_state = SplitViewState::with_buffer(
+                                        self.terminal_width,
+                                        self.terminal_height,
+                                        buffer_id,
+                                    );
+                                    view_state.viewport.line_wrap_enabled = false;
+                                    self.split_view_states.insert(new_split_id, view_state);
+
+                                    if focus.unwrap_or(true) {
+                                        self.split_manager.set_active_split(new_split_id);
+                                    }
+
+                                    tracing::info!(
+                                        "Created {:?} split for terminal {:?} with buffer {:?}",
+                                        split_dir,
+                                        terminal_id,
+                                        buffer_id
+                                    );
+                                    Some(new_split_id)
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to create split for terminal: {}", e);
+                                    self.set_active_buffer(buffer_id);
+                                    None
+                                }
+                            }
+                        } else {
+                            // No split — just switch to the terminal buffer in the active split
+                            self.set_active_buffer(buffer_id);
+                            None
+                        };
+
+                        // Resize terminal to match actual split content area
+                        self.resize_visible_terminals();
+
+                        // Resolve the callback with TerminalResult
+                        let result = fresh_core::api::TerminalResult {
+                            buffer_id: buffer_id.0 as u64,
+                            terminal_id: terminal_id.0 as u64,
+                            split_id: created_split_id.map(|s| s.0 as u64),
+                        };
+                        self.plugin_manager.resolve_callback(
+                            fresh_core::api::JsCallbackId::from(request_id),
+                            serde_json::to_string(&result).unwrap_or_default(),
+                        );
+
+                        tracing::info!(
+                            "Plugin created terminal {:?} with buffer {:?}",
+                            terminal_id,
+                            buffer_id
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to create terminal for plugin: {}", e);
+                        self.plugin_manager.reject_callback(
+                            fresh_core::api::JsCallbackId::from(request_id),
+                            format!("Failed to create terminal: {}", e),
+                        );
+                    }
+                }
+            }
+
+            PluginCommand::SendTerminalInput { terminal_id, data } => {
+                if let Some(handle) = self.terminal_manager.get(terminal_id) {
+                    handle.write(data.as_bytes());
+                    tracing::trace!(
+                        "Plugin sent {} bytes to terminal {:?}",
+                        data.len(),
+                        terminal_id
+                    );
+                } else {
+                    tracing::warn!(
+                        "Plugin tried to send input to non-existent terminal {:?}",
+                        terminal_id
+                    );
+                }
+            }
+
+            PluginCommand::CloseTerminal { terminal_id } => {
+                // Find and close the buffer associated with this terminal
+                let buffer_to_close = self
+                    .terminal_buffers
+                    .iter()
+                    .find(|(_, &tid)| tid == terminal_id)
+                    .map(|(&bid, _)| bid);
+
+                if let Some(buffer_id) = buffer_to_close {
+                    let _ = self.close_buffer(buffer_id);
+                    tracing::info!("Plugin closed terminal {:?}", terminal_id);
+                } else {
+                    // Terminal exists but no buffer — just close the terminal directly
+                    self.terminal_manager.close(terminal_id);
+                    tracing::info!("Plugin closed terminal {:?} (no buffer found)", terminal_id);
+                }
             }
         }
         Ok(())

@@ -1,5 +1,24 @@
 # Release Notes
 
+## 0.2.3
+
+### Bug Fixes
+
+* **Undo Corruption After Save**: Fixed undo corrupting text after a bulk edit (e.g. multi-cursor or replace-all) followed by save. Piece tree buffers are now restored alongside the tree during undo.
+
+* **Theme Not Found After Restart**: Fixed theme reverting to default when the JSON `name` field differs from the filename (#1001).
+
+* **AltGr+Shift Input on Windows**: Fixed AltGr+Shift key combinations not being recognized as text input (#993).
+
+* **Winget Manifest**: Fixed `UpgradeBehavior` indentation causing schema validation failure in winget publishing.
+
+### Internal
+
+* Added shadow model undo/redo property-based tests for increased piece tree correctness confidence.
+* Added blog showcase system with animated GIF demos for the documentation site.
+
+---
+
 ## 0.2.2
 
 ### Bug Fixes

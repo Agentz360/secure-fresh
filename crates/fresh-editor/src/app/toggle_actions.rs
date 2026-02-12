@@ -35,8 +35,8 @@ impl Editor {
     /// When enabled, shows byte positions and highlight span info for debugging
     pub fn toggle_debug_highlights(&mut self) {
         if let Some(state) = self.buffers.get_mut(&self.active_buffer()) {
-            state.debug_highlight_mode = !state.debug_highlight_mode;
-            if state.debug_highlight_mode {
+            state.compose.debug_highlight_mode = !state.compose.debug_highlight_mode;
+            if state.compose.debug_highlight_mode {
                 self.set_status_message(t!("toggle.debug_mode_on").to_string());
             } else {
                 self.set_status_message(t!("toggle.debug_mode_off").to_string());

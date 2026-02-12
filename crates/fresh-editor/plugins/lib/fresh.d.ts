@@ -250,6 +250,10 @@ type BufferInfo = {
 	* Length of buffer in bytes
 	*/
 	length: number;
+	/**
+	* Whether this is a virtual buffer (not backed by a file)
+	*/
+	is_virtual: boolean;
 };
 type JsDiagnostic = {
 	/**
@@ -645,6 +649,11 @@ type VirtualBufferResult = {
 */
 interface EditorAPI {
 	/**
+	* Get the plugin API version. Plugins can check this to verify
+	* the editor supports the features they need.
+	*/
+	apiVersion(): number;
+	/**
 	* Get the active buffer ID (0 if none)
 	*/
 	getActiveBufferId(): number;
@@ -824,6 +833,16 @@ interface EditorAPI {
 	* Check if path is absolute
 	*/
 	pathIsAbsolute(path: string): boolean;
+	/**
+	* Get the UTF-8 byte length of a JavaScript string.
+	* 
+	* JS strings are UTF-16 internally, so `str.length` returns the number of
+	* UTF-16 code units, not the number of bytes in a UTF-8 encoding.  The
+	* editor API uses byte offsets for all buffer positions (overlays, cursor,
+	* getBufferText ranges, etc.).  This helper lets plugins convert JS string
+	* lengths / regex match indices to the byte offsets the editor expects.
+	*/
+	utf8ByteLength(text: string): number;
 	/**
 	* Check if file exists
 	*/
@@ -1067,6 +1086,19 @@ interface EditorAPI {
 	* Set the ratio of a split (0.0 to 1.0, 0.5 = equal)
 	*/
 	setSplitRatio(splitId: number, ratio: number): boolean;
+	/**
+	* Set a label on a split (e.g., "sidebar") to mark it as managed.
+	* Labeled splits are skipped when opening files — files prefer unlabeled splits.
+	*/
+	setSplitLabel(splitId: number, label: string): boolean;
+	/**
+	* Remove a label from a split
+	*/
+	clearSplitLabel(splitId: number): boolean;
+	/**
+	* Find a split by its label. Returns the split ID or null if not found.
+	*/
+	getSplitByLabel(label: string): Promise<number | null>;
 	/**
 	* Distribute all splits evenly
 	*/

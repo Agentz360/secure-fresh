@@ -51,6 +51,7 @@ use crate::overlay::{OverlayHandle, OverlayNamespace};
 use crate::text_property::{TextProperty, TextPropertyEntry};
 use crate::BufferId;
 use crate::SplitId;
+use crate::TerminalId;
 use lsp_types;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -134,6 +135,22 @@ impl std::fmt::Display for JsCallbackId {
     }
 }
 
+/// Result of creating a terminal
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, rename_all = "camelCase")]
+pub struct TerminalResult {
+    /// The created buffer ID (for use with setSplitBuffer, etc.)
+    #[ts(type = "number")]
+    pub buffer_id: u64,
+    /// The terminal ID (for use with sendTerminalInput, closeTerminal)
+    #[ts(type = "number")]
+    pub terminal_id: u64,
+    /// The split ID (if created in a new split)
+    #[ts(type = "number | null")]
+    pub split_id: Option<u64>,
+}
+
 /// Result of creating a virtual buffer
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -155,6 +172,13 @@ pub enum PluginResponse {
     VirtualBufferCreated {
         request_id: u64,
         buffer_id: BufferId,
+        split_id: Option<SplitId>,
+    },
+    /// Response to CreateTerminal with the created buffer, terminal, and split IDs
+    TerminalCreated {
+        request_id: u64,
+        buffer_id: BufferId,
+        terminal_id: TerminalId,
         split_id: Option<SplitId>,
     },
     /// Response to a plugin-initiated LSP request
@@ -195,6 +219,11 @@ pub enum PluginResponse {
     CompositeBufferCreated {
         request_id: u64,
         buffer_id: BufferId,
+    },
+    /// Response to GetSplitByLabel with the found split ID (if any)
+    SplitByLabel {
+        request_id: u64,
+        split_id: Option<SplitId>,
     },
 }
 
@@ -284,6 +313,8 @@ pub struct BufferInfo {
     pub modified: bool,
     /// Length of buffer in bytes
     pub length: usize,
+    /// Whether this is a virtual buffer (not backed by a file)
+    pub is_virtual: bool,
 }
 
 fn serialize_path<S: serde::Serializer>(path: &Option<PathBuf>, s: S) -> Result<S::Ok, S::Error> {
@@ -1102,6 +1133,8 @@ pub enum PluginCommand {
         editing_disabled: bool,
         /// Whether line wrapping is enabled for this split (None = use global setting)
         line_wrap: Option<bool>,
+        /// Place the new buffer before (left/top of) the existing content (default: false/after)
+        before: bool,
         /// Optional request ID for async response (if set, editor will send back buffer ID)
         request_id: Option<u64>,
     },
@@ -1208,6 +1241,15 @@ pub enum PluginCommand {
         /// Ratio between 0.0 and 1.0 (0.5 = equal split)
         ratio: f32,
     },
+
+    /// Set a label on a leaf split (e.g., "sidebar")
+    SetSplitLabel { split_id: SplitId, label: String },
+
+    /// Remove a label from a split
+    ClearSplitLabel { split_id: SplitId },
+
+    /// Find a split by its label (async)
+    GetSplitByLabel { label: String, request_id: u64 },
 
     /// Distribute splits evenly - make all given splits equal size
     DistributeSplitsEvenly {
@@ -1462,6 +1504,36 @@ pub enum PluginCommand {
     /// Reload the grammar registry to apply registered grammars
     /// Call this after registering one or more grammars to rebuild the syntax set
     ReloadGrammars,
+
+    // ==================== Terminal Commands ====================
+    /// Create a new terminal in a split (async, returns TerminalResult)
+    /// This spawns a PTY-backed terminal that plugins can write to and read from.
+    CreateTerminal {
+        /// Working directory for the terminal (defaults to editor cwd)
+        cwd: Option<String>,
+        /// Split direction ("horizontal" or "vertical"), default vertical
+        direction: Option<String>,
+        /// Split ratio (0.0 to 1.0), default 0.5
+        ratio: Option<f32>,
+        /// Whether to focus the new terminal split (default true)
+        focus: Option<bool>,
+        /// Callback ID for async response
+        request_id: u64,
+    },
+
+    /// Send input data to a terminal by its terminal ID
+    SendTerminalInput {
+        /// The terminal ID (from TerminalResult)
+        terminal_id: TerminalId,
+        /// Data to write to the terminal PTY (UTF-8 string, may include escape sequences)
+        data: String,
+    },
+
+    /// Close a terminal by its terminal ID
+    CloseTerminal {
+        /// The terminal ID to close
+        terminal_id: TerminalId,
+    },
 }
 
 // =============================================================================
@@ -1772,6 +1844,10 @@ pub struct CreateVirtualBufferInSplitOptions {
     #[serde(default, rename = "lineWrap")]
     #[ts(optional, rename = "lineWrap")]
     pub line_wrap: Option<bool>,
+    /// Place the new buffer before (left/top of) the existing content (default: false)
+    #[serde(default)]
+    #[ts(optional)]
+    pub before: Option<bool>,
     /// Initial content entries with optional properties
     #[serde(default)]
     #[ts(optional)]
@@ -1817,6 +1893,29 @@ pub struct CreateVirtualBufferInExistingSplitOptions {
     #[serde(default)]
     #[ts(optional)]
     pub entries: Option<Vec<JsTextPropertyEntry>>,
+}
+
+/// Options for createTerminal
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct CreateTerminalOptions {
+    /// Working directory for the terminal (defaults to editor cwd)
+    #[serde(default)]
+    #[ts(optional)]
+    pub cwd: Option<String>,
+    /// Split direction: "horizontal" or "vertical" (default: "vertical")
+    #[serde(default)]
+    #[ts(optional)]
+    pub direction: Option<String>,
+    /// Split ratio 0.0-1.0 (default: 0.5)
+    #[serde(default)]
+    #[ts(optional)]
+    pub ratio: Option<f32>,
+    /// Whether to focus the new terminal split (default: true)
+    #[serde(default)]
+    #[ts(optional)]
+    pub focus: Option<bool>,
 }
 
 /// Result of getTextPropertiesAtCursor - array of property objects
@@ -1984,6 +2083,16 @@ mod fromjs_impls {
             rquickjs_serde::from_value(value).map_err(|e| rquickjs::Error::FromJs {
                 from: "object",
                 to: "LspServerPackConfig",
+                message: Some(e.to_string()),
+            })
+        }
+    }
+
+    impl<'js> FromJs<'js> for CreateTerminalOptions {
+        fn from_js(_ctx: &Ctx<'js>, value: Value<'js>) -> rquickjs::Result<Self> {
+            rquickjs_serde::from_value(value).map_err(|e| rquickjs::Error::FromJs {
+                from: "object",
+                to: "CreateTerminalOptions",
                 message: Some(e.to_string()),
             })
         }
@@ -2538,6 +2647,7 @@ mod tests {
                 path: Some(std::path::PathBuf::from("/test/file.txt")),
                 modified: true,
                 length: 100,
+                is_virtual: false,
             };
             snapshot.buffers.insert(BufferId(1), buffer_info);
         }
@@ -2577,6 +2687,7 @@ mod tests {
                     path: Some(std::path::PathBuf::from("/file1.txt")),
                     modified: false,
                     length: 50,
+                    is_virtual: false,
                 },
             );
             snapshot.buffers.insert(
@@ -2586,6 +2697,7 @@ mod tests {
                     path: Some(std::path::PathBuf::from("/file2.txt")),
                     modified: true,
                     length: 100,
+                    is_virtual: false,
                 },
             );
             snapshot.buffers.insert(
@@ -2595,6 +2707,7 @@ mod tests {
                     path: None,
                     modified: false,
                     length: 0,
+                    is_virtual: true,
                 },
             );
         }

@@ -554,7 +554,7 @@ impl Editor {
 
         if trimmed.is_empty() {
             if let Some(state) = self.buffers.get_mut(&buffer_id) {
-                state.compose_width = None;
+                state.compose.compose_width = None;
             }
             if let Some(vs) = self.split_view_states.get_mut(&active_split) {
                 vs.compose_width = None;
@@ -564,7 +564,7 @@ impl Editor {
             match trimmed.parse::<u16>() {
                 Ok(val) if val > 0 => {
                     if let Some(state) = self.buffers.get_mut(&buffer_id) {
-                        state.compose_width = Some(val);
+                        state.compose.compose_width = Some(val);
                     }
                     if let Some(vs) = self.split_view_states.get_mut(&active_split) {
                         vs.compose_width = Some(val);

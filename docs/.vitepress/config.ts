@@ -19,10 +19,21 @@ export default defineConfig({
     nav: [
       { text: "Homepage", link: "https://getfresh.dev" },
       { text: "Getting Started", link: "/getting-started" },
+      { text: "Blog", link: "/blog/" },
       { text: "Download", link: "https://github.com/sinelaw/fresh/releases/latest" },
     ],
 
     sidebar: [
+      {
+        text: "Blog",
+        link: "/blog/",
+        items: [
+          { text: "Fresh 0.2", link: "/blog/fresh-0.2/" },
+          { text: "Editing Features", link: "/blog/editing" },
+          { text: "Productivity Features", link: "/blog/productivity" },
+          { text: "Customization & Themes", link: "/blog/themes" },
+        ],
+      },
       {
         text: "Getting Started",
         link: "/getting-started/",

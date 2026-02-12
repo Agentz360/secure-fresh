@@ -201,7 +201,7 @@ impl Editor {
             crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
             std::sync::Arc::clone(&self.filesystem),
         );
-        state.is_composite_buffer = true;
+        state.compose.is_composite_buffer = true;
         state.editing_disabled = true;
         state.mode = mode;
         self.buffers.insert(buffer_id, state);

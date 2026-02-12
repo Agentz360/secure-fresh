@@ -491,6 +491,12 @@ pub struct JsEditorApi {
 impl JsEditorApi {
     // === Buffer Queries ===
 
+    /// Get the plugin API version. Plugins can check this to verify
+    /// the editor supports the features they need.
+    pub fn api_version(&self) -> u32 {
+        2
+    }
+
     /// Get the active buffer ID (0 if none)
     pub fn get_active_buffer_id(&self) -> u32 {
         self.state_snapshot
@@ -1116,6 +1122,17 @@ impl JsEditorApi {
     /// Check if path is absolute
     pub fn path_is_absolute(&self, path: String) -> bool {
         Path::new(&path).is_absolute()
+    }
+
+    /// Get the UTF-8 byte length of a JavaScript string.
+    ///
+    /// JS strings are UTF-16 internally, so `str.length` returns the number of
+    /// UTF-16 code units, not the number of bytes in a UTF-8 encoding.  The
+    /// editor API uses byte offsets for all buffer positions (overlays, cursor,
+    /// getBufferText ranges, etc.).  This helper lets plugins convert JS string
+    /// lengths / regex match indices to the byte offsets the editor expects.
+    pub fn utf8_byte_length(&self, text: String) -> u32 {
+        text.len() as u32
     }
 
     // === File System ===
@@ -1963,6 +1980,49 @@ impl JsEditorApi {
             .is_ok()
     }
 
+    /// Set a label on a split (e.g., "sidebar")
+    pub fn set_split_label(&self, split_id: u32, label: String) -> bool {
+        self.command_sender
+            .send(PluginCommand::SetSplitLabel {
+                split_id: SplitId(split_id as usize),
+                label,
+            })
+            .is_ok()
+    }
+
+    /// Remove a label from a split
+    pub fn clear_split_label(&self, split_id: u32) -> bool {
+        self.command_sender
+            .send(PluginCommand::ClearSplitLabel {
+                split_id: SplitId(split_id as usize),
+            })
+            .is_ok()
+    }
+
+    /// Find a split by label (async)
+    #[plugin_api(
+        async_promise,
+        js_name = "getSplitByLabel",
+        ts_return = "number | null"
+    )]
+    #[qjs(rename = "_getSplitByLabelStart")]
+    pub fn get_split_by_label_start(&self, _ctx: rquickjs::Ctx<'_>, label: String) -> u64 {
+        let id = {
+            let mut id_ref = self.next_request_id.borrow_mut();
+            let id = *id_ref;
+            *id_ref += 1;
+            self.callback_contexts
+                .borrow_mut()
+                .insert(id, self.plugin_name.clone());
+            id
+        };
+        let _ = self.command_sender.send(PluginCommand::GetSplitByLabel {
+            label,
+            request_id: id,
+        });
+        id
+    }
+
     /// Distribute all splits evenly
     pub fn distribute_splits_evenly(&self) -> bool {
         // Get all split IDs - for now send empty vec (app will handle)
@@ -2287,6 +2347,7 @@ impl JsEditorApi {
                 show_cursors: opts.show_cursors.unwrap_or(true),
                 editing_disabled: opts.editing_disabled.unwrap_or(false),
                 line_wrap: opts.line_wrap,
+                before: opts.before.unwrap_or(false),
                 request_id: Some(id),
             });
         Ok(id)
@@ -2565,6 +2626,68 @@ impl JsEditorApi {
     pub fn kill_background_process(&self, process_id: u64) -> bool {
         self.command_sender
             .send(PluginCommand::KillBackgroundProcess { process_id })
+            .is_ok()
+    }
+
+    // === Terminal ===
+
+    /// Create a new terminal in a split (async, returns TerminalResult)
+    #[plugin_api(
+        async_promise,
+        js_name = "createTerminal",
+        ts_return = "TerminalResult"
+    )]
+    #[qjs(rename = "_createTerminalStart")]
+    pub fn create_terminal_start(
+        &self,
+        _ctx: rquickjs::Ctx<'_>,
+        opts: rquickjs::function::Opt<fresh_core::api::CreateTerminalOptions>,
+    ) -> rquickjs::Result<u64> {
+        let id = {
+            let mut id_ref = self.next_request_id.borrow_mut();
+            let id = *id_ref;
+            *id_ref += 1;
+            self.callback_contexts
+                .borrow_mut()
+                .insert(id, self.plugin_name.clone());
+            id
+        };
+
+        let opts = opts
+            .0
+            .unwrap_or_else(|| fresh_core::api::CreateTerminalOptions {
+                cwd: None,
+                direction: None,
+                ratio: None,
+                focus: None,
+            });
+
+        let _ = self.command_sender.send(PluginCommand::CreateTerminal {
+            cwd: opts.cwd,
+            direction: opts.direction,
+            ratio: opts.ratio,
+            focus: opts.focus,
+            request_id: id,
+        });
+        Ok(id)
+    }
+
+    /// Send input data to a terminal
+    pub fn send_terminal_input(&self, terminal_id: u64, data: String) -> bool {
+        self.command_sender
+            .send(PluginCommand::SendTerminalInput {
+                terminal_id: fresh_core::TerminalId(terminal_id as usize),
+                data,
+            })
+            .is_ok()
+    }
+
+    /// Close a terminal
+    pub fn close_terminal(&self, terminal_id: u64) -> bool {
+        self.command_sender
+            .send(PluginCommand::CloseTerminal {
+                terminal_id: fresh_core::TerminalId(terminal_id as usize),
+            })
             .is_ok()
     }
 
@@ -3108,6 +3231,7 @@ impl QuickJsBackend {
                 editor.prompt = _wrapAsync("_promptStart", "prompt");
                 editor.getLineStartPosition = _wrapAsync("_getLineStartPositionStart", "getLineStartPosition");
                 editor.getLineEndPosition = _wrapAsync("_getLineEndPositionStart", "getLineEndPosition");
+                editor.createTerminal = _wrapAsync("_createTerminalStart", "createTerminal");
 
                 // Wrapper for deleteTheme - wraps sync function in Promise
                 editor.deleteTheme = function(name) {
@@ -4924,6 +5048,7 @@ mod tests {
                     path: Some(PathBuf::from("/test1.txt")),
                     modified: false,
                     length: 100,
+                    is_virtual: false,
                 },
             );
             state.buffers.insert(
@@ -4933,6 +5058,7 @@ mod tests {
                     path: Some(PathBuf::from("/test2.txt")),
                     modified: true,
                     length: 200,
+                    is_virtual: false,
                 },
             );
         }
@@ -5521,6 +5647,32 @@ mod tests {
                 let global = ctx.globals();
                 let result: bool = global.get("_loadResult").unwrap();
                 assert!(result);
+            });
+    }
+
+    #[test]
+    fn test_api_version() {
+        let (mut backend, _rx) = create_test_backend();
+
+        backend
+            .execute_js(
+                r#"
+            const editor = getEditor();
+            globalThis._apiVersion = editor.apiVersion();
+        "#,
+                "test.js",
+            )
+            .unwrap();
+
+        backend
+            .plugin_contexts
+            .borrow()
+            .get("test")
+            .unwrap()
+            .clone()
+            .with(|ctx| {
+                let version: u32 = ctx.globals().get("_apiVersion").unwrap();
+                assert_eq!(version, 2);
             });
     }
 

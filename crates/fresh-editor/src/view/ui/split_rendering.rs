@@ -875,7 +875,7 @@ impl SplitRenderer {
 
             if let Some(state) = state_opt {
                 // Check if this is a composite buffer - render differently
-                if state.is_composite_buffer {
+                if state.compose.is_composite_buffer {
                     if let Some(composite) = composite_buffers.get(&buffer_id) {
                         // Update SplitViewState viewport to match actual rendered area
                         // This ensures cursor movement uses correct viewport height after resize
@@ -1853,10 +1853,10 @@ impl SplitRenderer {
         }
 
         ViewPreferences {
-            view_mode: state.view_mode.clone(),
-            compose_width: state.compose_width,
-            compose_column_guides: state.compose_column_guides.clone(),
-            view_transform: state.view_transform.clone(),
+            view_mode: state.compose.view_mode.clone(),
+            compose_width: state.compose.compose_width,
+            compose_column_guides: state.compose.compose_column_guides.clone(),
+            view_transform: state.compose.view_transform.clone(),
         }
     }
 
@@ -3260,7 +3260,7 @@ impl SplitRenderer {
             let mut visible_char_count = 0usize;
 
             // Debug mode: track active highlight/overlay spans for WordPerfect-style reveal codes
-            let mut debug_tracker = if state.debug_highlight_mode {
+            let mut debug_tracker = if state.compose.debug_highlight_mode {
                 Some(DebugSpanTracker::default())
             } else {
                 None
