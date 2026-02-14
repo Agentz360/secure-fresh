@@ -58,6 +58,57 @@ pub enum SplitNode {
     },
 }
 
+/// Per-buffer view state within a split.
+///
+/// Each buffer opened in a split gets its own `BufferViewState` stored in the
+/// split's `keyed_states` map. This ensures that switching buffers within a split
+/// preserves cursor position, scroll state, view mode, and compose settings
+/// independently for each buffer.
+#[derive(Debug, Clone)]
+pub struct BufferViewState {
+    /// Independent cursor set (supports multi-cursor)
+    pub cursors: Cursors,
+
+    /// Independent scroll position
+    pub viewport: Viewport,
+
+    /// View mode (Source/Compose) for this buffer in this split
+    pub view_mode: ViewMode,
+
+    /// Optional compose width for centering/wrapping
+    pub compose_width: Option<u16>,
+
+    /// Column guides (e.g., tables)
+    pub compose_column_guides: Option<Vec<u16>>,
+
+    /// Previously configured line number visibility (restored when leaving Compose)
+    pub compose_prev_line_numbers: Option<bool>,
+
+    /// Optional view transform payload
+    pub view_transform: Option<ViewTransformPayload>,
+
+    /// True when the buffer was edited since the last view_transform_request hook fired.
+    /// While true, incoming SubmitViewTransform commands are rejected as stale
+    /// (their tokens have source_offsets from before the edit).
+    pub view_transform_stale: bool,
+}
+
+impl BufferViewState {
+    /// Create a new buffer view state with defaults
+    pub fn new(width: u16, height: u16) -> Self {
+        Self {
+            cursors: Cursors::new(),
+            viewport: Viewport::new(width, height),
+            view_mode: ViewMode::Source,
+            compose_width: None,
+            compose_column_guides: None,
+            compose_prev_line_numbers: None,
+            view_transform: None,
+            view_transform_stale: false,
+        }
+    }
+}
+
 /// Per-split view state (independent of buffer content)
 ///
 /// Following the Emacs model where each window (split) has its own:
@@ -65,15 +116,17 @@ pub enum SplitNode {
 /// - Window-start (scroll position) - independent per split
 /// - Tabs (open buffers) - independent per split
 ///
-/// This allows multiple splits to display the same buffer at different positions
-/// with independent cursor and scroll positions, and each split has its own set of tabs.
+/// Buffer-specific state (cursors, viewport, view_mode, compose settings) is stored
+/// in the `keyed_states` map, keyed by `BufferId`. The active buffer's state is
+/// accessible via `Deref`/`DerefMut` (so `vs.cursors` transparently accesses the
+/// active buffer's cursors), or explicitly via `active_state()`/`active_state_mut()`.
 #[derive(Debug, Clone)]
 pub struct SplitViewState {
-    /// Independent cursor set for this split (supports multi-cursor)
-    pub cursors: Cursors,
+    /// Which buffer is currently active in this split
+    pub active_buffer: BufferId,
 
-    /// Independent scroll position for this split
-    pub viewport: Viewport,
+    /// Per-buffer view state map. The active buffer always has an entry.
+    pub keyed_states: HashMap<BufferId, BufferViewState>,
 
     /// List of buffer IDs open in this split's tab bar (in order)
     /// The currently displayed buffer is tracked in the SplitNode::Leaf
@@ -81,26 +134,6 @@ pub struct SplitViewState {
 
     /// Horizontal scroll offset for the tabs in this split
     pub tab_scroll_offset: usize,
-
-    /// View mode (Source/Compose) per split
-    pub view_mode: ViewMode,
-
-    /// Optional compose width for centering/wrapping in this split
-    pub compose_width: Option<u16>,
-
-    /// Column guides for this split (e.g., tables)
-    pub compose_column_guides: Option<Vec<u16>>,
-
-    /// Previously configured line number visibility (restored when leaving Compose)
-    pub compose_prev_line_numbers: Option<bool>,
-
-    /// Optional view transform payload for this split/viewport
-    pub view_transform: Option<ViewTransformPayload>,
-
-    /// True when the buffer was edited since the last view_transform_request hook fired.
-    /// While true, incoming SubmitViewTransform commands are rejected as stale
-    /// (their tokens have source_offsets from before the edit).
-    pub view_transform_stale: bool,
 
     /// Computed layout for this view (from view_transform or base tokens)
     /// This is View state - each split has its own Layout
@@ -124,46 +157,101 @@ pub struct SplitViewState {
     pub composite_view: Option<BufferId>,
 }
 
+impl std::ops::Deref for SplitViewState {
+    type Target = BufferViewState;
+
+    fn deref(&self) -> &BufferViewState {
+        self.active_state()
+    }
+}
+
+impl std::ops::DerefMut for SplitViewState {
+    fn deref_mut(&mut self) -> &mut BufferViewState {
+        self.active_state_mut()
+    }
+}
+
 impl SplitViewState {
-    /// Create a new split view state with default cursor at position 0
-    pub fn new(width: u16, height: u16) -> Self {
+    /// Create a new split view state with an initial buffer open
+    pub fn with_buffer(width: u16, height: u16, buffer_id: BufferId) -> Self {
+        let buf_state = BufferViewState::new(width, height);
+        let mut keyed_states = HashMap::new();
+        keyed_states.insert(buffer_id, buf_state);
         Self {
-            cursors: Cursors::new(),
-            viewport: Viewport::new(width, height),
-            open_buffers: Vec::new(),
+            active_buffer: buffer_id,
+            keyed_states,
+            open_buffers: vec![buffer_id],
             tab_scroll_offset: 0,
-            view_mode: ViewMode::Source,
-            compose_width: None,
-            compose_column_guides: None,
-            compose_prev_line_numbers: None,
-            view_transform: None,
-            view_transform_stale: false,
             layout: None,
-            layout_dirty: true, // Start dirty so first operation builds layout
+            layout_dirty: true,
             focus_history: Vec::new(),
             sync_group: None,
             composite_view: None,
         }
     }
 
-    /// Create a new split view state with an initial buffer open
-    pub fn with_buffer(width: u16, height: u16, buffer_id: BufferId) -> Self {
-        Self {
-            cursors: Cursors::new(),
-            viewport: Viewport::new(width, height),
-            open_buffers: vec![buffer_id],
-            tab_scroll_offset: 0,
-            view_mode: ViewMode::Source,
-            compose_width: None,
-            compose_column_guides: None,
-            compose_prev_line_numbers: None,
-            view_transform: None,
-            view_transform_stale: false,
-            layout: None,
-            layout_dirty: true, // Start dirty so first operation builds layout
-            focus_history: Vec::new(),
-            sync_group: None,
-            composite_view: None,
+    /// Get the active buffer's view state
+    pub fn active_state(&self) -> &BufferViewState {
+        self.keyed_states
+            .get(&self.active_buffer)
+            .expect("active_buffer must always have an entry in keyed_states")
+    }
+
+    /// Get a mutable reference to the active buffer's view state
+    pub fn active_state_mut(&mut self) -> &mut BufferViewState {
+        self.keyed_states
+            .get_mut(&self.active_buffer)
+            .expect("active_buffer must always have an entry in keyed_states")
+    }
+
+    /// Switch the active buffer in this split.
+    ///
+    /// If the new buffer has a saved state in `keyed_states`, it is restored.
+    /// Otherwise a default `BufferViewState` is created with the split's current
+    /// viewport dimensions.
+    pub fn switch_buffer(&mut self, new_buffer_id: BufferId) {
+        if new_buffer_id == self.active_buffer {
+            return;
+        }
+        // Ensure the new buffer has keyed state (create default if first time)
+        if !self.keyed_states.contains_key(&new_buffer_id) {
+            let active = self.active_state();
+            let width = active.viewport.width;
+            let height = active.viewport.height;
+            self.keyed_states
+                .insert(new_buffer_id, BufferViewState::new(width, height));
+        }
+        self.active_buffer = new_buffer_id;
+        // Invalidate layout since we're now showing different buffer content
+        self.layout_dirty = true;
+    }
+
+    /// Get the view state for a specific buffer (if it exists)
+    pub fn buffer_state(&self, buffer_id: BufferId) -> Option<&BufferViewState> {
+        self.keyed_states.get(&buffer_id)
+    }
+
+    /// Get a mutable reference to the view state for a specific buffer (if it exists)
+    pub fn buffer_state_mut(&mut self, buffer_id: BufferId) -> Option<&mut BufferViewState> {
+        self.keyed_states.get_mut(&buffer_id)
+    }
+
+    /// Ensure a buffer has keyed state, creating a default if needed.
+    /// Returns a mutable reference to the buffer's view state.
+    pub fn ensure_buffer_state(&mut self, buffer_id: BufferId) -> &mut BufferViewState {
+        let (width, height) = {
+            let active = self.active_state();
+            (active.viewport.width, active.viewport.height)
+        };
+        self.keyed_states
+            .entry(buffer_id)
+            .or_insert_with(|| BufferViewState::new(width, height))
+    }
+
+    /// Remove keyed state for a buffer (when buffer is closed from this split)
+    pub fn remove_buffer_state(&mut self, buffer_id: BufferId) {
+        if buffer_id != self.active_buffer {
+            self.keyed_states.remove(&buffer_id);
         }
     }
 
@@ -208,9 +296,13 @@ impl SplitViewState {
         }
     }
 
-    /// Remove a buffer from this split's tabs
+    /// Remove a buffer from this split's tabs and clean up its keyed state
     pub fn remove_buffer(&mut self, buffer_id: BufferId) {
         self.open_buffers.retain(|&id| id != buffer_id);
+        // Clean up keyed state (but never remove the active buffer's state)
+        if buffer_id != self.active_buffer {
+            self.keyed_states.remove(&buffer_id);
+        }
     }
 
     /// Check if a buffer is open in this split

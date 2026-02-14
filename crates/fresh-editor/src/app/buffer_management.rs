@@ -682,6 +682,8 @@ impl Editor {
                 top_view_line_offset: view_state.viewport.top_view_line_offset,
                 left_column: view_state.viewport.left_column,
             },
+            view_mode: Default::default(),
+            compose_width: None,
         };
 
         // Save to disk

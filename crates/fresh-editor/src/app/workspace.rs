@@ -365,6 +365,8 @@ impl Editor {
                 top_view_line_offset: view_state.viewport.top_view_line_offset,
                 left_column: view_state.viewport.left_column,
             },
+            view_mode: Default::default(),
+            compose_width: None,
         };
 
         // Save to disk immediately
@@ -948,8 +950,14 @@ impl Editor {
                             if !view_state.open_buffers.contains(&buffer_id) {
                                 view_state.open_buffers.push(buffer_id);
                             }
+                            // Ensure keyed state exists for this buffer
+                            view_state.ensure_buffer_state(buffer_id);
                             if terminal_buffers.values().any(|&tid| tid == buffer_id) {
-                                view_state.viewport.line_wrap_enabled = false;
+                                view_state
+                                    .buffer_state_mut(buffer_id)
+                                    .unwrap()
+                                    .viewport
+                                    .line_wrap_enabled = false;
                             }
                         }
                     }
@@ -958,7 +966,10 @@ impl Editor {
                             if !view_state.open_buffers.contains(&buffer_id) {
                                 view_state.open_buffers.push(buffer_id);
                             }
-                            view_state.viewport.line_wrap_enabled = false;
+                            view_state
+                                .ensure_buffer_state(buffer_id)
+                                .viewport
+                                .line_wrap_enabled = false;
                         }
                     }
                 }
@@ -979,6 +990,7 @@ impl Editor {
                     if !view_state.open_buffers.contains(&buffer_id) {
                         view_state.open_buffers.push(buffer_id);
                     }
+                    view_state.ensure_buffer_state(buffer_id);
                 }
             }
 
@@ -987,68 +999,77 @@ impl Editor {
                 active_file_path.and_then(|rel_path| path_to_buffer.get(rel_path).copied());
         }
 
-        // Restore cursor and scroll for the active file
-        if let Some(active_id) = active_buffer_id {
-            // Find the file state for the active buffer
-            for (rel_path, file_state) in &split_state.file_states {
-                let buffer_for_path = path_to_buffer.get(rel_path).copied();
-                if buffer_for_path == Some(active_id) {
-                    if let Some(buffer) = self.buffers.get(&active_id) {
-                        let max_pos = buffer.buffer.len();
-                        let cursor_pos = file_state.cursor.position.min(max_pos);
+        // Restore cursor, scroll, view_mode, and compose_width for ALL buffers in file_states
+        for (rel_path, file_state) in &split_state.file_states {
+            let buffer_id = match path_to_buffer.get(rel_path).copied() {
+                Some(id) => id,
+                None => continue,
+            };
+            let max_pos = self
+                .buffers
+                .get(&buffer_id)
+                .map(|b| b.buffer.len())
+                .unwrap_or(0);
 
-                        // Set cursor in SplitViewState
-                        view_state.cursors.primary_mut().position = cursor_pos;
-                        view_state.cursors.primary_mut().anchor =
-                            file_state.cursor.anchor.map(|a| a.min(max_pos));
-                        view_state.cursors.primary_mut().sticky_column =
-                            file_state.cursor.sticky_column;
+            // Ensure keyed state exists for this buffer
+            let buf_state = view_state.ensure_buffer_state(buffer_id);
 
-                        // Set scroll position
-                        view_state.viewport.top_byte = file_state.scroll.top_byte.min(max_pos);
-                        view_state.viewport.top_view_line_offset =
-                            file_state.scroll.top_view_line_offset;
-                        view_state.viewport.left_column = file_state.scroll.left_column;
-                        // Mark viewport to skip sync on first resize after workspace restore
-                        // This prevents ensure_visible from overwriting the restored scroll position
-                        view_state.viewport.set_skip_resize_sync();
+            let cursor_pos = file_state.cursor.position.min(max_pos);
+            buf_state.cursors.primary_mut().position = cursor_pos;
+            buf_state.cursors.primary_mut().anchor =
+                file_state.cursor.anchor.map(|a| a.min(max_pos));
+            buf_state.cursors.primary_mut().sticky_column = file_state.cursor.sticky_column;
 
-                        tracing::trace!(
-                            "Restored SplitViewState for {:?}: cursor={}, top_byte={}",
-                            rel_path,
-                            cursor_pos,
-                            view_state.viewport.top_byte
-                        );
-                    }
+            buf_state.viewport.top_byte = file_state.scroll.top_byte.min(max_pos);
+            buf_state.viewport.top_view_line_offset = file_state.scroll.top_view_line_offset;
+            buf_state.viewport.left_column = file_state.scroll.left_column;
+            buf_state.viewport.set_skip_resize_sync();
 
-                    // Also set cursor in EditorState (authoritative for cursors)
-                    if let Some(editor_state) = self.buffers.get_mut(&active_id) {
-                        let max_pos = editor_state.buffer.len();
-                        let cursor_pos = file_state.cursor.position.min(max_pos);
-                        editor_state.cursors.primary_mut().position = cursor_pos;
-                        editor_state.cursors.primary_mut().anchor =
-                            file_state.cursor.anchor.map(|a| a.min(max_pos));
-                        editor_state.cursors.primary_mut().sticky_column =
-                            file_state.cursor.sticky_column;
-                        // Note: viewport is now exclusively owned by SplitViewState (restored above)
-                    }
-                    break;
-                }
-            }
+            // Restore per-buffer view mode and compose width
+            buf_state.view_mode = match file_state.view_mode {
+                SerializedViewMode::Source => ViewMode::Source,
+                SerializedViewMode::Compose => ViewMode::Compose,
+            };
+            buf_state.compose_width = file_state.compose_width;
+
+            tracing::trace!(
+                "Restored keyed state for {:?}: cursor={}, top_byte={}, view_mode={:?}",
+                rel_path,
+                cursor_pos,
+                buf_state.viewport.top_byte,
+                buf_state.view_mode,
+            );
         }
 
-        // Restore view mode BEFORE activating the buffer, so plugins can
-        // discover compose mode via BufferInfo.view_mode on buffer_activated
+        // For buffers without saved file_state (e.g., terminals), apply split-level
+        // view_mode/compose_width as fallback (backward compatibility)
         let restored_view_mode = match split_state.view_mode {
             SerializedViewMode::Source => ViewMode::Source,
             SerializedViewMode::Compose => ViewMode::Compose,
         };
-        view_state.view_mode = restored_view_mode.clone();
-        view_state.compose_width = split_state.compose_width;
 
         if let Some(active_id) = active_buffer_id {
+            // Switch the split to the active buffer
+            view_state.switch_buffer(active_id);
+
+            // If no per-buffer file_state was saved, apply split-level settings
+            let active_has_file_state = split_state.file_states.values().any(|_| {
+                // Check if the active buffer's path was in file_states
+                split_state
+                    .file_states
+                    .keys()
+                    .any(|rel_path| path_to_buffer.get(rel_path).copied() == Some(active_id))
+            });
+            if !active_has_file_state {
+                view_state.active_state_mut().view_mode = restored_view_mode.clone();
+                view_state.active_state_mut().compose_width = split_state.compose_width;
+            }
+
+            // Also set cursor in EditorState (authoritative for editing operations)
             if let Some(editor_state) = self.buffers.get_mut(&active_id) {
-                editor_state.compose.view_mode = restored_view_mode;
+                let buf_state = view_state.active_state();
+                editor_state.cursors = buf_state.cursors.clone();
+                editor_state.compose.view_mode = buf_state.view_mode.clone();
             }
 
             // Set this buffer as active in the split (fires buffer_activated hook)
@@ -1205,13 +1226,13 @@ fn serialize_split_view_state(
         })
         .unwrap_or(0);
 
-    // Serialize file states - only save cursor/scroll for the ACTIVE buffer if it is a file
+    // Serialize file states for ALL buffers in keyed_states (not just the active one)
     let mut file_states = HashMap::new();
-    if let Some(active_id) = active_buffer {
-        if let Some(meta) = buffer_metadata.get(&active_id) {
+    for (buffer_id, buf_state) in &view_state.keyed_states {
+        if let Some(meta) = buffer_metadata.get(buffer_id) {
             if let Some(abs_path) = meta.file_path() {
                 if let Ok(rel_path) = abs_path.strip_prefix(working_dir) {
-                    let primary_cursor = view_state.cursors.primary();
+                    let primary_cursor = buf_state.cursors.primary();
 
                     file_states.insert(
                         rel_path.to_path_buf(),
@@ -1221,7 +1242,7 @@ fn serialize_split_view_state(
                                 anchor: primary_cursor.anchor,
                                 sticky_column: primary_cursor.sticky_column,
                             },
-                            additional_cursors: view_state
+                            additional_cursors: buf_state
                                 .cursors
                                 .iter()
                                 .skip(1) // Skip primary
@@ -1232,16 +1253,33 @@ fn serialize_split_view_state(
                                 })
                                 .collect(),
                             scroll: SerializedScroll {
-                                top_byte: view_state.viewport.top_byte,
-                                top_view_line_offset: view_state.viewport.top_view_line_offset,
-                                left_column: view_state.viewport.left_column,
+                                top_byte: buf_state.viewport.top_byte,
+                                top_view_line_offset: buf_state.viewport.top_view_line_offset,
+                                left_column: buf_state.viewport.left_column,
                             },
+                            view_mode: match buf_state.view_mode {
+                                ViewMode::Source => SerializedViewMode::Source,
+                                ViewMode::Compose => SerializedViewMode::Compose,
+                            },
+                            compose_width: buf_state.compose_width,
                         },
                     );
                 }
             }
         }
     }
+
+    // Active buffer's view_mode/compose_width for the split-level fields (backward compat)
+    let active_view_mode = active_buffer
+        .and_then(|id| view_state.keyed_states.get(&id))
+        .map(|bs| match bs.view_mode {
+            ViewMode::Source => SerializedViewMode::Source,
+            ViewMode::Compose => SerializedViewMode::Compose,
+        })
+        .unwrap_or(SerializedViewMode::Source);
+    let active_compose_width = active_buffer
+        .and_then(|id| view_state.keyed_states.get(&id))
+        .and_then(|bs| bs.compose_width);
 
     SerializedSplitViewState {
         open_tabs,
@@ -1250,11 +1288,8 @@ fn serialize_split_view_state(
         active_file_index,
         file_states,
         tab_scroll_offset: view_state.tab_scroll_offset,
-        view_mode: match view_state.view_mode {
-            ViewMode::Source => SerializedViewMode::Source,
-            ViewMode::Compose => SerializedViewMode::Compose,
-        },
-        compose_width: view_state.compose_width,
+        view_mode: active_view_mode,
+        compose_width: active_compose_width,
     }
 }
 

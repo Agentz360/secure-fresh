@@ -1875,8 +1875,23 @@ impl Editor {
             self.key_context = crate::input::keybindings::KeyContext::Normal;
         }
 
+        // Snapshot current cursors from EditorState into the keyed state before switching
+        self.save_current_split_view_state();
+
         // Update split manager (single source of truth)
         self.split_manager.set_active_buffer_id(buffer_id);
+
+        // Switch per-buffer view state in the active split
+        let active_split = self.split_manager.active_split();
+        if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
+            view_state.switch_buffer(buffer_id);
+            view_state.add_buffer(buffer_id);
+            // Update the focus history (push the previous buffer we're leaving)
+            view_state.push_focus(previous);
+        }
+
+        // Restore the new buffer's cursors into EditorState
+        self.restore_current_split_view_state();
 
         // If switching to a terminal buffer that should resume terminal mode, re-enter it
         if self.terminal_mode_resume.contains(&buffer_id) && self.is_terminal_buffer(buffer_id) {
@@ -1886,14 +1901,6 @@ impl Editor {
             // Switching to terminal in read-only mode - sync buffer to show current terminal content
             // This ensures the backing file content and cursor position are up to date
             self.sync_terminal_to_buffer(buffer_id);
-        }
-
-        // Add buffer to the active split's open_buffers (tabs) if not already there
-        let active_split = self.split_manager.active_split();
-        if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
-            view_state.add_buffer(buffer_id);
-            // Update the focus history (push the previous buffer we're leaving)
-            view_state.push_focus(previous);
         }
 
         // Ensure the newly active tab is visible
@@ -1935,11 +1942,17 @@ impl Editor {
                 self.key_context = crate::input::keybindings::KeyContext::Normal;
             }
 
+            // Save current split's cursor state before switching
+            self.save_current_split_view_state();
+
             // Update split manager to focus this split
             self.split_manager.set_active_split(split_id);
 
             // Update the buffer in the new split
             self.split_manager.set_active_buffer_id(buffer_id);
+
+            // Restore the new split's cursor state
+            self.restore_current_split_view_state();
 
             // Set key context based on target buffer type
             if self.is_terminal_buffer(buffer_id) {

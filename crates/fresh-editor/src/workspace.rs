@@ -169,6 +169,14 @@ pub struct SerializedFileState {
 
     /// Scroll position (byte offset)
     pub scroll: SerializedScroll,
+
+    /// View mode for this buffer in this split
+    #[serde(default)]
+    pub view_mode: SerializedViewMode,
+
+    /// Compose width for this buffer in this split
+    #[serde(default)]
+    pub compose_width: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -890,6 +898,8 @@ mod tests {
                 top_view_line_offset: 2,
                 left_column: 10,
             },
+            view_mode: SerializedViewMode::Source,
+            compose_width: None,
         };
 
         let json = serde_json::to_string(&file_state).unwrap();

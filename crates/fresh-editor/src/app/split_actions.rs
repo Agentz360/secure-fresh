@@ -17,63 +17,57 @@ use super::Editor;
 impl Editor {
     /// Split the current pane horizontally
     pub fn split_pane_horizontal(&mut self) {
-        // Save current split's view state before creating a new one
-        self.save_current_split_view_state();
-
-        // Share the current buffer with the new split (Emacs-style)
-        let current_buffer_id = self.active_buffer();
-
-        // Split the pane
-        match self.split_manager.split_active(
-            crate::model::event::SplitDirection::Horizontal,
-            current_buffer_id,
-            0.5,
-        ) {
-            Ok(new_split_id) => {
-                // Create independent view state for the new split with the current buffer
-                let mut view_state = SplitViewState::with_buffer(
-                    self.terminal_width,
-                    self.terminal_height,
-                    current_buffer_id,
-                );
-                view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
-                self.split_view_states.insert(new_split_id, view_state);
-                // Restore the new split's view state to the buffer
-                self.restore_current_split_view_state();
-                self.set_status_message(t!("split.horizontal").to_string());
-            }
-            Err(e) => {
-                self.set_status_message(t!("split.error", error = e.to_string()).to_string());
-            }
-        }
+        self.split_pane_impl(crate::model::event::SplitDirection::Horizontal);
     }
 
     /// Split the current pane vertically
     pub fn split_pane_vertical(&mut self) {
-        // Save current split's view state before creating a new one
+        self.split_pane_impl(crate::model::event::SplitDirection::Vertical);
+    }
+
+    /// Common split creation logic
+    fn split_pane_impl(&mut self, direction: crate::model::event::SplitDirection) {
+        // Save current cursors into the keyed state before creating a new split
         self.save_current_split_view_state();
 
-        // Share the current buffer with the new split (Emacs-style)
         let current_buffer_id = self.active_buffer();
+        let active_split = self.split_manager.active_split();
 
-        // Split the pane
-        match self.split_manager.split_active(
-            crate::model::event::SplitDirection::Vertical,
-            current_buffer_id,
-            0.5,
-        ) {
+        // Copy keyed states from source split so the new split inherits per-buffer state
+        let source_keyed_states = self
+            .split_view_states
+            .get(&active_split)
+            .map(|vs| vs.keyed_states.clone());
+
+        match self
+            .split_manager
+            .split_active(direction, current_buffer_id, 0.5)
+        {
             Ok(new_split_id) => {
-                // Create independent view state for the new split with the current buffer
                 let mut view_state = SplitViewState::with_buffer(
                     self.terminal_width,
                     self.terminal_height,
                     current_buffer_id,
                 );
                 view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+
+                // Copy keyed states from source split for OTHER buffers (not the active one).
+                // The active buffer gets a fresh cursor in the new split.
+                if let Some(source) = source_keyed_states {
+                    for (buf_id, buf_state) in source {
+                        if buf_id != current_buffer_id {
+                            view_state.keyed_states.insert(buf_id, buf_state);
+                        }
+                    }
+                }
+
                 self.split_view_states.insert(new_split_id, view_state);
-                // Restore the new split's view state to the buffer
                 self.restore_current_split_view_state();
-                self.set_status_message(t!("split.vertical").to_string());
+                let msg = match direction {
+                    crate::model::event::SplitDirection::Horizontal => t!("split.horizontal"),
+                    crate::model::event::SplitDirection::Vertical => t!("split.vertical"),
+                };
+                self.set_status_message(msg.to_string());
             }
             Err(e) => {
                 self.set_status_message(t!("split.error", error = e.to_string()).to_string());
