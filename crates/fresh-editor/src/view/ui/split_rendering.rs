@@ -347,6 +347,7 @@ struct SplitLayout {
     tabs_rect: Rect,
     content_rect: Rect,
     scrollbar_rect: Rect,
+    horizontal_scrollbar_rect: Rect,
 }
 
 struct ViewPreferences {
@@ -753,6 +754,8 @@ impl SplitRenderer {
         tab_bar_visible: bool,
         use_terminal_bg: bool,
         session_mode: bool,
+        show_vertical_scrollbar: bool,
+        show_horizontal_scrollbar: bool,
     ) -> (
         Vec<(
             crate::model::event::SplitId,
@@ -766,6 +769,14 @@ impl SplitRenderer {
         Vec<(crate::model::event::SplitId, u16, u16, u16)>, // close split button areas
         Vec<(crate::model::event::SplitId, u16, u16, u16)>, // maximize split button areas
         HashMap<crate::model::event::SplitId, Vec<ViewLineMapping>>, // view line mappings for mouse clicks
+        Vec<(
+            crate::model::event::SplitId,
+            BufferId,
+            Rect,
+            usize,
+            usize,
+            usize,
+        )>, // horizontal scrollbar areas (rect + max_content_width + thumb_start + thumb_end)
     ) {
         let _span = tracing::trace_span!("render_content").entered();
 
@@ -776,6 +787,14 @@ impl SplitRenderer {
 
         // Collect areas for mouse handling
         let mut split_areas = Vec::new();
+        let mut horizontal_scrollbar_areas: Vec<(
+            crate::model::event::SplitId,
+            BufferId,
+            Rect,
+            usize,
+            usize,
+            usize,
+        )> = Vec::new();
         let mut tab_layouts: HashMap<
             crate::model::event::SplitId,
             crate::view::ui::tabs::TabLayout,
@@ -789,7 +808,12 @@ impl SplitRenderer {
         for (split_id, buffer_id, split_area) in visible_buffers {
             let is_active = split_id == active_split_id;
 
-            let layout = Self::split_layout(split_area, tab_bar_visible);
+            let layout = Self::split_layout(
+                split_area,
+                tab_bar_visible,
+                show_vertical_scrollbar,
+                show_horizontal_scrollbar,
+            );
             let (split_buffers, tab_scroll_offset) =
                 Self::split_buffers_for_tabs(split_view_states.as_deref(), split_id, buffer_id);
 
@@ -916,14 +940,18 @@ impl SplitRenderer {
                         // Render scrollbar for composite buffer
                         let total_rows = composite.row_count();
                         let content_height = layout.content_rect.height.saturating_sub(1) as usize; // -1 for header
-                        let (thumb_start, thumb_end) = Self::render_composite_scrollbar(
-                            frame,
-                            layout.scrollbar_rect,
-                            total_rows,
-                            view_state.scroll_row,
-                            content_height,
-                            is_active,
-                        );
+                        let (thumb_start, thumb_end) = if show_vertical_scrollbar {
+                            Self::render_composite_scrollbar(
+                                frame,
+                                layout.scrollbar_rect,
+                                total_rows,
+                                view_state.scroll_row,
+                                content_height,
+                                is_active,
+                            )
+                        } else {
+                            (0, 0)
+                        };
 
                         // Store the areas for mouse handling
                         split_areas.push((
@@ -934,6 +962,16 @@ impl SplitRenderer {
                             thumb_start,
                             thumb_end,
                         ));
+                        if show_horizontal_scrollbar {
+                            horizontal_scrollbar_areas.push((
+                                split_id,
+                                buffer_id,
+                                layout.horizontal_scrollbar_rect,
+                                0, // composite buffers don't horizontal-scroll
+                                0,
+                                0,
+                            ));
+                        }
                     }
                     view_line_mappings.insert(split_id, Vec::new());
                     continue;
@@ -1008,18 +1046,50 @@ impl SplitRenderer {
                     buffer_len,
                 );
 
-                // Render scrollbar for this split and get thumb position
-                let (thumb_start, thumb_end) = Self::render_scrollbar(
-                    frame,
-                    state,
-                    &viewport,
-                    layout.scrollbar_rect,
-                    is_active,
-                    theme,
-                    large_file_threshold_bytes,
-                    total_lines,
-                    top_line,
-                );
+                // Render vertical scrollbar for this split and get thumb position
+                let (thumb_start, thumb_end) = if show_vertical_scrollbar {
+                    Self::render_scrollbar(
+                        frame,
+                        state,
+                        &viewport,
+                        layout.scrollbar_rect,
+                        is_active,
+                        theme,
+                        large_file_threshold_bytes,
+                        total_lines,
+                        top_line,
+                    )
+                } else {
+                    (0, 0)
+                };
+
+                // Compute the actual max line length for horizontal scrollbar
+                let max_content_width = if show_horizontal_scrollbar && !viewport.line_wrap_enabled
+                {
+                    let mcw = Self::compute_max_line_length(state, &mut viewport);
+                    // Clamp left_column so content can't scroll past the end of the longest line
+                    let visible_width = viewport.width as usize;
+                    let max_scroll = mcw.saturating_sub(visible_width);
+                    if viewport.left_column > max_scroll {
+                        viewport.left_column = max_scroll;
+                    }
+                    mcw
+                } else {
+                    0
+                };
+
+                // Render horizontal scrollbar for this split
+                let (hthumb_start, hthumb_end) = if show_horizontal_scrollbar {
+                    Self::render_horizontal_scrollbar(
+                        frame,
+                        &viewport,
+                        layout.horizontal_scrollbar_rect,
+                        is_active,
+                        max_content_width,
+                    )
+                } else {
+                    (0, 0)
+                };
 
                 // Restore the original cursors after rendering content and scrollbar
                 Self::restore_split_state(state, saved_cursors);
@@ -1048,6 +1118,16 @@ impl SplitRenderer {
                     thumb_start,
                     thumb_end,
                 ));
+                if show_horizontal_scrollbar {
+                    horizontal_scrollbar_areas.push((
+                        split_id,
+                        buffer_id,
+                        layout.horizontal_scrollbar_rect,
+                        max_content_width,
+                        hthumb_start,
+                        hthumb_end,
+                    ));
+                }
             }
         }
 
@@ -1063,6 +1143,7 @@ impl SplitRenderer {
             close_split_areas,
             maximize_split_areas,
             view_line_mappings,
+            horizontal_scrollbar_areas,
         )
     }
 
@@ -1735,28 +1816,51 @@ impl SplitRenderer {
         (thumb_start, thumb_end)
     }
 
-    fn split_layout(split_area: Rect, tab_bar_visible: bool) -> SplitLayout {
+    fn split_layout(
+        split_area: Rect,
+        tab_bar_visible: bool,
+        show_vertical_scrollbar: bool,
+        show_horizontal_scrollbar: bool,
+    ) -> SplitLayout {
         let tabs_height = if tab_bar_visible { 1u16 } else { 0u16 };
-        let scrollbar_width = 1u16;
+        let scrollbar_width = if show_vertical_scrollbar { 1u16 } else { 0u16 };
+        let hscrollbar_height = if show_horizontal_scrollbar {
+            1u16
+        } else {
+            0u16
+        };
 
         let tabs_rect = Rect::new(split_area.x, split_area.y, split_area.width, tabs_height);
         let content_rect = Rect::new(
             split_area.x,
             split_area.y + tabs_height,
             split_area.width.saturating_sub(scrollbar_width),
-            split_area.height.saturating_sub(tabs_height),
+            split_area
+                .height
+                .saturating_sub(tabs_height)
+                .saturating_sub(hscrollbar_height),
         );
         let scrollbar_rect = Rect::new(
             split_area.x + split_area.width.saturating_sub(scrollbar_width),
             split_area.y + tabs_height,
             scrollbar_width,
-            split_area.height.saturating_sub(tabs_height),
+            split_area
+                .height
+                .saturating_sub(tabs_height)
+                .saturating_sub(hscrollbar_height),
+        );
+        let horizontal_scrollbar_rect = Rect::new(
+            split_area.x,
+            split_area.y + split_area.height.saturating_sub(hscrollbar_height),
+            split_area.width.saturating_sub(scrollbar_width),
+            hscrollbar_height,
         );
 
         SplitLayout {
             tabs_rect,
             content_rect,
             scrollbar_rect,
+            horizontal_scrollbar_rect,
         }
     }
 
@@ -2068,6 +2172,124 @@ impl SplitRenderer {
         }
 
         // Return thumb position for mouse hit testing
+        (thumb_start, thumb_end)
+    }
+
+    /// Compute the maximum line length encountered so far (in display columns).
+    /// Only scans the currently visible lines (plus a small margin) and updates
+    /// the running maximum stored in the viewport. This avoids scanning the
+    /// entire file, which would break large file support.
+    fn compute_max_line_length(
+        state: &mut EditorState,
+        viewport: &mut crate::view::viewport::Viewport,
+    ) -> usize {
+        let buffer_len = state.buffer.len();
+        let visible_width = viewport.width as usize;
+
+        if buffer_len == 0 {
+            return viewport.max_line_length_seen.max(visible_width);
+        }
+
+        // Scan only the visible lines (with a small margin) to update the running maximum
+        let visible_lines = viewport.height as usize + 5; // small margin beyond visible area
+        let mut lines_scanned = 0usize;
+        let mut iter = state.buffer.line_iterator(viewport.top_byte, 80);
+        loop {
+            if lines_scanned >= visible_lines {
+                break;
+            }
+            match iter.next_line() {
+                Some((_byte_offset, content)) => {
+                    let display_len = content.len();
+                    if display_len > viewport.max_line_length_seen {
+                        viewport.max_line_length_seen = display_len;
+                    }
+                    lines_scanned += 1;
+                }
+                None => break,
+            }
+        }
+
+        // Return at least visible_width (not left_column + visible_width) to avoid
+        // a feedback loop where scrolling right increases the limit further
+        viewport.max_line_length_seen.max(visible_width)
+    }
+
+    /// Render a horizontal scrollbar for a split.
+    /// `max_content_width` should be the actual max line length (from compute_max_line_length).
+    /// Returns (thumb_start_col, thumb_end_col) for mouse hit testing.
+    fn render_horizontal_scrollbar(
+        frame: &mut Frame,
+        viewport: &crate::view::viewport::Viewport,
+        hscrollbar_rect: Rect,
+        is_active: bool,
+        max_content_width: usize,
+    ) -> (usize, usize) {
+        let width = hscrollbar_rect.width as usize;
+        if width == 0 || hscrollbar_rect.height == 0 {
+            return (0, 0);
+        }
+
+        let track_color = if is_active {
+            Color::DarkGray
+        } else {
+            Color::Black
+        };
+
+        // When line wrapping is enabled, render empty track
+        if viewport.line_wrap_enabled {
+            for col in 0..width {
+                let cell_area = Rect::new(hscrollbar_rect.x + col as u16, hscrollbar_rect.y, 1, 1);
+                let paragraph = Paragraph::new(" ").style(Style::default().bg(track_color));
+                frame.render_widget(paragraph, cell_area);
+            }
+            return (0, width);
+        }
+
+        let visible_width = viewport.width as usize;
+        let left_column = viewport.left_column;
+
+        // If content fits entirely in viewport, fill the entire scrollbar with thumb
+        let max_scroll = max_content_width.saturating_sub(visible_width);
+
+        let (thumb_start, thumb_size) = if max_scroll == 0 {
+            (0, width)
+        } else {
+            // Calculate thumb size proportional to visible/total ratio
+            let thumb_size_raw =
+                ((visible_width as f64 / max_content_width as f64) * width as f64).ceil() as usize;
+            let thumb_size = thumb_size_raw.max(2).min(width); // min 2 cols for visibility
+
+            // Calculate thumb position
+            let scroll_ratio = left_column.min(max_scroll) as f64 / max_scroll as f64;
+            let max_thumb_start = width.saturating_sub(thumb_size);
+            let thumb_start = (scroll_ratio * max_thumb_start as f64).round() as usize;
+
+            (thumb_start, thumb_size)
+        };
+
+        let thumb_end = thumb_start + thumb_size;
+
+        let thumb_color = if is_active {
+            Color::Gray
+        } else {
+            Color::DarkGray
+        };
+
+        // Render as background fills (horizontal)
+        for col in 0..width {
+            let cell_area = Rect::new(hscrollbar_rect.x + col as u16, hscrollbar_rect.y, 1, 1);
+
+            let style = if col >= thumb_start && col < thumb_end {
+                Style::default().bg(thumb_color)
+            } else {
+                Style::default().bg(track_color)
+            };
+
+            let paragraph = Paragraph::new(" ").style(style);
+            frame.render_widget(paragraph, cell_area);
+        }
+
         (thumb_start, thumb_end)
     }
 

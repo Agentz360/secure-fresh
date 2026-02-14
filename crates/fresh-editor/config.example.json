@@ -31,6 +31,10 @@
     "custom_ignore_patterns": [],
     "width": 0.3
   },
+  "clipboard": {
+    "use_osc52": true,
+    "use_system_clipboard": true
+  },
   "terminal": {
     "jump_to_end_on_output": true
   },
@@ -865,6 +869,23 @@
             "args": {},
             "when": null,
             "checkbox": "mouse_capture"
+          },
+          {
+            "separator": true
+          },
+          {
+            "label": "Vertical Scrollbar",
+            "action": "toggle_vertical_scrollbar",
+            "args": {},
+            "when": null,
+            "checkbox": "vertical_scrollbar"
+          },
+          {
+            "label": "Horizontal Scrollbar",
+            "action": "toggle_horizontal_scrollbar",
+            "args": {},
+            "when": null,
+            "checkbox": "horizontal_scrollbar"
           },
           {
             "separator": true

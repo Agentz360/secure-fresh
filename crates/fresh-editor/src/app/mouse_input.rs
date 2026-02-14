@@ -156,6 +156,9 @@ impl Editor {
                 self.mouse_state.dragging_scrollbar = None;
                 self.mouse_state.drag_start_row = None;
                 self.mouse_state.drag_start_top_byte = None;
+                self.mouse_state.dragging_horizontal_scrollbar = None;
+                self.mouse_state.drag_start_hcol = None;
+                self.mouse_state.drag_start_left_column = None;
                 self.mouse_state.dragging_separator = None;
                 self.mouse_state.drag_start_position = None;
                 self.mouse_state.drag_start_ratio = None;
@@ -216,8 +219,16 @@ impl Editor {
                 self.update_lsp_hover_state(col, row);
             }
             MouseEventKind::ScrollUp => {
-                // Check if prompt with suggestions is active and should handle scroll
-                if self.handle_prompt_scroll(-3) {
+                // Shift+ScrollUp => horizontal scroll left
+                if mouse_event
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::SHIFT)
+                {
+                    self.handle_horizontal_scroll(col, row, -3)?;
+                    self.sync_split_view_state_to_editor_state();
+                    needs_render = true;
+                } else if self.handle_prompt_scroll(-3) {
+                    // Check if prompt with suggestions is active and should handle scroll
                     needs_render = true;
                 } else if self.is_file_open_active() && self.handle_file_open_scroll(-3) {
                     // Check if file browser is active and should handle scroll
@@ -242,8 +253,16 @@ impl Editor {
                 }
             }
             MouseEventKind::ScrollDown => {
-                // Check if prompt with suggestions is active and should handle scroll
-                if self.handle_prompt_scroll(3) {
+                // Shift+ScrollDown => horizontal scroll right
+                if mouse_event
+                    .modifiers
+                    .contains(crossterm::event::KeyModifiers::SHIFT)
+                {
+                    self.handle_horizontal_scroll(col, row, 3)?;
+                    self.sync_split_view_state_to_editor_state();
+                    needs_render = true;
+                } else if self.handle_prompt_scroll(3) {
+                    // Check if prompt with suggestions is active and should handle scroll
                     needs_render = true;
                 } else if self.is_file_open_active() && self.handle_file_open_scroll(3) {
                     needs_render = true;
@@ -265,6 +284,18 @@ impl Editor {
                     self.sync_split_view_state_to_editor_state();
                     needs_render = true;
                 }
+            }
+            MouseEventKind::ScrollLeft => {
+                // Native horizontal scroll left
+                self.handle_horizontal_scroll(col, row, -3)?;
+                self.sync_split_view_state_to_editor_state();
+                needs_render = true;
+            }
+            MouseEventKind::ScrollRight => {
+                // Native horizontal scroll right
+                self.handle_horizontal_scroll(col, row, 3)?;
+                self.sync_split_view_state_to_editor_state();
+                needs_render = true;
             }
             MouseEventKind::Down(MouseButton::Right) => {
                 // Handle right-click for context menus
@@ -1402,6 +1433,78 @@ impl Editor {
             return Ok(());
         }
 
+        // Check if click is on horizontal scrollbar
+        let hscrollbar_hit = self
+            .cached_layout
+            .horizontal_scrollbar_areas
+            .iter()
+            .find_map(
+                |(
+                    split_id,
+                    buffer_id,
+                    hscrollbar_rect,
+                    max_content_width,
+                    thumb_start,
+                    thumb_end,
+                )| {
+                    if col >= hscrollbar_rect.x
+                        && col < hscrollbar_rect.x + hscrollbar_rect.width
+                        && row >= hscrollbar_rect.y
+                        && row < hscrollbar_rect.y + hscrollbar_rect.height
+                    {
+                        let relative_col = col.saturating_sub(hscrollbar_rect.x) as usize;
+                        let is_on_thumb = relative_col >= *thumb_start && relative_col < *thumb_end;
+                        Some((
+                            *split_id,
+                            *buffer_id,
+                            *hscrollbar_rect,
+                            *max_content_width,
+                            is_on_thumb,
+                        ))
+                    } else {
+                        None
+                    }
+                },
+            );
+
+        if let Some((split_id, buffer_id, hscrollbar_rect, max_content_width, is_on_thumb)) =
+            hscrollbar_hit
+        {
+            self.focus_split(split_id, buffer_id);
+            self.mouse_state.dragging_horizontal_scrollbar = Some(split_id);
+
+            if is_on_thumb {
+                // Click on thumb - start drag from current position (don't jump)
+                self.mouse_state.drag_start_hcol = Some(col);
+                if let Some(view_state) = self.split_view_states.get(&split_id) {
+                    self.mouse_state.drag_start_left_column = Some(view_state.viewport.left_column);
+                }
+            } else {
+                // Click on track - jump to position
+                self.mouse_state.drag_start_hcol = None;
+                self.mouse_state.drag_start_left_column = None;
+
+                let relative_col = col.saturating_sub(hscrollbar_rect.x) as f64;
+                let track_width = hscrollbar_rect.width as f64;
+                let ratio = if track_width > 1.0 {
+                    (relative_col / (track_width - 1.0)).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+
+                if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
+                    let visible_width = view_state.viewport.width as usize;
+                    let max_scroll = max_content_width.saturating_sub(visible_width);
+                    let target_col = (ratio * max_scroll as f64).round() as usize;
+                    view_state.viewport.left_column = target_col.min(max_scroll);
+                    view_state.viewport.set_skip_ensure_visible();
+                }
+            }
+
+            self.sync_split_view_state_to_editor_state();
+            return Ok(());
+        }
+
         // Check if click is on status bar indicators
         if let Some((status_row, _status_x, _status_width)) = self.cached_layout.status_bar_area {
             if row == status_row {
@@ -1709,6 +1812,67 @@ impl Editor {
                             *scrollbar_rect,
                         )?;
                     }
+                    return Ok(());
+                }
+            }
+        }
+
+        // If dragging horizontal scrollbar, update horizontal scroll position
+        if let Some(dragging_split_id) = self.mouse_state.dragging_horizontal_scrollbar {
+            for (
+                split_id,
+                _buffer_id,
+                hscrollbar_rect,
+                max_content_width,
+                thumb_start,
+                thumb_end,
+            ) in &self.cached_layout.horizontal_scrollbar_areas
+            {
+                if *split_id == dragging_split_id {
+                    let track_width = hscrollbar_rect.width as f64;
+                    if track_width <= 1.0 {
+                        break;
+                    }
+
+                    if let (Some(drag_start_hcol), Some(drag_start_left_column)) = (
+                        self.mouse_state.drag_start_hcol,
+                        self.mouse_state.drag_start_left_column,
+                    ) {
+                        // Relative drag from thumb - move proportionally to mouse offset
+                        // Use thumb size to compute the correct ratio so thumb tracks with mouse
+                        let col_offset = (col as i32) - (drag_start_hcol as i32);
+                        if let Some(view_state) = self.split_view_states.get_mut(&dragging_split_id)
+                        {
+                            let visible_width = view_state.viewport.width as usize;
+                            let max_scroll = max_content_width.saturating_sub(visible_width);
+                            if max_scroll > 0 {
+                                let thumb_size = thumb_end.saturating_sub(*thumb_start).max(1);
+                                let track_travel = (track_width - thumb_size as f64).max(1.0);
+                                let scroll_per_pixel = max_scroll as f64 / track_travel;
+                                let scroll_offset =
+                                    (col_offset as f64 * scroll_per_pixel).round() as i64;
+                                let new_left =
+                                    (drag_start_left_column as i64 + scroll_offset).max(0) as usize;
+                                view_state.viewport.left_column = new_left.min(max_scroll);
+                                view_state.viewport.set_skip_ensure_visible();
+                            }
+                        }
+                    } else {
+                        // Jump drag (started from track) - jump to absolute position
+                        let relative_col = col.saturating_sub(hscrollbar_rect.x) as f64;
+                        let ratio = (relative_col / (track_width - 1.0)).clamp(0.0, 1.0);
+
+                        if let Some(view_state) = self.split_view_states.get_mut(&dragging_split_id)
+                        {
+                            let visible_width = view_state.viewport.width as usize;
+                            let max_scroll = max_content_width.saturating_sub(visible_width);
+                            let target_col = (ratio * max_scroll as f64).round() as usize;
+                            view_state.viewport.left_column = target_col.min(max_scroll);
+                            view_state.viewport.set_skip_ensure_visible();
+                        }
+                    }
+
+                    self.sync_split_view_state_to_editor_state();
                     return Ok(());
                 }
             }

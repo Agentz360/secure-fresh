@@ -77,6 +77,29 @@ impl Editor {
         self.tab_bar_visible
     }
 
+    /// Toggle vertical scrollbar visibility
+    pub fn toggle_vertical_scrollbar(&mut self) {
+        self.config.editor.show_vertical_scrollbar = !self.config.editor.show_vertical_scrollbar;
+        let status = if self.config.editor.show_vertical_scrollbar {
+            t!("toggle.vertical_scrollbar_shown")
+        } else {
+            t!("toggle.vertical_scrollbar_hidden")
+        };
+        self.set_status_message(status.to_string());
+    }
+
+    /// Toggle horizontal scrollbar visibility
+    pub fn toggle_horizontal_scrollbar(&mut self) {
+        self.config.editor.show_horizontal_scrollbar =
+            !self.config.editor.show_horizontal_scrollbar;
+        let status = if self.config.editor.show_horizontal_scrollbar {
+            t!("toggle.horizontal_scrollbar_shown")
+        } else {
+            t!("toggle.horizontal_scrollbar_hidden")
+        };
+        self.set_status_message(status.to_string());
+    }
+
     /// Reset buffer settings (tab_size, use_tabs, show_whitespace_tabs) to config defaults
     pub fn reset_buffer_settings(&mut self) {
         let buffer_id = self.active_buffer();
@@ -258,6 +281,9 @@ impl Editor {
 
         // Always reload keybindings (complex types don't implement PartialEq)
         self.keybindings = KeybindingResolver::new(&self.config);
+
+        // Update clipboard configuration
+        self.clipboard.apply_config(&self.config.clipboard);
 
         // Update LSP configs
         if let Some(ref mut lsp) = self.lsp {

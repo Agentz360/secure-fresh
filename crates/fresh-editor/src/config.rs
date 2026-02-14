@@ -381,6 +381,10 @@ pub struct Config {
     #[serde(default)]
     pub file_browser: FileBrowserConfig,
 
+    /// Clipboard settings (which clipboard methods to use)
+    #[serde(default)]
+    pub clipboard: ClipboardConfig,
+
     /// Terminal settings
     #[serde(default)]
     pub terminal: TerminalConfig,
@@ -475,6 +479,21 @@ pub struct EditorConfig {
     #[serde(default = "default_true")]
     #[schemars(extend("x-section" = "Display"))]
     pub show_tab_bar: bool,
+
+    /// Whether the vertical scrollbar is visible in each split pane.
+    /// Can be toggled at runtime via command palette or keybinding.
+    /// Default: true
+    #[serde(default = "default_true")]
+    #[schemars(extend("x-section" = "Display"))]
+    pub show_vertical_scrollbar: bool,
+
+    /// Whether the horizontal scrollbar is visible in each split pane.
+    /// The horizontal scrollbar appears when line wrap is disabled and content extends beyond the viewport.
+    /// Can be toggled at runtime via command palette or keybinding.
+    /// Default: false
+    #[serde(default = "default_false")]
+    #[schemars(extend("x-section" = "Display"))]
+    pub show_horizontal_scrollbar: bool,
 
     /// Use the terminal's default background color instead of the theme's editor background.
     /// When enabled, the editor background inherits from the terminal emulator,
@@ -822,6 +841,8 @@ impl Default for EditorConfig {
             accept_suggestion_on_enter: default_accept_suggestion_on_enter(),
             show_menu_bar: true,
             show_tab_bar: true,
+            show_vertical_scrollbar: true,
+            show_horizontal_scrollbar: false,
             use_terminal_bg: false,
         }
     }
@@ -853,6 +874,38 @@ pub struct FileExplorerConfig {
 
 fn default_explorer_width() -> f32 {
     0.3 // 30% of screen width
+}
+
+/// Clipboard configuration
+///
+/// Controls which clipboard methods are used for copy/paste operations.
+/// By default, all methods are enabled and the editor tries them in order:
+/// 1. OSC 52 escape sequences (works in modern terminals like Kitty, Alacritty, Wezterm)
+/// 2. System clipboard via X11/Wayland APIs (works in Gnome Console, XFCE Terminal, etc.)
+/// 3. Internal clipboard (always available as fallback)
+///
+/// If you experience hangs or issues (e.g., when using PuTTY or certain SSH setups),
+/// you can disable specific methods.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct ClipboardConfig {
+    /// Enable OSC 52 escape sequences for clipboard access (default: true)
+    /// Disable this if your terminal doesn't support OSC 52 or if it causes hangs
+    #[serde(default = "default_true")]
+    pub use_osc52: bool,
+
+    /// Enable system clipboard access via X11/Wayland APIs (default: true)
+    /// Disable this if you don't have a display server or it causes issues
+    #[serde(default = "default_true")]
+    pub use_system_clipboard: bool,
+}
+
+impl Default for ClipboardConfig {
+    fn default() -> Self {
+        Self {
+            use_osc52: true,
+            use_system_clipboard: true,
+        }
+    }
 }
 
 /// Terminal configuration
@@ -1337,6 +1390,7 @@ impl Default for Config {
             editor: EditorConfig::default(),
             file_explorer: FileExplorerConfig::default(),
             file_browser: FileBrowserConfig::default(),
+            clipboard: ClipboardConfig::default(),
             terminal: TerminalConfig::default(),
             keybindings: vec![], // User customizations only; defaults come from active_keybinding_map
             keybinding_maps: HashMap::new(), // User-defined maps go here
@@ -1599,6 +1653,21 @@ impl MenuConfig {
                         args: HashMap::new(),
                         when: None,
                         checkbox: Some(context_keys::MOUSE_CAPTURE.to_string()),
+                    },
+                    MenuItem::Separator { separator: true },
+                    MenuItem::Action {
+                        label: t!("menu.view.vertical_scrollbar").to_string(),
+                        action: "toggle_vertical_scrollbar".to_string(),
+                        args: HashMap::new(),
+                        when: None,
+                        checkbox: Some(context_keys::VERTICAL_SCROLLBAR.to_string()),
+                    },
+                    MenuItem::Action {
+                        label: t!("menu.view.horizontal_scrollbar").to_string(),
+                        action: "toggle_horizontal_scrollbar".to_string(),
+                        args: HashMap::new(),
+                        when: None,
+                        checkbox: Some(context_keys::HORIZONTAL_SCROLLBAR.to_string()),
                     },
                     MenuItem::Separator { separator: true },
                     MenuItem::Action {
