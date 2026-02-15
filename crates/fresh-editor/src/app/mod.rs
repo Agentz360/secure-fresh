@@ -2671,14 +2671,23 @@ impl Editor {
     ///
     /// Called after buffer content changes (Insert/Delete) to mark
     /// layouts as dirty, forcing rebuild on next access.
+    /// Also clears any cached view transform since its token source_offsets
+    /// become stale after buffer edits.
     fn invalidate_layouts_for_buffer(&mut self, buffer_id: BufferId) {
         // Find all splits that display this buffer
         let splits_for_buffer = self.split_manager.splits_for_buffer(buffer_id);
 
-        // Invalidate layout for each split
+        // Invalidate layout and clear stale view transform for each split
         for split_id in splits_for_buffer {
             if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
                 view_state.invalidate_layout();
+                // Clear cached view transform — its token source_offsets are from
+                // before the edit and would cause conceals to be applied at wrong positions.
+                // The view_transform_request hook will fire on the next render to rebuild it.
+                view_state.view_transform = None;
+                // Mark as stale so that any pending SubmitViewTransform commands
+                // (from a previous view_transform_request) are rejected.
+                view_state.view_transform_stale = true;
             }
         }
     }
@@ -3471,7 +3480,11 @@ impl Editor {
         if let Some(prompt) = self.prompt.take() {
             let selected_index = prompt.selected_suggestion;
             // For prompts with suggestions, prefer the selected suggestion over raw input
-            let final_input = if matches!(
+            let final_input = if prompt.sync_input_on_navigate {
+                // When sync_input_on_navigate is set, the input field is kept in sync
+                // with the selected suggestion, so always use the input value
+                prompt.input.clone()
+            } else if matches!(
                 prompt.prompt_type,
                 PromptType::Command
                     | PromptType::OpenFile
@@ -4305,12 +4318,24 @@ impl Editor {
                     .get(buffer_id)
                     .map(|m| m.is_virtual())
                     .unwrap_or(false);
+                let view_mode = match state.compose.view_mode {
+                    crate::state::ViewMode::Source => "source",
+                    crate::state::ViewMode::Compose => "compose",
+                };
+                // Find compose_width from any split that has this buffer active
+                let compose_width = self
+                    .split_view_states
+                    .values()
+                    .find(|vs| vs.open_buffers.contains(buffer_id))
+                    .and_then(|vs| vs.compose_width);
                 let buffer_info = BufferInfo {
                     id: *buffer_id,
                     path: state.buffer.file_path().map(|p| p.to_path_buf()),
                     modified: state.buffer.is_modified(),
                     length: state.buffer.len(),
                     is_virtual,
+                    view_mode: view_mode.to_string(),
+                    compose_width,
                 };
                 snapshot.buffers.insert(*buffer_id, buffer_info);
 
@@ -4516,6 +4541,53 @@ impl Editor {
                 self.handle_clear_virtual_text_namespace(buffer_id, namespace);
             }
 
+            // ==================== Conceal Commands ====================
+            PluginCommand::AddConceal {
+                buffer_id,
+                namespace,
+                start,
+                end,
+                replacement,
+            } => {
+                self.handle_add_conceal(buffer_id, namespace, start, end, replacement);
+            }
+            PluginCommand::ClearConcealNamespace {
+                buffer_id,
+                namespace,
+            } => {
+                self.handle_clear_conceal_namespace(buffer_id, namespace);
+            }
+            PluginCommand::ClearConcealsInRange {
+                buffer_id,
+                start,
+                end,
+            } => {
+                self.handle_clear_conceals_in_range(buffer_id, start, end);
+            }
+
+            // ==================== Soft Break Commands ====================
+            PluginCommand::AddSoftBreak {
+                buffer_id,
+                namespace,
+                position,
+                indent,
+            } => {
+                self.handle_add_soft_break(buffer_id, namespace, position, indent);
+            }
+            PluginCommand::ClearSoftBreakNamespace {
+                buffer_id,
+                namespace,
+            } => {
+                self.handle_clear_soft_break_namespace(buffer_id, namespace);
+            }
+            PluginCommand::ClearSoftBreaksInRange {
+                buffer_id,
+                start,
+                end,
+            } => {
+                self.handle_clear_soft_breaks_in_range(buffer_id, start, end);
+            }
+
             // ==================== Menu Commands ====================
             PluginCommand::AddMenuItem {
                 menu_label,
@@ -4597,6 +4669,9 @@ impl Editor {
             }
             PluginCommand::SetLineNumbers { buffer_id, enabled } => {
                 self.handle_set_line_numbers(buffer_id, enabled);
+            }
+            PluginCommand::SetViewMode { buffer_id, mode } => {
+                self.handle_set_view_mode(buffer_id, &mode);
             }
             PluginCommand::SetLineWrap {
                 buffer_id,
@@ -4695,6 +4770,11 @@ impl Editor {
             }
             PluginCommand::SetPromptSuggestions { suggestions } => {
                 self.handle_set_prompt_suggestions(suggestions);
+            }
+            PluginCommand::SetPromptInputSync { sync } => {
+                if let Some(prompt) = &mut self.prompt {
+                    prompt.sync_input_on_navigate = sync;
+                }
             }
 
             // ==================== Command/Mode Registration ====================

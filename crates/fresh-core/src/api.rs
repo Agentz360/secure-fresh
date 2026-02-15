@@ -315,6 +315,10 @@ pub struct BufferInfo {
     pub length: usize,
     /// Whether this is a virtual buffer (not backed by a file)
     pub is_virtual: bool,
+    /// Current view mode: "source" or "compose"
+    pub view_mode: String,
+    /// Compose width (if set), from the active split's view state
+    pub compose_width: Option<u16>,
 }
 
 fn serialize_path<S: serde::Serializer>(path: &Option<PathBuf>, s: S) -> Result<S::Ok, S::Error> {
@@ -480,9 +484,19 @@ pub struct OverlayOptions {
     #[serde(default)]
     pub italic: bool,
 
+    /// Whether to render with strikethrough
+    #[serde(default)]
+    pub strikethrough: bool,
+
     /// Whether to extend background color to end of line
     #[serde(default)]
     pub extend_to_line_end: bool,
+
+    /// Optional URL for OSC 8 terminal hyperlinks.
+    /// When set, the overlay text becomes a clickable hyperlink in terminals
+    /// that support OSC 8 escape sequences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 impl Default for OverlayOptions {
@@ -493,7 +507,9 @@ impl Default for OverlayOptions {
             underline: false,
             bold: false,
             italic: false,
+            strikethrough: false,
             extend_to_line_end: false,
+            url: None,
         }
     }
 }
@@ -882,6 +898,9 @@ pub enum PluginCommand {
     /// Enable/disable line numbers for a buffer
     SetLineNumbers { buffer_id: BufferId, enabled: bool },
 
+    /// Set the view mode for a buffer ("source" or "compose")
+    SetViewMode { buffer_id: BufferId, mode: String },
+
     /// Enable/disable line wrapping for a buffer
     SetLineWrap {
         buffer_id: BufferId,
@@ -971,6 +990,59 @@ pub enum PluginCommand {
         namespace: String,
     },
 
+    /// Add a conceal range that hides or replaces a byte range during rendering.
+    /// Used for Typora-style seamless markdown: hiding syntax markers like `**`, `[](url)`, etc.
+    AddConceal {
+        buffer_id: BufferId,
+        /// Namespace for bulk removal (shared with overlay namespace system)
+        namespace: OverlayNamespace,
+        /// Byte range to conceal
+        start: usize,
+        end: usize,
+        /// Optional replacement text to show instead. None = hide completely.
+        replacement: Option<String>,
+    },
+
+    /// Clear all conceal ranges in a namespace
+    ClearConcealNamespace {
+        buffer_id: BufferId,
+        namespace: OverlayNamespace,
+    },
+
+    /// Remove all conceal ranges that overlap with a byte range
+    /// Used for targeted invalidation when content in a range changes
+    ClearConcealsInRange {
+        buffer_id: BufferId,
+        start: usize,
+        end: usize,
+    },
+
+    /// Add a soft break point for marker-based line wrapping.
+    /// The break is stored as a marker that auto-adjusts on buffer edits,
+    /// eliminating the flicker caused by async view_transform round-trips.
+    AddSoftBreak {
+        buffer_id: BufferId,
+        /// Namespace for bulk removal (shared with overlay namespace system)
+        namespace: OverlayNamespace,
+        /// Byte offset where the break should be injected
+        position: usize,
+        /// Number of hanging indent spaces after the break
+        indent: u16,
+    },
+
+    /// Clear all soft breaks in a namespace
+    ClearSoftBreakNamespace {
+        buffer_id: BufferId,
+        namespace: OverlayNamespace,
+    },
+
+    /// Remove all soft breaks that fall within a byte range
+    ClearSoftBreaksInRange {
+        buffer_id: BufferId,
+        start: usize,
+        end: usize,
+    },
+
     /// Refresh lines for a buffer (clear seen_lines cache to re-trigger lines_changed hook)
     RefreshLines { buffer_id: BufferId },
 
@@ -1053,6 +1125,9 @@ pub enum PluginCommand {
     /// Update the suggestions list for the current prompt
     /// Uses the editor's Suggestion type
     SetPromptSuggestions { suggestions: Vec<Suggestion> },
+
+    /// When enabled, navigating suggestions updates the prompt input text
+    SetPromptInputSync { sync: bool },
 
     /// Add a menu item to an existing menu
     /// Add a menu item to an existing menu
@@ -2280,6 +2355,11 @@ impl PluginApi {
         self.send_command(PluginCommand::SetPromptSuggestions { suggestions })
     }
 
+    /// Enable/disable syncing prompt input text when navigating suggestions
+    pub fn set_prompt_input_sync(&self, sync: bool) -> Result<(), String> {
+        self.send_command(PluginCommand::SetPromptInputSync { sync })
+    }
+
     /// Add a menu item to an existing menu
     pub fn add_menu_item(
         &self,
@@ -2562,7 +2642,9 @@ mod tests {
                 underline: true,
                 bold: false,
                 italic: false,
+                strikethrough: false,
                 extend_to_line_end: false,
+                url: None,
             },
         );
         assert!(result.is_ok());
@@ -2648,6 +2730,8 @@ mod tests {
                 modified: true,
                 length: 100,
                 is_virtual: false,
+                view_mode: "source".to_string(),
+                compose_width: None,
             };
             snapshot.buffers.insert(BufferId(1), buffer_info);
         }
@@ -2688,6 +2772,8 @@ mod tests {
                     modified: false,
                     length: 50,
                     is_virtual: false,
+                    view_mode: "source".to_string(),
+                    compose_width: None,
                 },
             );
             snapshot.buffers.insert(
@@ -2698,6 +2784,8 @@ mod tests {
                     modified: true,
                     length: 100,
                     is_virtual: false,
+                    view_mode: "source".to_string(),
+                    compose_width: None,
                 },
             );
             snapshot.buffers.insert(
@@ -2708,6 +2796,8 @@ mod tests {
                     modified: false,
                     length: 0,
                     is_virtual: true,
+                    view_mode: "source".to_string(),
+                    compose_width: None,
                 },
             );
         }
