@@ -229,6 +229,27 @@ impl PluginManager {
         }
     }
 
+    /// Process commands, blocking until `HookCompleted` for the given hook arrives.
+    /// See [`PluginThreadHandle::process_commands_until_hook_completed`] for details.
+    pub fn process_commands_until_hook_completed(
+        &mut self,
+        hook_name: &str,
+        timeout: std::time::Duration,
+    ) -> Vec<super::api::PluginCommand> {
+        #[cfg(feature = "plugins")]
+        {
+            if let Some(ref mut manager) = self.inner {
+                return manager.process_commands_until_hook_completed(hook_name, timeout);
+            }
+            Vec::new()
+        }
+        #[cfg(not(feature = "plugins"))]
+        {
+            let _ = (hook_name, timeout);
+            Vec::new()
+        }
+    }
+
     /// Get the state snapshot handle for updating editor state.
     #[cfg(feature = "plugins")]
     pub fn state_snapshot_handle(&self) -> Option<Arc<RwLock<super::api::EditorStateSnapshot>>> {

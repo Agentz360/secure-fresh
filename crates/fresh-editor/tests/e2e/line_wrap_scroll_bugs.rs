@@ -370,26 +370,8 @@ fn test_mouse_wheel_with_multiline_file_one_long_line() {
         short_line1, short_line2, short_line3, long_line, short_line4, short_line5
     );
 
-    for ch in content.chars() {
-        if ch == '\n' {
-            harness
-                .send_key(
-                    crossterm::event::KeyCode::Enter,
-                    crossterm::event::KeyModifiers::NONE,
-                )
-                .unwrap();
-        } else {
-            harness.type_text(&ch.to_string()).unwrap();
-        }
-    }
-
-    // Move cursor to the beginning
-    harness
-        .send_key(
-            crossterm::event::KeyCode::Home,
-            crossterm::event::KeyModifiers::CONTROL,
-        )
-        .unwrap();
+    // Load via temp file — much faster than typing 2000+ chars one-by-one
+    let _fixture = harness.load_buffer_from_text(&content).unwrap();
     harness.render().unwrap();
 
     let screen_before = harness.screen_to_string();
@@ -467,27 +449,8 @@ fn test_scrollbar_click_with_multiline_file_one_long_line() {
         short_line1, short_line2, short_line3, long_line, short_line5, short_line6
     );
 
-    // Type the content
-    for ch in content.chars() {
-        if ch == '\n' {
-            harness
-                .send_key(
-                    crossterm::event::KeyCode::Enter,
-                    crossterm::event::KeyModifiers::NONE,
-                )
-                .unwrap();
-        } else {
-            harness.type_text(&ch.to_string()).unwrap();
-        }
-    }
-
-    // Move cursor to the beginning
-    harness
-        .send_key(
-            crossterm::event::KeyCode::Home,
-            crossterm::event::KeyModifiers::CONTROL,
-        )
-        .unwrap();
+    // Load via temp file — much faster than typing 2000+ chars one-by-one
+    let _fixture = harness.load_buffer_from_text(&content).unwrap();
     harness.render().unwrap();
 
     let screen_before = harness.screen_to_string();
@@ -556,25 +519,8 @@ fn test_scrollbar_drag_with_multiline_file_one_long_line() {
         short_line1, short_line2, short_line3, long_line, short_line5, short_line6
     );
 
-    for ch in content.chars() {
-        if ch == '\n' {
-            harness
-                .send_key(
-                    crossterm::event::KeyCode::Enter,
-                    crossterm::event::KeyModifiers::NONE,
-                )
-                .unwrap();
-        } else {
-            harness.type_text(&ch.to_string()).unwrap();
-        }
-    }
-
-    harness
-        .send_key(
-            crossterm::event::KeyCode::Home,
-            crossterm::event::KeyModifiers::CONTROL,
-        )
-        .unwrap();
+    // Load via temp file — much faster than typing 2000+ chars one-by-one
+    let _fixture = harness.load_buffer_from_text(&content).unwrap();
     harness.render().unwrap();
 
     let screen_before = harness.screen_to_string();

@@ -169,6 +169,18 @@ pub struct SerializedFileState {
 
     /// Scroll position (byte offset)
     pub scroll: SerializedScroll,
+
+    /// View mode for this buffer in this split
+    #[serde(default)]
+    pub view_mode: SerializedViewMode,
+
+    /// Compose width for this buffer in this split
+    #[serde(default)]
+    pub compose_width: Option<u16>,
+
+    /// Plugin-managed state (arbitrary key-value pairs, persisted across sessions)
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub plugin_state: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -890,6 +902,9 @@ mod tests {
                 top_view_line_offset: 2,
                 left_column: 10,
             },
+            view_mode: SerializedViewMode::Source,
+            compose_width: None,
+            plugin_state: HashMap::new(),
         };
 
         let json = serde_json::to_string(&file_state).unwrap();

@@ -93,6 +93,7 @@ use crate::input::position_history::PositionHistory;
 use crate::input::quick_open::{
     FileProvider, GotoLineProvider, QuickOpenContext, QuickOpenProvider, QuickOpenRegistry,
 };
+use crate::model::cursor::Cursors;
 use crate::model::event::{Event, EventLog, SplitDirection, SplitId};
 use crate::model::filesystem::FileSystem;
 use crate::services::async_bridge::{AsyncBridge, AsyncMessage};
@@ -1878,6 +1879,15 @@ impl Editor {
         // Update split manager (single source of truth)
         self.split_manager.set_active_buffer_id(buffer_id);
 
+        // Switch per-buffer view state in the active split
+        let active_split = self.split_manager.active_split();
+        if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
+            view_state.switch_buffer(buffer_id);
+            view_state.add_buffer(buffer_id);
+            // Update the focus history (push the previous buffer we're leaving)
+            view_state.push_focus(previous);
+        }
+
         // If switching to a terminal buffer that should resume terminal mode, re-enter it
         if self.terminal_mode_resume.contains(&buffer_id) && self.is_terminal_buffer(buffer_id) {
             self.terminal_mode = true;
@@ -1886,14 +1896,6 @@ impl Editor {
             // Switching to terminal in read-only mode - sync buffer to show current terminal content
             // This ensures the backing file content and cursor position are up to date
             self.sync_terminal_to_buffer(buffer_id);
-        }
-
-        // Add buffer to the active split's open_buffers (tabs) if not already there
-        let active_split = self.split_manager.active_split();
-        if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
-            view_state.add_buffer(buffer_id);
-            // Update the focus history (push the previous buffer we're leaving)
-            view_state.push_focus(previous);
         }
 
         // Ensure the newly active tab is visible
@@ -1977,6 +1979,18 @@ impl Editor {
         self.buffers.get_mut(&self.active_buffer()).unwrap()
     }
 
+    /// Get the cursors for the active buffer in the active split
+    pub fn active_cursors(&self) -> &Cursors {
+        let split_id = self.split_manager.active_split();
+        &self.split_view_states.get(&split_id).unwrap().cursors
+    }
+
+    /// Get the cursors for the active buffer in the active split (mutable)
+    pub fn active_cursors_mut(&mut self) -> &mut Cursors {
+        let split_id = self.split_manager.active_split();
+        &mut self.split_view_states.get_mut(&split_id).unwrap().cursors
+    }
+
     /// Set completion items for type-to-filter (for testing)
     pub fn set_completion_items(&mut self, items: Vec<lsp_types::CompletionItem>) {
         self.completion_items = Some(items);
@@ -2057,11 +2071,21 @@ impl Editor {
         let line_info = self.calculate_event_line_info(event);
 
         // 1. Apply the event to the buffer
-        self.active_state_mut().apply(event);
-
-        // 1b. Sync cursors and viewport from EditorState to SplitViewState
-        // This keeps the authoritative View state in SplitViewState up to date
-        self.sync_editor_state_to_split_view_state();
+        // Borrow cursors from SplitViewState (sole source of truth) and state from buffers
+        {
+            let split_id = self.split_manager.active_split();
+            let active_buf = self.active_buffer();
+            let cursors = &mut self
+                .split_view_states
+                .get_mut(&split_id)
+                .unwrap()
+                .keyed_states
+                .get_mut(&active_buf)
+                .unwrap()
+                .cursors;
+            let state = self.buffers.get_mut(&active_buf).unwrap();
+            state.apply(cursors, event);
+        }
 
         // 1c. Invalidate layouts for all views of this buffer after content changes
         // Note: recovery_pending is set automatically by the buffer on edits
@@ -2134,14 +2158,23 @@ impl Editor {
             return None;
         }
 
-        let state = self.active_state_mut();
+        let active_buf = self.active_buffer();
+        let split_id = self.split_manager.active_split();
 
-        // Capture old cursor states
-        let old_cursors: Vec<(CursorId, usize, Option<usize>)> = state
+        // Capture old cursor states from SplitViewState (sole source of truth)
+        let old_cursors: Vec<(CursorId, usize, Option<usize>)> = self
+            .split_view_states
+            .get(&split_id)
+            .unwrap()
+            .keyed_states
+            .get(&active_buf)
+            .unwrap()
             .cursors
             .iter()
             .map(|(id, c)| (id, c.position, c.anchor))
             .collect();
+
+        let state = self.buffers.get_mut(&active_buf).unwrap();
 
         // Snapshot buffer state for undo (piece tree + buffers)
         let old_snapshot = state.buffer.snapshot_buffer_state();
@@ -2276,16 +2309,30 @@ impl Editor {
             }
         }
 
-        // Update cursors in state
-        for (cursor_id, position, anchor) in &new_cursors {
-            if let Some(cursor) = state.cursors.get_mut(*cursor_id) {
-                cursor.position = *position;
-                cursor.anchor = *anchor;
+        // Update cursors in SplitViewState (sole source of truth)
+        {
+            let cursors = &mut self
+                .split_view_states
+                .get_mut(&split_id)
+                .unwrap()
+                .keyed_states
+                .get_mut(&active_buf)
+                .unwrap()
+                .cursors;
+            for (cursor_id, position, anchor) in &new_cursors {
+                if let Some(cursor) = cursors.get_mut(*cursor_id) {
+                    cursor.position = *position;
+                    cursor.anchor = *anchor;
+                }
             }
         }
 
         // Invalidate highlighter
-        state.highlighter.invalidate_all();
+        self.buffers
+            .get_mut(&active_buf)
+            .unwrap()
+            .highlighter
+            .invalidate_all();
 
         // Create BulkEdit event with both buffer snapshots
         let bulk_edit = Event::BulkEdit {
@@ -2297,7 +2344,6 @@ impl Editor {
         };
 
         // Post-processing (layout invalidation, split cursor sync, etc.)
-        self.sync_editor_state_to_split_view_state();
         self.invalidate_layouts_for_buffer(self.active_buffer());
         self.adjust_other_split_cursors_for_event(&bulk_edit);
         // Note: Do NOT clear search overlays - markers track through edits for F3/Shift+F3
@@ -2332,6 +2378,7 @@ impl Editor {
         let buffer_id = self.active_buffer();
 
         // Convert event to hook args and fire the appropriate hook
+        let mut cursor_changed_lines = false;
         let hook_args = match event {
             Event::Insert { position, text, .. } => {
                 let insert_position = *position;
@@ -2444,8 +2491,10 @@ impl Editor {
                 new_position,
                 ..
             } => {
-                // Get the line number for the new position (1-indexed for plugins)
+                // Get line numbers for old and new positions (1-indexed for plugins)
+                let old_line = self.active_state().buffer.get_line_number(*old_position) + 1;
                 let line = self.active_state().buffer.get_line_number(*new_position) + 1;
+                cursor_changed_lines = old_line != line;
                 Some((
                     "cursor_moved",
                     crate::services::plugins::hooks::HookArgs::CursorMoved {
@@ -2461,14 +2510,28 @@ impl Editor {
         };
 
         // Fire the hook to TypeScript plugins
-        if let Some((hook_name, args)) = hook_args {
+        if let Some((hook_name, ref args)) = hook_args {
             // Update the full plugin state snapshot BEFORE firing the hook
             // This ensures the plugin can read up-to-date state (diff, cursors, viewport, etc.)
             // Without this, there's a race condition where the async hook might read stale data
             #[cfg(feature = "plugins")]
             self.update_plugin_state_snapshot();
 
-            self.plugin_manager.run_hook(hook_name, args);
+            self.plugin_manager.run_hook(hook_name, args.clone());
+        }
+
+        // After inter-line cursor_moved, proactively refresh lines so
+        // cursor-dependent conceals (e.g. emphasis auto-expose in compose
+        // mode tables) update in the same frame. Without this, there's a
+        // one-frame lag: the cursor_moved hook fires async to the plugin
+        // which calls refreshLines() back, but that round-trip means the
+        // first render after the cursor move still shows stale conceals.
+        //
+        // Only refresh on inter-line movement: intra-line moves (e.g.
+        // Left/Right within a row) don't change which row is auto-exposed,
+        // and the plugin's async refreshLines() handles span-level changes.
+        if cursor_changed_lines {
+            self.handle_refresh_lines(buffer_id);
         }
     }
 
@@ -2889,10 +2952,7 @@ impl Editor {
         // Reset any previously stored selection range
         self.pending_search_range = None;
 
-        let selection_range = {
-            let state = self.active_state();
-            state.cursors.primary().selection_range()
-        };
+        let selection_range = self.active_cursors().primary().selection_range();
 
         let selected_text = if let Some(range) = selection_range.clone() {
             let state = self.active_state_mut();
@@ -3628,11 +3688,7 @@ impl Editor {
 
     /// Check if the active cursor currently has a selection
     pub fn has_active_selection(&self) -> bool {
-        self.active_state()
-            .cursors
-            .primary()
-            .selection_range()
-            .is_some()
+        self.active_cursors().primary().selection_range().is_some()
     }
 
     /// Get mutable reference to prompt (for input handling)
@@ -4203,6 +4259,14 @@ impl Editor {
         // Process TypeScript plugin commands
         let processed_any_commands = self.process_plugin_commands();
 
+        // Re-sync snapshot after commands — commands like SetViewMode change
+        // state that plugins read via getBufferInfo().  Without this, a
+        // subsequent lines_changed callback would see stale values.
+        #[cfg(feature = "plugins")]
+        if processed_any_commands {
+            self.update_plugin_state_snapshot();
+        }
+
         // Process pending plugin action completions
         #[cfg(feature = "plugins")]
         self.process_pending_plugin_actions();
@@ -4318,16 +4382,21 @@ impl Editor {
                     .get(buffer_id)
                     .map(|m| m.is_virtual())
                     .unwrap_or(false);
-                let view_mode = match state.compose.view_mode {
-                    crate::state::ViewMode::Source => "source",
-                    crate::state::ViewMode::Compose => "compose",
-                };
-                // Find compose_width from any split that has this buffer active
-                let compose_width = self
+                // Find view_mode and compose_width from any split that has this buffer
+                let split_state = self
                     .split_view_states
                     .values()
-                    .find(|vs| vs.open_buffers.contains(buffer_id))
-                    .and_then(|vs| vs.compose_width);
+                    .find(|vs| vs.open_buffers.contains(buffer_id));
+                let view_mode = split_state
+                    .and_then(|vs| vs.buffer_state(*buffer_id))
+                    .map(|bs| match bs.view_mode {
+                        crate::state::ViewMode::Source => "source",
+                        crate::state::ViewMode::Compose => "compose",
+                    })
+                    .unwrap_or("source");
+                let compose_width = split_state
+                    .and_then(|vs| vs.buffer_state(*buffer_id))
+                    .and_then(|bs| bs.compose_width);
                 let buffer_info = BufferInfo {
                     id: *buffer_id,
                     path: state.buffer.file_path().map(|p| p.to_path_buf()),
@@ -4358,8 +4427,11 @@ impl Editor {
                 };
                 snapshot.buffer_saved_diffs.insert(*buffer_id, diff);
 
-                // Store cursor position for this buffer
-                let cursor_pos = state.cursors.primary().position;
+                // Store cursor position for this buffer (from SplitViewState)
+                let cursor_pos = split_state
+                    .and_then(|vs| vs.buffer_state(*buffer_id))
+                    .map(|bs| bs.cursors.primary().position)
+                    .unwrap_or(0);
                 snapshot
                     .buffer_cursor_positions
                     .insert(*buffer_id, cursor_pos);
@@ -4373,9 +4445,13 @@ impl Editor {
             }
 
             // Update cursor information for active buffer
-            if let Some(active_state) = self.buffers.get_mut(&self.active_buffer()) {
-                // Primary cursor
-                let primary = active_state.cursors.primary();
+            if let Some(active_vs) = self
+                .split_view_states
+                .get(&self.split_manager.active_split())
+            {
+                // Primary cursor (from SplitViewState)
+                let active_cursors = &active_vs.cursors;
+                let primary = active_cursors.primary();
                 let primary_position = primary.position;
                 let primary_selection = primary.selection_range();
 
@@ -4384,13 +4460,8 @@ impl Editor {
                     selection: primary_selection.clone(),
                 });
 
-                // Selected text from primary cursor (for clipboard plugin)
-                snapshot.selected_text = primary_selection
-                    .map(|range| active_state.get_text_range(range.start, range.end));
-
                 // All cursors
-                snapshot.all_cursors = active_state
-                    .cursors
+                snapshot.all_cursors = active_cursors
                     .iter()
                     .map(|(_, cursor)| CursorInfo {
                         position: cursor.position,
@@ -4398,18 +4469,21 @@ impl Editor {
                     })
                     .collect();
 
-                // Viewport - get from SplitViewState (the authoritative source)
-                let active_split = self.split_manager.active_split();
-                if let Some(view_state) = self.split_view_states.get(&active_split) {
-                    snapshot.viewport = Some(ViewportInfo {
-                        top_byte: view_state.viewport.top_byte,
-                        left_column: view_state.viewport.left_column,
-                        width: view_state.viewport.width,
-                        height: view_state.viewport.height,
-                    });
-                } else {
-                    snapshot.viewport = None;
+                // Selected text from primary cursor (for clipboard plugin)
+                if let Some(range) = primary_selection {
+                    if let Some(active_state) = self.buffers.get_mut(&self.active_buffer()) {
+                        snapshot.selected_text =
+                            Some(active_state.get_text_range(range.start, range.end));
+                    }
                 }
+
+                // Viewport - get from SplitViewState (the authoritative source)
+                snapshot.viewport = Some(ViewportInfo {
+                    top_byte: active_vs.viewport.top_byte,
+                    left_column: active_vs.viewport.left_column,
+                    width: active_vs.viewport.width,
+                    height: active_vs.viewport.height,
+                });
             } else {
                 snapshot.primary_cursor = None;
                 snapshot.all_cursors.clear();
@@ -4435,6 +4509,41 @@ impl Editor {
 
             // Update editor mode (for vi mode and other modal editing)
             snapshot.editor_mode = self.editor_mode.clone();
+
+            // Update plugin view states from active split's BufferViewState.plugin_state.
+            // If the active split changed, fully repopulate. Otherwise, merge using
+            // or_insert to preserve JS-side write-through entries that haven't
+            // round-tripped through the command channel yet.
+            let active_split_id = self.split_manager.active_split().0;
+            let split_changed = snapshot.plugin_view_states_split != active_split_id;
+            if split_changed {
+                snapshot.plugin_view_states.clear();
+                snapshot.plugin_view_states_split = active_split_id;
+            }
+
+            // Clean up entries for buffers that are no longer open
+            {
+                let open_bids: Vec<_> = snapshot.buffers.keys().copied().collect();
+                snapshot
+                    .plugin_view_states
+                    .retain(|bid, _| open_bids.contains(bid));
+            }
+
+            // Merge from Rust-side plugin_state (source of truth for persisted state)
+            if let Some(active_vs) = self
+                .split_view_states
+                .get(&self.split_manager.active_split())
+            {
+                for (buffer_id, buf_state) in &active_vs.keyed_states {
+                    if !buf_state.plugin_state.is_empty() {
+                        let entry = snapshot.plugin_view_states.entry(*buffer_id).or_default();
+                        for (key, value) in &buf_state.plugin_state {
+                            // Use or_insert to preserve JS write-through values
+                            entry.entry(key.clone()).or_insert_with(|| value.clone());
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -4693,8 +4802,21 @@ impl Editor {
             } => {
                 self.handle_clear_view_transform(split_id);
             }
+            PluginCommand::SetViewState {
+                buffer_id,
+                key,
+                value,
+            } => {
+                self.handle_set_view_state(buffer_id, key, value);
+            }
             PluginCommand::RefreshLines { buffer_id } => {
                 self.handle_refresh_lines(buffer_id);
+            }
+            PluginCommand::RefreshAllLines => {
+                self.handle_refresh_all_lines();
+            }
+            PluginCommand::HookCompleted { .. } => {
+                // Sentinel processed in render loop; no-op if encountered elsewhere.
             }
             PluginCommand::SetLineIndicator {
                 buffer_id,
@@ -5228,9 +5350,6 @@ impl Editor {
                     return Ok(());
                 }
 
-                // Save current split's view state
-                self.save_current_split_view_state();
-
                 // Determine split direction
                 let split_dir = match direction.as_deref() {
                     Some("vertical") => crate::model::event::SplitDirection::Vertical,
@@ -5299,7 +5418,12 @@ impl Editor {
             PluginCommand::GetTextPropertiesAtCursor { buffer_id } => {
                 // Get text properties at cursor and fire a hook with the data
                 if let Some(state) = self.buffers.get(&buffer_id) {
-                    let cursor_pos = state.cursors.primary().position;
+                    let cursor_pos = self
+                        .split_view_states
+                        .values()
+                        .find_map(|vs| vs.buffer_state(buffer_id))
+                        .map(|bs| bs.cursors.primary().position)
+                        .unwrap_or(0);
                     let properties = state.text_properties.get_at(cursor_pos);
                     tracing::debug!(
                         "Text properties at cursor in {:?}: {} properties found",
@@ -5354,10 +5478,14 @@ impl Editor {
                     self.split_manager.set_active_split(split_id);
                     self.split_manager.set_active_buffer_id(buffer_id);
 
-                    // Apply line_wrap setting if provided
-                    if let Some(wrap) = line_wrap {
-                        if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
-                            view_state.viewport.line_wrap_enabled = wrap;
+                    // Switch per-buffer view state in the target split
+                    if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
+                        view_state.switch_buffer(buffer_id);
+                        view_state.add_buffer(buffer_id);
+
+                        // Apply line_wrap setting if provided
+                        if let Some(wrap) = line_wrap {
+                            view_state.active_state_mut().viewport.line_wrap_enabled = wrap;
                         }
                     }
 
@@ -6372,11 +6500,11 @@ mod tests {
         .unwrap();
 
         // Insert some text first
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "hello".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         let events = editor.action_to_events(Action::MoveRight);
@@ -6414,16 +6542,16 @@ mod tests {
         .unwrap();
 
         // Insert multi-line text
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "line1\nline2\nline3".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         // Move cursor to start of line 2
-        state.apply(&Event::MoveCursor {
-            cursor_id: state.cursors.primary_id(),
+        editor.apply_event_to_active_buffer(&Event::MoveCursor {
+            cursor_id,
             old_position: 0, // TODO: Get actual old position
             new_position: 6,
             old_anchor: None, // TODO: Get actual old anchor
@@ -6509,11 +6637,11 @@ mod tests {
         .unwrap();
 
         // Insert some text first
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "hello".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         let events = editor.action_to_events(Action::DeleteBackward);
@@ -6550,16 +6678,16 @@ mod tests {
         .unwrap();
 
         // Insert some text first
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "hello".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         // Move cursor to position 0
-        state.apply(&Event::MoveCursor {
-            cursor_id: state.cursors.primary_id(),
+        editor.apply_event_to_active_buffer(&Event::MoveCursor {
+            cursor_id,
             old_position: 0, // TODO: Get actual old position
             new_position: 0,
             old_anchor: None, // TODO: Get actual old anchor
@@ -6602,16 +6730,16 @@ mod tests {
         .unwrap();
 
         // Insert some text first
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "hello".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         // Move cursor to position 0
-        state.apply(&Event::MoveCursor {
-            cursor_id: state.cursors.primary_id(),
+        editor.apply_event_to_active_buffer(&Event::MoveCursor {
+            cursor_id,
             old_position: 0, // TODO: Get actual old position
             new_position: 0,
             old_anchor: None, // TODO: Get actual old anchor
@@ -6654,11 +6782,11 @@ mod tests {
         .unwrap();
 
         // Insert some text first
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "hello world".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         let events = editor.action_to_events(Action::SelectAll);
@@ -6695,11 +6823,11 @@ mod tests {
         .unwrap();
 
         // Insert multi-line text
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "line1\nline2\nline3".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         // Test MoveDocumentStart
@@ -6742,36 +6870,30 @@ mod tests {
         .unwrap();
 
         // Insert some text first to have positions to place cursors
-        {
-            let state = editor.active_state_mut();
-            state.apply(&Event::Insert {
-                position: 0,
-                text: "hello world test".to_string(),
-                cursor_id: state.cursors.primary_id(),
-            });
-        }
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
+            position: 0,
+            text: "hello world test".to_string(),
+            cursor_id,
+        });
 
         // Add secondary cursors at different positions to avoid normalization merging
-        {
-            let state = editor.active_state_mut();
-            state.apply(&Event::AddCursor {
-                cursor_id: CursorId(1),
-                position: 5,
-                anchor: None,
-            });
-            state.apply(&Event::AddCursor {
-                cursor_id: CursorId(2),
-                position: 10,
-                anchor: None,
-            });
+        editor.apply_event_to_active_buffer(&Event::AddCursor {
+            cursor_id: CursorId(1),
+            position: 5,
+            anchor: None,
+        });
+        editor.apply_event_to_active_buffer(&Event::AddCursor {
+            cursor_id: CursorId(2),
+            position: 10,
+            anchor: None,
+        });
 
-            assert_eq!(state.cursors.count(), 3);
-        }
+        assert_eq!(editor.active_cursors().count(), 3);
 
         // Find the first cursor ID (the one that will be kept)
         let first_id = editor
-            .active_state()
-            .cursors
+            .active_cursors()
             .iter()
             .map(|(id, _)| id)
             .min_by_key(|id| id.0)
@@ -7041,16 +7163,16 @@ mod tests {
         .unwrap();
 
         // Insert text with brackets
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "fn main() { let x = (1 + 2); }".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         // Move cursor to opening brace '{'
-        state.apply(&Event::MoveCursor {
-            cursor_id: state.cursors.primary_id(),
+        editor.apply_event_to_active_buffer(&Event::MoveCursor {
+            cursor_id,
             old_position: 31,
             new_position: 10,
             old_anchor: None,
@@ -7059,7 +7181,7 @@ mod tests {
             new_sticky_column: 0,
         });
 
-        assert_eq!(state.cursors.primary().position, 10);
+        assert_eq!(editor.active_cursors().primary().position, 10);
 
         // Call goto_matching_bracket
         editor.goto_matching_bracket();
@@ -7068,7 +7190,7 @@ mod tests {
         // "fn main() { let x = (1 + 2); }"
         //            ^                   ^
         //           10                  29
-        assert_eq!(editor.active_state().cursors.primary().position, 29);
+        assert_eq!(editor.active_cursors().primary().position, 29);
     }
 
     #[test]
@@ -7086,16 +7208,16 @@ mod tests {
         .unwrap();
 
         // Insert text with brackets
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "fn main() { let x = (1 + 2); }".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         // Move cursor to closing paren ')'
-        state.apply(&Event::MoveCursor {
-            cursor_id: state.cursors.primary_id(),
+        editor.apply_event_to_active_buffer(&Event::MoveCursor {
+            cursor_id,
             old_position: 31,
             new_position: 26,
             old_anchor: None,
@@ -7108,7 +7230,7 @@ mod tests {
         editor.goto_matching_bracket();
 
         // Should move to opening paren '('
-        assert_eq!(editor.active_state().cursors.primary().position, 20);
+        assert_eq!(editor.active_cursors().primary().position, 20);
     }
 
     #[test]
@@ -7126,16 +7248,16 @@ mod tests {
         .unwrap();
 
         // Insert text with nested brackets
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "{a{b{c}d}e}".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         // Move cursor to first '{'
-        state.apply(&Event::MoveCursor {
-            cursor_id: state.cursors.primary_id(),
+        editor.apply_event_to_active_buffer(&Event::MoveCursor {
+            cursor_id,
             old_position: 11,
             new_position: 0,
             old_anchor: None,
@@ -7148,7 +7270,7 @@ mod tests {
         editor.goto_matching_bracket();
 
         // Should jump to last '}'
-        assert_eq!(editor.active_state().cursors.primary().position, 10);
+        assert_eq!(editor.active_cursors().primary().position, 10);
     }
 
     #[test]
@@ -7166,11 +7288,11 @@ mod tests {
         .unwrap();
 
         // Insert text
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "Hello hello HELLO".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         // Test case-insensitive search (default)
@@ -7215,11 +7337,11 @@ mod tests {
         .unwrap();
 
         // Insert text
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "test testing tested attest test".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         // Test partial word match (default)
@@ -7263,16 +7385,16 @@ mod tests {
         .unwrap();
 
         // Insert text
-        let state = editor.active_state_mut();
-        state.apply(&Event::Insert {
+        let cursor_id = editor.active_cursors().primary_id();
+        editor.apply_event_to_active_buffer(&Event::Insert {
             position: 0,
             text: "Line 1\nLine 2\nLine 3".to_string(),
-            cursor_id: state.cursors.primary_id(),
+            cursor_id,
         });
 
         // Move cursor to line 2 start (position 7)
-        state.apply(&Event::MoveCursor {
-            cursor_id: state.cursors.primary_id(),
+        editor.apply_event_to_active_buffer(&Event::MoveCursor {
+            cursor_id,
             old_position: 21,
             new_position: 7,
             old_anchor: None,
@@ -7287,9 +7409,8 @@ mod tests {
         assert_eq!(editor.bookmarks.get(&'1').unwrap().position, 7);
 
         // Move cursor elsewhere
-        let state = editor.active_state_mut();
-        state.apply(&Event::MoveCursor {
-            cursor_id: state.cursors.primary_id(),
+        editor.apply_event_to_active_buffer(&Event::MoveCursor {
+            cursor_id,
             old_position: 7,
             new_position: 14,
             old_anchor: None,
@@ -7300,7 +7421,7 @@ mod tests {
 
         // Jump back to bookmark
         editor.jump_to_bookmark('1');
-        assert_eq!(editor.active_state().cursors.primary().position, 7);
+        assert_eq!(editor.active_cursors().primary().position, 7);
 
         // Clear bookmark
         editor.clear_bookmark('1');
@@ -7468,7 +7589,7 @@ mod tests {
         // This is applied in reverse order to preserve positions:
         // 1. Delete "val" at position 23 (line 1, char 4), insert "value"
         // 2. Delete "val" at position 7 (line 0, char 7), insert "value"
-        let cursor_id = editor.active_state().cursors.primary_id();
+        let cursor_id = editor.active_cursors().primary_id();
 
         let batch = Event::Batch {
             events: vec![
@@ -7502,7 +7623,7 @@ mod tests {
         let lsp_changes_before = editor.collect_lsp_changes(&batch);
 
         // Now apply the batch (this is what apply_events_to_buffer_as_bulk_edit does)
-        editor.active_state_mut().apply(&batch);
+        editor.apply_event_to_active_buffer(&batch);
 
         // BUG DEMONSTRATION: Calculate LSP positions AFTER applying batch
         // This is what happens when notify_lsp_change is called after state.apply()
@@ -7615,7 +7736,7 @@ mod tests {
 
         // Position cursor at the second "val" (position 23 = 'v' of "val" on line 1)
         let original_cursor_pos = 23;
-        editor.active_state_mut().cursors.primary_mut().position = original_cursor_pos;
+        editor.active_cursors_mut().primary_mut().position = original_cursor_pos;
 
         // Verify cursor is at the right position
         let buffer_text = editor.active_state().buffer.to_string().unwrap();
@@ -7624,7 +7745,7 @@ mod tests {
 
         // Simulate LSP rename batch: rename "val" to "value" in two places
         // Applied in reverse order (from end of file to start)
-        let cursor_id = editor.active_state().cursors.primary_id();
+        let cursor_id = editor.active_cursors().primary_id();
         let buffer_id = editor.active_buffer();
 
         let events = vec![
@@ -7671,7 +7792,7 @@ mod tests {
         // - The second "val" at the cursor position was replaced.
         //
         // Expected cursor position: 23 + 2 = 25 (start of "value" on line 1)
-        let final_cursor_pos = editor.active_state().cursors.primary().position;
+        let final_cursor_pos = editor.active_cursors().primary().position;
         let expected_cursor_pos = 25; // original 23 + 2 (delta from first rename)
 
         assert_eq!(
@@ -7712,7 +7833,7 @@ mod tests {
         editor.active_state_mut().buffer =
             Buffer::from_str(initial, 1024 * 1024, test_filesystem());
 
-        let cursor_id = editor.active_state().cursors.primary_id();
+        let cursor_id = editor.active_cursors().primary_id();
         let buffer_id = editor.active_buffer();
 
         // === FIRST RENAME: "val" -> "value" ===

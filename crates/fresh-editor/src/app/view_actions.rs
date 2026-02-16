@@ -13,20 +13,19 @@ impl Editor {
         let default_line_numbers = self.config.editor.line_numbers;
         let active_split = self.split_manager.active_split();
 
-        let mut view_mode = {
-            if let Some(vs) = self.split_view_states.get(&active_split) {
-                vs.view_mode.clone()
-            } else {
-                self.active_state().compose.view_mode.clone()
+        let view_mode = {
+            let current = self
+                .split_view_states
+                .get(&active_split)
+                .map(|vs| vs.view_mode.clone())
+                .unwrap_or(ViewMode::Source);
+            match current {
+                ViewMode::Compose => ViewMode::Source,
+                _ => ViewMode::Compose,
             }
         };
 
-        view_mode = match view_mode {
-            ViewMode::Compose => ViewMode::Source,
-            _ => ViewMode::Compose,
-        };
-
-        // Update split view state
+        // Update split view state (source of truth for view mode)
         let current_line_numbers = self.active_state().margins.show_line_numbers;
         if let Some(vs) = self.split_view_states.get_mut(&active_split) {
             vs.view_mode = view_mode.clone();
@@ -52,18 +51,6 @@ impl Editor {
                         .unwrap_or(default_line_numbers);
                     self.active_state_mut().margins.set_line_numbers(restore);
                 }
-            }
-        }
-
-        // Keep buffer-level view mode for status/use
-        {
-            let state = self.active_state_mut();
-            state.compose.view_mode = view_mode.clone();
-            // Note: viewport.line_wrap_enabled is now handled in SplitViewState above
-            // Clear compose state when switching to Source mode
-            if matches!(view_mode, ViewMode::Source) {
-                state.compose.compose_width = None;
-                state.compose.view_transform = None;
             }
         }
 

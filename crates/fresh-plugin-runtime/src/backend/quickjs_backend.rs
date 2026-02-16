@@ -160,6 +160,46 @@ fn js_to_json(ctx: &rquickjs::Ctx<'_>, val: Value<'_>) -> serde_json::Value {
     }
 }
 
+/// Convert a serde_json::Value to a QuickJS Value
+fn json_to_js_value<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    val: &serde_json::Value,
+) -> rquickjs::Result<Value<'js>> {
+    match val {
+        serde_json::Value::Null => Ok(Value::new_null(ctx.clone())),
+        serde_json::Value::Bool(b) => Ok(Value::new_bool(ctx.clone(), *b)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Ok(Value::new_int(ctx.clone(), i as i32))
+            } else if let Some(f) = n.as_f64() {
+                Ok(Value::new_float(ctx.clone(), f))
+            } else {
+                Ok(Value::new_null(ctx.clone()))
+            }
+        }
+        serde_json::Value::String(s) => {
+            let js_str = rquickjs::String::from_str(ctx.clone(), s)?;
+            Ok(js_str.into_value())
+        }
+        serde_json::Value::Array(arr) => {
+            let js_arr = rquickjs::Array::new(ctx.clone())?;
+            for (i, item) in arr.iter().enumerate() {
+                let js_val = json_to_js_value(ctx, item)?;
+                js_arr.set(i, js_val)?;
+            }
+            Ok(js_arr.into_value())
+        }
+        serde_json::Value::Object(map) => {
+            let obj = rquickjs::Object::new(ctx.clone())?;
+            for (key, val) in map {
+                let js_val = json_to_js_value(ctx, val)?;
+                obj.set(key.as_str(), js_val)?;
+            }
+            Ok(obj.into_value())
+        }
+    }
+}
+
 /// Get text properties at cursor position
 fn get_text_properties_at_cursor_typed(
     snapshot: &Arc<RwLock<EditorStateSnapshot>>,
@@ -1012,6 +1052,12 @@ impl JsEditorApi {
 
     /// Subscribe to an editor event
     pub fn on<'js>(&self, _ctx: rquickjs::Ctx<'js>, event_name: String, handler_name: String) {
+        // If registering for lines_changed, clear all seen_byte_ranges so lines
+        // that were already marked "seen" (before this plugin initialized) get
+        // re-sent via the hook.
+        if event_name == "lines_changed" {
+            let _ = self.command_sender.send(PluginCommand::RefreshAllLines);
+        }
         self.event_handlers
             .borrow_mut()
             .entry(event_name)
@@ -2233,6 +2279,72 @@ impl JsEditorApi {
                 enabled,
             })
             .is_ok()
+    }
+
+    // === Plugin View State ===
+
+    /// Set plugin-managed per-buffer view state (write-through to snapshot + command for persistence)
+    pub fn set_view_state<'js>(
+        &self,
+        ctx: rquickjs::Ctx<'js>,
+        buffer_id: u32,
+        key: String,
+        value: Value<'js>,
+    ) -> bool {
+        let bid = BufferId(buffer_id as usize);
+
+        // Convert JS value to serde_json::Value
+        let json_value = if value.is_undefined() || value.is_null() {
+            None
+        } else {
+            Some(js_to_json(&ctx, value))
+        };
+
+        // Write-through: update the snapshot immediately so getViewState sees it
+        if let Ok(mut snapshot) = self.state_snapshot.write() {
+            if let Some(ref json_val) = json_value {
+                snapshot
+                    .plugin_view_states
+                    .entry(bid)
+                    .or_default()
+                    .insert(key.clone(), json_val.clone());
+            } else {
+                // null/undefined = delete the key
+                if let Some(map) = snapshot.plugin_view_states.get_mut(&bid) {
+                    map.remove(&key);
+                    if map.is_empty() {
+                        snapshot.plugin_view_states.remove(&bid);
+                    }
+                }
+            }
+        }
+
+        // Send command to persist in BufferViewState.plugin_state
+        self.command_sender
+            .send(PluginCommand::SetViewState {
+                buffer_id: bid,
+                key,
+                value: json_value,
+            })
+            .is_ok()
+    }
+
+    /// Get plugin-managed per-buffer view state (reads from snapshot)
+    pub fn get_view_state<'js>(
+        &self,
+        ctx: rquickjs::Ctx<'js>,
+        buffer_id: u32,
+        key: String,
+    ) -> rquickjs::Result<Value<'js>> {
+        let bid = BufferId(buffer_id as usize);
+        if let Ok(snapshot) = self.state_snapshot.read() {
+            if let Some(map) = snapshot.plugin_view_states.get(&bid) {
+                if let Some(json_val) = map.get(&key) {
+                    return json_to_js_value(&ctx, json_val);
+                }
+            }
+        }
+        Ok(Value::new_undefined(ctx.clone()))
     }
 
     // === Scroll Sync ===
@@ -3747,6 +3859,15 @@ impl QuickJsBackend {
         let _ = self
             .command_sender
             .send(PluginCommand::SetStatus { message });
+    }
+
+    /// Send a hook-completed sentinel to the editor.
+    /// This signals that all commands from the hook have been sent,
+    /// allowing the render loop to wait deterministically.
+    pub fn send_hook_completed(&self, hook_name: String) {
+        let _ = self
+            .command_sender
+            .send(PluginCommand::HookCompleted { hook_name });
     }
 
     /// Resolve a pending async callback with a result (called from Rust when async op completes)

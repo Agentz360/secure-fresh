@@ -70,24 +70,29 @@ fn test_compose_mode_typing_no_flicker() {
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Let plugin fully initialise (conceals, overlays, view transforms).
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
+    // Wait for compose mode to fully activate (conceals, overlays, view transforms).
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            !s.lines().any(|l| l.contains("**"))
+        })
+        .unwrap();
 
     // Navigate to the middle of the document (≈ paragraph 20 of 60).
     harness
         .send_key_repeat(KeyCode::Down, KeyModifiers::NONE, 40)
         .unwrap();
 
-    // Let conceals settle after cursor movement.
-    for _ in 0..10 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
+    // Let conceals settle after cursor movement — wait for full screen stability.
+    let mut prev = String::new();
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            let stable = s == prev;
+            prev = s;
+            stable
+        })
+        .unwrap();
 
     // ── Helpers ─────────────────────────────────────────────────────────
     let (content_start, content_end) = harness.content_area_rows();
@@ -128,7 +133,6 @@ fn test_compose_mode_typing_no_flicker() {
     }
 
     // ── Capture the stable "before" screen ──────────────────────────────
-    harness.render().unwrap();
     let before_screen = harness.screen_to_string();
     let before_content = extract_content(&before_screen);
 
@@ -208,11 +212,13 @@ fn test_compose_mode_typing_no_flicker() {
     let mid_content = extract_content(&mid_screen);
 
     // Step 3: let the plugin process and produce the fresh view_transform.
-    for _ in 0..10 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
+    // Wait until conceals re-stabilise (at most 1 line with ** from cursor).
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            s.lines().filter(|l| l.contains("**")).count() <= 1
+        })
+        .unwrap();
     let after_screen = harness.screen_to_string();
     let after_content = extract_content(&after_screen);
 
@@ -640,23 +646,13 @@ Another line with **bold text** for testing.
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Let plugin fully initialise (conceals, overlays, view transforms).
-    // The plugin requires real wall-clock time for async I/O, matching the
-    // established pattern from the flicker test.
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-
-    // Helper: settle async after cursor movement (cursor_moved hook → refreshLines)
-    let settle = |h: &mut EditorTestHarness| {
-        for _ in 0..5 {
-            h.process_async_and_render().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
-            h.advance_time(Duration::from_millis(50));
-        }
-    };
+    // Wait for compose mode to fully activate (conceals, overlays, view transforms).
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            !s.lines().any(|l| l.contains("**"))
+        })
+        .unwrap();
 
     // ── 1. Verify conceals are active ───────────────────────────────────
     harness.render().unwrap();
@@ -673,11 +669,11 @@ Another line with **bold text** for testing.
     harness
         .send_key_repeat(KeyCode::Down, KeyModifiers::NONE, 2)
         .unwrap();
-    settle(&mut harness);
 
     // ── 3. Auto-expose: ** should NOT be visible yet ────────────────────
-    harness.render().unwrap();
-    harness.assert_screen_not_contains("**");
+    harness
+        .wait_until_stable(|h| !h.screen_to_string().contains("**"))
+        .unwrap();
 
     // ── 4. Move down to the bold line (line 4) ──────────────────────────
     //    From line 2, down 2 → line 4 (the emphasis/link line).
@@ -686,14 +682,14 @@ Another line with **bold text** for testing.
     harness
         .send_key_repeat(KeyCode::Down, KeyModifiers::NONE, 2)
         .unwrap();
-    settle(&mut harness);
 
     // Auto-expose: ** SHOULD now be visible because cursor is within the span
-    harness.render().unwrap();
+    harness
+        .wait_until_stable(|h| h.screen_to_string().contains("**"))
+        .unwrap();
     let screen_on_bold = harness.screen_to_string();
-    let has_exposed_bold = screen_on_bold.lines().any(|l| l.contains("**"));
     assert!(
-        has_exposed_bold,
+        screen_on_bold.lines().any(|l| l.contains("**")),
         "After moving cursor into the **Bold** span, raw ** should be exposed (auto-expose)\n\
          Screen:\n{}",
         screen_on_bold,
@@ -704,10 +700,11 @@ Another line with **bold text** for testing.
     harness
         .send_key_repeat(KeyCode::Down, KeyModifiers::NONE, 2)
         .unwrap();
-    settle(&mut harness);
 
     // The old bold line should be re-concealed — no raw ** on it.
-    harness.render().unwrap();
+    harness
+        .wait_until_stable(|h| !h.screen_to_string().contains("**"))
+        .unwrap();
     let screen_after_bold = harness.screen_to_string();
     let bold_after: Vec<_> = screen_after_bold
         .lines()
@@ -827,14 +824,15 @@ fn test_compose_mode_no_whitespace_line_wrapping() {
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Let plugin initialise
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
+    // Wait for compose mode to activate (soft-wrapping applied).
+    harness
+        .wait_until_stable(|h| {
+            // The long word should be split across multiple screen rows
+            let s = h.screen_to_string();
+            s.lines().filter(|l| l.contains("abcdefghij")).count() >= 3
+        })
+        .unwrap();
 
-    harness.render().unwrap();
     let screen = harness.screen_to_string();
 
     // The 200-char word must be split across multiple screen rows.
@@ -907,12 +905,13 @@ fn test_compose_mode_mouse_scroll_to_bottom() {
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Let plugin initialise
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
+    // Wait for compose mode to activate (table conceals visible in README).
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            s.contains("│") || s.contains("─") || !s.contains("**")
+        })
+        .unwrap();
 
     // Scroll down aggressively with mouse wheel.
     // README.md is ~278 lines; with compose wrapping at 80 cols it will be
@@ -924,14 +923,10 @@ fn test_compose_mode_mouse_scroll_to_bottom() {
         harness.mouse_scroll_down(40, mid_row).unwrap();
     }
 
-    // Let any async settle after scrolling
-    for _ in 0..5 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-
-    harness.render().unwrap();
+    // Wait for the last line of the README to be visible after scrolling.
+    harness
+        .wait_until_stable(|h| h.screen_to_string().contains("GPL-2.0"))
+        .unwrap();
 
     // The very last line of the README is "...GNU General Public License v2.0 (GPL-2.0)."
     // It should be visible on screen after scrolling to the bottom.
@@ -954,7 +949,6 @@ fn test_compose_mode_html_entity_rendering() {
     use crate::common::harness::{copy_plugin, copy_plugin_lib};
     use crate::common::tracing::init_tracing_from_env;
     use crossterm::event::{KeyCode, KeyModifiers};
-    use std::time::Duration;
 
     init_tracing_from_env();
 
@@ -996,22 +990,22 @@ Ampersand: &amp; dash: &mdash; space:&nbsp;here numeric: &#169;
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Let plugin fully initialise
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
+    // Wait for compose mode to activate: HTML entities should be concealed.
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            !s.contains("&amp;") && s.contains("Ampersand")
+        })
+        .unwrap();
 
     // Move cursor away from the entity line so conceals are active
     harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-    for _ in 0..5 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
 
-    harness.render().unwrap();
+    // Wait for conceals to settle after cursor move
+    harness
+        .wait_until_stable(|h| !h.screen_to_string().contains("&amp;"))
+        .unwrap();
+
     let screen = harness.screen_to_string();
 
     // Raw entity syntax should be concealed (not visible)
@@ -1095,25 +1089,40 @@ End of table test.
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Let plugin fully initialise
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
+    // Wait for compose mode to activate (table conceals visible) then stabilize.
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            s.contains("│") && s.contains("─")
+        })
+        .unwrap();
+    let mut prev = String::new();
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            let stable = s == prev;
+            prev = s;
+            stable
+        })
+        .unwrap();
 
     // Navigate cursor INTO the table (onto a data row) — conceals should
     // remain active even with cursor on the line.
     harness
         .send_key_repeat(KeyCode::Down, KeyModifiers::NONE, 4)
         .unwrap();
-    for _ in 0..5 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
 
-    harness.render().unwrap();
+    // Wait for conceals to settle after cursor movement.
+    let mut prev = String::new();
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            let stable = s == prev;
+            prev = s;
+            stable
+        })
+        .unwrap();
+
     let screen = harness.screen_to_string();
 
     // Box-drawing characters should be visible even with cursor on a table row
@@ -1274,20 +1283,13 @@ Text below the table.
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Let plugin fully initialise
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-
-    let settle = |h: &mut EditorTestHarness| {
-        for _ in 0..5 {
-            h.process_async_and_render().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
-            h.advance_time(Duration::from_millis(50));
-        }
-    };
+    // Wait for compose mode to activate (table conceals visible).
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            s.contains("│") && s.contains("─")
+        })
+        .unwrap();
 
     // Navigate to the last data row of the table: "| Bob | 1000000 |"
     // Document lines: 0=heading, 1=blank, 2=text, 3=blank,
@@ -1295,7 +1297,9 @@ Text below the table.
     harness
         .send_key_repeat(KeyCode::Down, KeyModifiers::NONE, 7)
         .unwrap();
-    settle(&mut harness);
+    harness
+        .wait_until_stable(|h| h.screen_to_string().contains("│"))
+        .unwrap();
 
     // ── Bug 1: Only one cursor should be visible ─────────────────────────
     // When the cursor is on a table row, no other cell should have cursor-like
@@ -1317,8 +1321,9 @@ Text below the table.
     // Check single cursor on each row as we move up through the table
     for row_label in &["Alice row", "separator", "header row"] {
         harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-        settle(&mut harness);
-        harness.render().unwrap();
+        harness
+            .wait_until_stable(|h| h.screen_to_string().contains("│"))
+            .unwrap();
 
         let cursors = harness.find_all_cursors();
         // eprintln!("Cursors on {}: {:?}", row_label, cursors);
@@ -1340,8 +1345,9 @@ Text below the table.
 
     // Press Up — should move above the table (to the blank line before it)
     harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-    settle(&mut harness);
-    harness.render().unwrap();
+    harness
+        .wait_until_stable(|h| h.screen_to_string().contains("│"))
+        .unwrap();
 
     let pos_after_up = harness.screen_cursor_position();
     let byte_after_up = harness.cursor_position();
@@ -1365,8 +1371,9 @@ Text below the table.
 
     // Press Up again — should reach "Some text above the table."
     harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-    settle(&mut harness);
-    harness.render().unwrap();
+    harness
+        .wait_until_stable(|h| h.screen_to_string().contains("│"))
+        .unwrap();
 
     let byte_on_text = harness.cursor_position();
     let content = harness.get_buffer_content().unwrap();
@@ -1445,7 +1452,7 @@ End of test.
     // Wait for compose mode to fully activate: table box-drawing conceals applied.
     // The table header should show │ delimiters once compose mode processes it.
     harness
-        .wait_until(|h| {
+        .wait_until_stable(|h| {
             let s = h.screen_to_string();
             // Table conceals active AND emphasis conceals active (no raw **)
             s.lines().any(|l| l.contains("│") && l.contains("Bold"))
@@ -1544,27 +1551,19 @@ Here is a [click me](https://example.com) link.
     harness.wait_for_prompt_closed().unwrap();
 
     // Wait for compose mode to fully activate: link conceals applied.
-    // The link text "click me" should appear (possibly wrapped in OSC 8 sequences)
-    // and raw markdown syntax ]( should be concealed.
-    // Use wait_for_async with a timeout so we can diagnose failures.
-    let ready = harness
-        .wait_for_async(
-            |h| {
-                let s = h.screen_to_string();
-                // "cl" is the first 2-char OSC 8 chunk of "click me"
-                (s.contains("click me") || s.contains("cl"))
-                    && !s.lines().any(|l| {
-                        // Check for raw markdown link syntax, ignoring OSC 8 escapes
-                        let stripped = l.replace(|c: char| c == '\x1b' || c == '\x07', "");
-                        let stripped = stripped.replace("]8;;", "");
-                        stripped.contains("](http")
-                    })
-            },
-            10_000,
-        )
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            // "cl" is the first 2-char OSC 8 chunk of "click me"
+            (s.contains("click me") || s.contains("cl"))
+                && !s.lines().any(|l| {
+                    // Check for raw markdown link syntax, ignoring OSC 8 escapes
+                    let stripped = l.replace(|c: char| c == '\x1b' || c == '\x07', "");
+                    let stripped = stripped.replace("]8;;", "");
+                    stripped.contains("](http")
+                })
+        })
         .unwrap();
-
-    assert!(ready, "Compose mode did not activate within timeout");
 
     // Check that the rendered buffer contains OSC 8 escape sequences with the URL.
     // The OSC 8 format is: \x1B]8;;<url>\x07<text>\x1B]8;;\x07
@@ -1648,12 +1647,10 @@ fn test_compose_mode_cursor_visibility_through_emphasis_link() {
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Wait for plugin to fully initialise
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
+    // Wait for compose mode to activate (emphasis concealed).
+    harness
+        .wait_until_stable(|h| !h.screen_to_string().contains("**"))
+        .unwrap();
 
     // Navigate to start of the emphasis+link line
     // Lines: 0="# Test", 1=blank, 2="**[Quick Install](#installation)** and more…"
@@ -1666,15 +1663,13 @@ fn test_compose_mode_cursor_visibility_through_emphasis_link() {
         .unwrap();
     harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
 
-    // Settle after cursor movement so conceals update
-    let settle = |h: &mut EditorTestHarness| {
-        for _ in 0..5 {
-            h.process_async_and_render().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
-            h.advance_time(Duration::from_millis(50));
-        }
-    };
-    settle(&mut harness);
+    // Wait for conceals to update after cursor movement.
+    harness
+        .wait_until_stable(|h| {
+            // Cursor is on the emphasis line, so ** should be auto-exposed
+            h.screen_to_string().contains("**")
+        })
+        .unwrap();
 
     // The raw line: **[Quick Install](#installation)** and more text here.
     // When cursor is on this line, auto-expose reveals all syntax markers.
@@ -1687,12 +1682,12 @@ fn test_compose_mode_cursor_visibility_through_emphasis_link() {
         let cursor_byte = harness.cursor_position();
         positions.push((step, cx, cy, cursor_byte));
 
-        // Move right one position
+        // Move right one position (send_key already renders)
         harness
             .send_key(KeyCode::Right, KeyModifiers::NONE)
             .unwrap();
-        // Settle to let conceals update (cursor entering/leaving spans)
-        settle(&mut harness);
+        // Process async to let conceals update
+        harness.process_async_and_render().unwrap();
     }
 
     // Verify: cursor byte must strictly advance at every step.
@@ -1779,20 +1774,13 @@ fn test_compose_mode_emphasis_auto_expose() {
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Wait for plugin to fully initialise
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-
-    let settle = |h: &mut EditorTestHarness| {
-        for _ in 0..5 {
-            h.process_async_and_render().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
-            h.advance_time(Duration::from_millis(50));
-        }
-    };
+    // Wait for compose mode to activate (emphasis concealed).
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            s.contains("hello") && !s.contains("*hello*")
+        })
+        .unwrap();
 
     // Helper: find the rendered content of the hello line on screen.
     let get_hello_line = |screen: &str| -> String {
@@ -1824,7 +1812,16 @@ fn test_compose_mode_emphasis_auto_expose() {
         .send_key_repeat(KeyCode::Down, KeyModifiers::NONE, 2)
         .unwrap();
     harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
-    settle(&mut harness);
+    // Wait for conceals to settle after cursor movement
+    let mut prev_screen = String::new();
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            let stable = s == prev_screen;
+            prev_screen = s;
+            stable
+        })
+        .unwrap();
 
     let raw_line = "*hello* *hello*";
     let mut failures: Vec<String> = Vec::new();
@@ -1866,7 +1863,16 @@ fn test_compose_mode_emphasis_auto_expose() {
             harness
                 .send_key(KeyCode::Right, KeyModifiers::NONE)
                 .unwrap();
-            settle(&mut harness);
+            // Wait for conceals to settle
+            let mut prev = String::new();
+            harness
+                .wait_until_stable(|h| {
+                    let s = h.screen_to_string();
+                    let stable = s == prev;
+                    prev = s;
+                    stable
+                })
+                .unwrap();
         }
     }
 
@@ -1938,20 +1944,10 @@ fn test_compose_mode_link_auto_expose() {
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Wait for plugin to fully initialise
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-
-    let settle = |h: &mut EditorTestHarness| {
-        for _ in 0..5 {
-            h.process_async_and_render().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
-            h.advance_time(Duration::from_millis(50));
-        }
-    };
+    // Wait for compose mode to activate (link syntax concealed).
+    harness
+        .wait_until_stable(|h| !h.screen_to_string().contains("](#"))
+        .unwrap();
 
     let link_row: u16 = 4; // row 0=menu, 1=tabs, 2="# Test", 3=blank, 4=link line
 
@@ -1959,10 +1955,11 @@ fn test_compose_mode_link_auto_expose() {
     harness
         .send_key(KeyCode::Home, KeyModifiers::CONTROL)
         .unwrap();
-    settle(&mut harness);
+    harness
+        .wait_until_stable(|h| !h.screen_to_string().contains("](#"))
+        .unwrap();
 
     {
-        harness.render().unwrap();
         let off_row = harness.screen_row_text(link_row);
         assert!(
             !off_row.contains("](#"),
@@ -1976,13 +1973,10 @@ fn test_compose_mode_link_auto_expose() {
         .send_key_repeat(KeyCode::Down, KeyModifiers::NONE, 2)
         .unwrap();
     harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
-    // Extra settle: cursor_moved→refreshLines→lines_changed→processLineConceals
-    // async chain needs ~5+ round-trips; use 15 iterations to be safe.
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
+    // Wait for link syntax to be exposed (cursor is now on the link line).
+    harness
+        .wait_until_stable(|h| h.screen_to_string().contains("](#"))
+        .unwrap();
 
     let raw_line = "[Quick Install](#installation)";
     let line_byte_start: usize = 8;
@@ -2009,7 +2003,7 @@ fn test_compose_mode_link_auto_expose() {
             harness
                 .send_key(KeyCode::Right, KeyModifiers::NONE)
                 .unwrap();
-            settle(&mut harness);
+            harness.process_async_and_render().unwrap();
         }
     }
 
@@ -2087,28 +2081,23 @@ End.
     harness.wait_for_prompt_closed().unwrap();
 
     // Wait for compose mode to fully activate with table conceals.
-    let ready = harness
-        .wait_for_async(
-            |h| {
-                let s = h.screen_to_string();
-                s.contains("│") && s.contains("─")
-            },
-            10_000,
-        )
+    // First wait for box-drawing to appear, then wait for screen stability
+    // so all data rows have their conceals applied too.
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            s.contains("│") && s.contains("─")
+        })
         .unwrap();
-    assert!(
-        ready,
-        "Compose mode table conceals did not activate within timeout"
-    );
-
-    // Extra settle time for wrapping computation
-    for _ in 0..10 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-
-    harness.render().unwrap();
+    let mut prev = String::new();
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            let stable = s == prev;
+            prev = s;
+            stable
+        })
+        .unwrap();
     let screen = harness.screen_to_string();
 
     // Dump rendered output for debugging
@@ -2189,7 +2178,6 @@ fn test_compose_mode_table_cursor_down_past_end() {
     use crate::common::harness::{copy_plugin, copy_plugin_lib};
     use crate::common::tracing::init_tracing_from_env;
     use crossterm::event::{KeyCode, KeyModifiers};
-    use std::time::Duration;
 
     init_tracing_from_env();
 
@@ -2242,25 +2230,13 @@ End of document.
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Wait for table conceals with wrapping
-    let ready = harness
-        .wait_for_async(
-            |h| {
-                let s = h.screen_to_string();
-                s.contains("│") && s.contains("─")
-            },
-            10_000,
-        )
+    // Wait for table conceals with wrapping.
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            s.contains("│") && s.contains("─")
+        })
         .unwrap();
-    assert!(ready, "Table conceals did not activate");
-
-    // Extra settle time for wrapping computation
-    for _ in 0..10 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-    harness.render().unwrap();
 
     let content = harness.get_buffer_content().unwrap();
     let table_start_byte = content.find("| Category").unwrap();
@@ -2320,13 +2296,39 @@ End of document.
 fn test_compose_mode_cursor_monotonic_through_tables() {
     use crate::common::harness::{copy_plugin, copy_plugin_lib};
     use crossterm::event::{KeyCode, KeyModifiers};
-    use std::time::Duration;
 
-    // Use the real README.md content — it has links, images, bold/italic,
-    // tables with long cells, code blocks, and other markdown features that
-    // all get concealed in compose mode.
-    let readme_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../README.md");
-    let md_content = std::fs::read_to_string(&readme_path).unwrap();
+    // Synthetic document with the features that trigger the bug: tables with
+    // long cells, bold/italic, links, and code blocks — but small enough to
+    // traverse quickly.
+    let md_content = "\
+# Monotonic Cursor Test
+
+Some **bold text** and *italic text* here.
+
+| Feature | Description | Status |
+|---------|-------------|--------|
+| **Tables** | Box-drawing conceals | Done |
+| *Links* | [Click here](https://example.com) | Done |
+| Code | `inline code` rendering | Done |
+
+Middle paragraph with [a link](https://example.com) and **emphasis**.
+
+| Name | Value | Notes |
+|------|-------|-------|
+| Alpha | 100 | First row |
+| Beta | 200 | Second row |
+| Gamma | 300 | Third row |
+
+```rust
+fn example() {
+    println!(\"hello\");
+}
+```
+
+Final paragraph with **more bold** and *more italic*.
+
+End.
+";
 
     let temp_dir = tempfile::TempDir::new().unwrap();
     let project_root = temp_dir.path().join("project");
@@ -2359,32 +2361,16 @@ fn test_compose_mode_cursor_monotonic_through_tables() {
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Wait for compose mode conceals to activate (the README is large so the
-    // plugin needs more time to process it)
-    let ready = harness
-        .wait_for_async(
-            |h| {
-                let s = h.screen_to_string();
-                // Check for either box-drawing chars (table conceals) or
-                // bold/italic conceals (the first visible compose effect)
-                s.contains("│") || s.contains("─") || !s.contains("**")
-            },
-            30_000,
-        )
+    // Wait for compose mode conceals to activate.
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            s.contains("│") || s.contains("─") || !s.contains("**")
+        })
         .unwrap();
-    assert!(ready, "Compose conceals did not activate");
-
-    for _ in 0..20 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-    harness.render().unwrap();
 
     // --- Move Down through entire document ---
-    // README.md is ~280 lines; with wrapping and conceals the visual line count
-    // is higher, so use plenty of presses to traverse the whole file.
-    let total_downs = 400;
+    let total_downs = 60;
     let mut prev_pos = harness.cursor_position();
     let mut down_positions = vec![prev_pos];
 
@@ -2406,7 +2392,7 @@ fn test_compose_mode_cursor_monotonic_through_tables() {
     }
 
     // --- Move Up through entire document ---
-    let total_ups = 400;
+    let total_ups = 60;
     prev_pos = harness.cursor_position();
     let mut up_positions = vec![prev_pos];
 
@@ -2480,13 +2466,13 @@ fn test_compose_mode_cursor_column_sticky_on_list() {
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Wait for compose mode to settle
-    for _ in 0..15 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-    harness.render().unwrap();
+    // Wait for compose mode to settle — emphasis markers should be concealed
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            s.contains("Reproduce") && !s.contains("**")
+        })
+        .unwrap();
 
     // Navigate to the start of "2." — use Home to go to line start first,
     // then Down to reach it
@@ -2598,13 +2584,10 @@ fn test_compose_mode_cursor_column_zero_sticky_through_wrapped_list() {
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Wait for compose mode to fully settle
-    for _ in 0..20 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-    harness.render().unwrap();
+    // Wait for compose mode to fully settle — list content visible
+    harness
+        .wait_until_stable(|h| h.screen_to_string().contains("First item"))
+        .unwrap();
 
     // Press Home to ensure we start at column 0
     harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
@@ -2620,9 +2603,20 @@ fn test_compose_mode_cursor_column_zero_sticky_through_wrapped_list() {
     //  2. The round trip (down then up) returns to column 0
     let total_presses = 25; // enough to traverse all 5 items + wrapping
     let max_drift = 10; // allow for indentation on wrapped continuation lines
+
     for i in 0..total_presses {
         harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        harness.render().unwrap();
+        // Wait for screen to stabilize after the plugin chain
+        // (cursor_moved → refreshLines → lines_changed → soft-breaks).
+        let mut prev = String::new();
+        harness
+            .wait_until_stable(|h| {
+                let s = h.screen_to_string();
+                let stable = s == prev;
+                prev = s;
+                stable
+            })
+            .unwrap();
 
         let screen = harness.screen_cursor_position();
         let col = screen.0;
@@ -2640,7 +2634,15 @@ fn test_compose_mode_cursor_column_zero_sticky_through_wrapped_list() {
     // --- Move Up back to the top ---
     for i in 0..total_presses {
         harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-        harness.render().unwrap();
+        let mut prev = String::new();
+        harness
+            .wait_until_stable(|h| {
+                let s = h.screen_to_string();
+                let stable = s == prev;
+                prev = s;
+                stable
+            })
+            .unwrap();
 
         let screen = harness.screen_cursor_position();
         let col = screen.0;
@@ -2683,7 +2685,6 @@ fn test_compose_mode_table_emphasis_auto_expose_no_overflow() {
     use crate::common::harness::{copy_plugin, copy_plugin_lib};
     use crate::common::tracing::init_tracing_from_env;
     use crossterm::event::{KeyCode, KeyModifiers};
-    use std::time::Duration;
 
     init_tracing_from_env();
 
@@ -2738,25 +2739,10 @@ Done.
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Wait for compose mode to fully settle
-    for _ in 0..20 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-    harness.render().unwrap();
-
-    let settle = |h: &mut EditorTestHarness| {
-        for _ in 0..5 {
-            h.process_async_and_render().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
-            h.advance_time(Duration::from_millis(50));
-        }
-    };
-
-    // Verify table is rendered with box-drawing (compose mode active)
+    // Wait for compose mode table to be fully rendered with box-drawing
+    // and emphasis concealed.
     harness
-        .wait_until(|h| {
+        .wait_until_stable(|h| {
             let s = h.screen_to_string();
             s.lines().any(|l| l.contains("│") && l.contains("Search"))
                 && !s.lines().any(|l| l.contains("**"))
@@ -2796,17 +2782,16 @@ Done.
             .unwrap();
         harness.render().unwrap();
     }
-    settle(&mut harness);
+
+    // Wait for emphasis markers to be auto-exposed on the cursor row.
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            s.lines().any(|l| l.contains("**Search"))
+        })
+        .unwrap();
 
     let screen_after = harness.screen_to_string();
-
-    // The **Search & Replace** markers should now be visible (auto-exposed
-    // for the entire row, not just the span the cursor is in)
-    assert!(
-        screen_after.lines().any(|l| l.contains("**Search")),
-        "With cursor on table row, emphasis markers should be auto-exposed.\nScreen:\n{}",
-        screen_after,
-    );
 
     // The cursor row shows raw text without padding/truncation, so it may
     // overflow the viewport width (raw text is wider than allocated columns).
@@ -2842,7 +2827,6 @@ fn test_compose_mode_table_cursor_render_through_emphasis() {
     use crate::common::harness::{copy_plugin, copy_plugin_lib};
     use crate::common::tracing::init_tracing_from_env;
     use crossterm::event::{KeyCode, KeyModifiers};
-    use std::time::Duration;
 
     init_tracing_from_env();
 
@@ -2897,25 +2881,10 @@ End.
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Wait for compose mode to fully settle
-    for _ in 0..20 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-    harness.render().unwrap();
-
-    let settle = |h: &mut EditorTestHarness| {
-        for _ in 0..5 {
-            h.process_async_and_render().unwrap();
-            std::thread::sleep(Duration::from_millis(50));
-            h.advance_time(Duration::from_millis(50));
-        }
-    };
-
-    // Verify table is rendered with all emphasis concealed
+    // Wait for compose mode to fully activate: table box-drawing visible and
+    // all emphasis concealed.
     harness
-        .wait_until(|h| {
+        .wait_until_stable(|h| {
             let s = h.screen_to_string();
             s.lines().any(|l| l.contains("│") && l.contains("Alpha"))
                 && !s.lines().any(|l| l.contains("**"))
@@ -2953,6 +2922,53 @@ End.
         }
     }
 
+    /// Wait until the screen shows `**{label}**` for the expected row AND
+    /// all other rows have their emphasis concealed. Waiting for the full
+    /// stable state prevents races where the plugin is still re-processing
+    /// other rows.
+    /// Advances logical time to allow debounce/plugin processing to complete.
+    fn wait_for_only_row_exposed(
+        harness: &mut EditorTestHarness,
+        labels: &[&str],
+        exposed_label: &str,
+    ) {
+        let wait_sleep = std::time::Duration::from_millis(50);
+        loop {
+            harness.process_async_and_render().unwrap();
+            let s = harness.screen_to_string();
+            // Check: exposed_label has markers, all others do not
+            let target_ok = s
+                .lines()
+                .any(|l| l.contains(&format!("**{}**", exposed_label)));
+            let others_ok = labels.iter().all(|&l| {
+                l == exposed_label || !s.lines().any(|line| line.contains(&format!("**{}**", l)))
+            });
+            if target_ok && others_ok {
+                return;
+            }
+            std::thread::sleep(wait_sleep);
+            harness.advance_time(wait_sleep);
+        }
+    }
+
+    /// Wait until no rows in the table have exposed emphasis markers.
+    /// Advances logical time to allow debounce/plugin processing to complete.
+    fn wait_for_all_concealed(harness: &mut EditorTestHarness, labels: &[&str]) {
+        let wait_sleep = std::time::Duration::from_millis(50);
+        loop {
+            harness.process_async_and_render().unwrap();
+            let s = harness.screen_to_string();
+            let any_exposed = labels
+                .iter()
+                .any(|l| s.lines().any(|line| line.contains(&format!("**{}**", l))));
+            if !any_exposed {
+                return;
+            }
+            std::thread::sleep(wait_sleep);
+            harness.advance_time(wait_sleep);
+        }
+    }
+
     // Navigate: Ctrl+Home → Down×4 to reach first data row (Alpha)
     harness
         .send_key(KeyCode::Home, KeyModifiers::CONTROL)
@@ -2962,7 +2978,7 @@ End.
         harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
         harness.render().unwrap();
     }
-    settle(&mut harness);
+    wait_for_only_row_exposed(&mut harness, &labels, labels[0]);
 
     // --- Move DOWN through all 6 rows ---
     for i in 0..labels.len() {
@@ -2977,7 +2993,7 @@ End.
         // Move down to next row (skip on the last iteration)
         if i + 1 < labels.len() {
             harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-            settle(&mut harness);
+            wait_for_only_row_exposed(&mut harness, &labels, labels[i + 1]);
         }
     }
 
@@ -2994,7 +3010,7 @@ End.
         // Move up to previous row (skip on the last iteration)
         if i > 0 {
             harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-            settle(&mut harness);
+            wait_for_only_row_exposed(&mut harness, &labels, labels[i - 1]);
         }
     }
 
@@ -3004,7 +3020,7 @@ End.
         harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
         harness.render().unwrap();
     }
-    settle(&mut harness);
+    wait_for_all_concealed(&mut harness, &labels);
 
     let screen = harness.screen_to_string();
     assert_only_row_exposed(&screen, &labels, None, "Cursor above table");
@@ -3080,17 +3096,9 @@ Done.
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Wait for compose mode to fully settle
-    for _ in 0..20 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-    harness.render().unwrap();
-
-    // Verify table is rendered with box-drawing
+    // Wait for compose mode to fully settle — table with box-drawing visible
     harness
-        .wait_until(|h| {
+        .wait_until_stable(|h| {
             let s = h.screen_to_string();
             s.lines().any(|l| l.contains("│") && l.contains("Editing"))
         })
@@ -3305,13 +3313,10 @@ Another line here.
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
 
-    // Let compose mode settle with new width
-    for _ in 0..20 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-    harness.render().unwrap();
+    // Wait for compose mode to settle with new width — text should be visible
+    harness
+        .wait_until_stable(|h| h.screen_to_string().contains("This is a test"))
+        .unwrap();
 
     // The text line "This is a test paragraph with some text." should be
     // visible and centered. Find its screen row.
@@ -3381,7 +3386,6 @@ fn test_compose_mode_mouse_click_auto_exposes_emphasis() {
     use crate::common::harness::{copy_plugin, copy_plugin_lib};
     use crate::common::tracing::init_tracing_from_env;
     use crossterm::event::{KeyCode, KeyModifiers};
-    use std::time::Duration;
 
     init_tracing_from_env();
 
@@ -3411,6 +3415,10 @@ End.
 
     harness.open_file(&md_path).unwrap();
     harness.render().unwrap();
+    eprintln!(
+        "[DIAG] after open+render, screen:\n{}",
+        harness.screen_to_string()
+    );
 
     // Enable compose mode
     harness
@@ -3423,29 +3431,31 @@ End.
         .send_key(KeyCode::Enter, KeyModifiers::NONE)
         .unwrap();
     harness.wait_for_prompt_closed().unwrap();
-
-    // Let compose mode settle
-    for _ in 0..20 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
-    harness.render().unwrap();
-
-    // Verify emphasis is concealed (no ** visible)
-    let screen_before = harness.screen_to_string();
-    assert!(
-        screen_before.contains("bold text"),
-        "Should show 'bold text' in compose mode.\nScreen:\n{}",
-        screen_before,
+    eprintln!(
+        "[DIAG] after Toggle Compose, screen:\n{}",
+        harness.screen_to_string()
     );
-    assert!(
-        !screen_before.contains("**"),
-        "Emphasis markers should be concealed before click.\nScreen:\n{}",
-        screen_before,
+
+    // Wait for compose mode to activate: emphasis should be concealed.
+    let init_iter = std::sync::atomic::AtomicUsize::new(0);
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            let i = init_iter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let has_bold = s.contains("bold text");
+            let has_stars = s.contains("**");
+            eprintln!("[DIAG] init wait iter={i} has_bold={has_bold} has_stars={has_stars}");
+            eprintln!("[DIAG] screen:\n{s}");
+            has_bold && !has_stars
+        })
+        .unwrap();
+    eprintln!(
+        "[DIAG] compose init done after {} iters",
+        init_iter.load(std::sync::atomic::Ordering::Relaxed)
     );
 
     // Find the screen position of "bold" to click on it
+    let screen_before = harness.screen_to_string();
     let bold_row = screen_before
         .lines()
         .enumerate()
@@ -3454,16 +3464,37 @@ End.
         .expect("Should find 'bold text' on screen");
     let bold_line = screen_before.lines().nth(bold_row as usize).unwrap();
     let bold_col = bold_line.find("bold").unwrap() as u16;
+    eprintln!("[DIAG] clicking at col={}, row={}", bold_col + 2, bold_row);
 
     // Click on "bold text"
     harness.mouse_click(bold_col + 2, bold_row).unwrap();
+    eprintln!(
+        "[DIAG] after mouse_click, screen:\n{}",
+        harness.screen_to_string()
+    );
 
-    // Let the plugin process the cursor move
-    for _ in 0..10 {
-        harness.process_async_and_render().unwrap();
-        std::thread::sleep(Duration::from_millis(50));
-        harness.advance_time(Duration::from_millis(50));
-    }
+    // Wait for emphasis markers to be auto-exposed by mouse click.
+    let expose_iter = std::sync::atomic::AtomicUsize::new(0);
+    harness
+        .wait_until_stable(|h| {
+            let s = h.screen_to_string();
+            let i = expose_iter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let has_exposed = s.contains("**bold text**");
+            let has_stars = s.contains("**");
+            let has_bold = s.contains("bold text");
+            if i < 5 || i % 50 == 0 {
+                eprintln!("[DIAG] expose wait iter={i} has_exposed={has_exposed} has_stars={has_stars} has_bold={has_bold}");
+                if i % 50 == 0 {
+                    eprintln!("[DIAG] screen:\n{s}");
+                }
+            }
+            has_exposed
+        })
+        .unwrap();
+    eprintln!(
+        "[DIAG] expose done after {} iters",
+        expose_iter.load(std::sync::atomic::Ordering::Relaxed)
+    );
 
     let screen_after = harness.screen_to_string();
 

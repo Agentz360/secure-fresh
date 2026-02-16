@@ -743,6 +743,18 @@ pub struct EditorStateSnapshot {
     /// Global editor mode for modal editing (e.g., "vi-normal", "vi-insert")
     /// When set, this mode's keybindings take precedence over normal key handling
     pub editor_mode: Option<String>,
+
+    /// Plugin-managed per-buffer view state for the active split.
+    /// Updated from BufferViewState.plugin_state during snapshot updates.
+    /// Also written directly by JS plugins via setViewState for immediate read-back.
+    #[ts(type = "any")]
+    pub plugin_view_states: HashMap<BufferId, HashMap<String, serde_json::Value>>,
+
+    /// Tracks which split was active when plugin_view_states was last populated.
+    /// When the active split changes, plugin_view_states is fully repopulated.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub plugin_view_states_split: usize,
 }
 
 impl EditorStateSnapshot {
@@ -764,6 +776,8 @@ impl EditorStateSnapshot {
             config: serde_json::Value::Null,
             user_config: serde_json::Value::Null,
             editor_mode: None,
+            plugin_view_states: HashMap::new(),
+            plugin_view_states_split: 0,
         }
     }
 }
@@ -921,6 +935,15 @@ pub enum PluginCommand {
         split_id: Option<SplitId>,
     },
 
+    /// Set plugin-managed view state for a buffer in the active split.
+    /// Stored in BufferViewState.plugin_state and persisted across sessions.
+    SetViewState {
+        buffer_id: BufferId,
+        key: String,
+        #[ts(type = "any")]
+        value: Option<serde_json::Value>,
+    },
+
     /// Remove all overlays from a buffer
     ClearAllOverlays { buffer_id: BufferId },
 
@@ -1045,6 +1068,16 @@ pub enum PluginCommand {
 
     /// Refresh lines for a buffer (clear seen_lines cache to re-trigger lines_changed hook)
     RefreshLines { buffer_id: BufferId },
+
+    /// Refresh lines for ALL buffers (clear entire seen_lines cache)
+    /// Sent when a plugin registers for the lines_changed hook to handle the race
+    /// where render marks lines as "seen" before the plugin has registered.
+    RefreshAllLines,
+
+    /// Sentinel sent by the plugin thread after a hook has been fully processed.
+    /// Used by the render loop to wait deterministically for plugin responses
+    /// (e.g., conceal commands from `lines_changed`) instead of polling.
+    HookCompleted { hook_name: String },
 
     /// Set a line indicator in the gutter's indicator column
     /// Used for git gutter, breakpoints, bookmarks, etc.

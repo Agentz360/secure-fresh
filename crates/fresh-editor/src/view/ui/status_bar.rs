@@ -270,6 +270,7 @@ impl StatusBarRenderer {
         frame: &mut Frame,
         area: Rect,
         state: &mut EditorState,
+        cursors: &crate::model::cursor::Cursors,
         status_message: &Option<String>,
         plugin_status_message: &Option<String>,
         lsp_status: &str,
@@ -288,6 +289,7 @@ impl StatusBarRenderer {
             frame,
             area,
             state,
+            cursors,
             status_message,
             plugin_status_message,
             lsp_status,
@@ -472,6 +474,7 @@ impl StatusBarRenderer {
         frame: &mut Frame,
         area: Rect,
         state: &mut EditorState,
+        cursors: &crate::model::cursor::Cursors,
         status_message: &Option<String>,
         plugin_status_message: &Option<String>,
         lsp_status: &str,
@@ -511,13 +514,10 @@ impl StatusBarRenderer {
             String::new()
         };
 
-        // View mode indicator
-        let _mode_label = match state.compose.view_mode {
-            crate::state::ViewMode::Compose => " | Compose",
-            _ => "",
-        };
+        // View mode indicator (view_mode now lives in SplitViewState/BufferViewState)
+        // Not available here — status bar shows only buffer-level info.
 
-        let cursor = *state.primary_cursor();
+        let cursor = *cursors.primary();
 
         // Get line number and column efficiently using cached values
         let (line, col) = {
@@ -569,8 +569,8 @@ impl StatusBarRenderer {
         };
 
         // Build cursor count indicator (only show if multiple cursors)
-        let cursor_count_indicator = if state.cursors.count() > 1 {
-            format!(" | {}", t!("status.cursors", count = state.cursors.count()))
+        let cursor_count_indicator = if cursors.count() > 1 {
+            format!(" | {}", t!("status.cursors", count = cursors.count()))
         } else {
             String::new()
         };

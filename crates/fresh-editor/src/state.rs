@@ -76,37 +76,6 @@ impl Default for BufferSettings {
     }
 }
 
-/// Compose/view-transform rendering state.
-///
-/// These fields control the compose (semi-WYSIWYG) rendering pipeline and are
-/// never touched by the core editing path (`apply_insert`/`apply_delete`/cursor movement).
-/// They are duplicated in `SplitViewState` for per-split overrides and extracted
-/// into `ViewPreferences` at render time.
-#[derive(Debug, Clone)]
-pub struct ComposeState {
-    pub view_mode: ViewMode,
-    pub compose_width: Option<u16>,
-    pub compose_prev_line_numbers: Option<bool>,
-    pub compose_column_guides: Option<Vec<u16>>,
-    pub view_transform: Option<fresh_core::api::ViewTransformPayload>,
-    pub is_composite_buffer: bool,
-    pub debug_highlight_mode: bool,
-}
-
-impl Default for ComposeState {
-    fn default() -> Self {
-        Self {
-            view_mode: ViewMode::Source,
-            compose_width: None,
-            compose_prev_line_numbers: None,
-            compose_column_guides: None,
-            view_transform: None,
-            is_composite_buffer: false,
-            debug_highlight_mode: false,
-        }
-    }
-}
-
 /// The complete editor state - everything needed to represent the current editing session
 ///
 /// NOTE: Viewport is NOT stored here - it lives in SplitViewState.
@@ -115,9 +84,6 @@ impl Default for ComposeState {
 pub struct EditorState {
     /// The text buffer
     pub buffer: Buffer,
-
-    /// All cursors
-    pub cursors: Cursors,
 
     /// Syntax highlighter (tree-sitter or TextMate based on language)
     pub highlighter: HighlightEngine,
@@ -173,8 +139,11 @@ pub struct EditorState {
     /// Semantic highlighter for word occurrence highlighting
     pub reference_highlighter: ReferenceHighlighter,
 
-    /// Compose/view-transform rendering state
-    pub compose: ComposeState,
+    /// Whether this buffer is a composite view (e.g., side-by-side diff)
+    pub is_composite_buffer: bool,
+
+    /// Debug mode: reveal highlight/overlay spans (WordPerfect-style)
+    pub debug_highlight_mode: bool,
 
     /// Debounced semantic highlight cache
     pub reference_highlight_overlay: ReferenceHighlightOverlay,
@@ -202,7 +171,6 @@ impl EditorState {
     ) -> Self {
         Self {
             buffer: Buffer::new(large_file_threshold, fs),
-            cursors: Cursors::new(),
             highlighter: HighlightEngine::None, // No file path, so no syntax highlighting
             indent_calculator: RefCell::new(IndentCalculator::new()),
             overlays: OverlayManager::new(),
@@ -219,7 +187,8 @@ impl EditorState {
             editing_disabled: false,
             buffer_settings: BufferSettings::default(),
             reference_highlighter: ReferenceHighlighter::new(),
-            compose: ComposeState::default(),
+            is_composite_buffer: false,
+            debug_highlight_mode: false,
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
@@ -289,7 +258,6 @@ impl EditorState {
 
         Ok(Self {
             buffer,
-            cursors: Cursors::new(),
             highlighter,
             indent_calculator: RefCell::new(IndentCalculator::new()),
             overlays: OverlayManager::new(),
@@ -306,7 +274,8 @@ impl EditorState {
             editing_disabled: false,
             buffer_settings: BufferSettings::default(),
             reference_highlighter,
-            compose: ComposeState::default(),
+            is_composite_buffer: false,
+            debug_highlight_mode: false,
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
@@ -351,7 +320,6 @@ impl EditorState {
 
         Ok(Self {
             buffer,
-            cursors: Cursors::new(),
             highlighter,
             indent_calculator: RefCell::new(IndentCalculator::new()),
             overlays: OverlayManager::new(),
@@ -368,7 +336,8 @@ impl EditorState {
             editing_disabled: false,
             buffer_settings: BufferSettings::default(),
             reference_highlighter,
-            compose: ComposeState::default(),
+            is_composite_buffer: false,
+            debug_highlight_mode: false,
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
@@ -398,7 +367,6 @@ impl EditorState {
 
         Self {
             buffer,
-            cursors: Cursors::new(),
             highlighter,
             indent_calculator: RefCell::new(IndentCalculator::new()),
             overlays: OverlayManager::new(),
@@ -415,7 +383,8 @@ impl EditorState {
             editing_disabled: false,
             buffer_settings: BufferSettings::default(),
             reference_highlighter,
-            compose: ComposeState::default(),
+            is_composite_buffer: false,
+            debug_highlight_mode: false,
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
@@ -426,6 +395,7 @@ impl EditorState {
     /// Handle an Insert event - adjusts markers, buffer, highlighter, cursors, and line numbers
     fn apply_insert(
         &mut self,
+        cursors: &mut Cursors,
         position: usize,
         text: &str,
         cursor_id: crate::model::event::CursorId,
@@ -447,16 +417,16 @@ impl EditorState {
         // so no manual invalidation needed
 
         // Adjust all cursors after the edit
-        self.cursors.adjust_for_edit(position, 0, text.len());
+        cursors.adjust_for_edit(position, 0, text.len());
 
         // Move the cursor that made the edit to the end of the insertion
-        if let Some(cursor) = self.cursors.get_mut(cursor_id) {
+        if let Some(cursor) = cursors.get_mut(cursor_id) {
             cursor.position = position + text.len();
             cursor.clear_selection();
         }
 
         // Update primary cursor line number if this was the primary cursor
-        if cursor_id == self.cursors.primary_id() {
+        if cursor_id == cursors.primary_id() {
             self.primary_cursor_line_number = match self.primary_cursor_line_number {
                 LineNumber::Absolute(line) => LineNumber::Absolute(line + newlines_inserted),
                 LineNumber::Relative {
@@ -473,6 +443,7 @@ impl EditorState {
     /// Handle a Delete event - adjusts markers, buffer, highlighter, cursors, and line numbers
     fn apply_delete(
         &mut self,
+        cursors: &mut Cursors,
         range: &std::ops::Range<usize>,
         cursor_id: crate::model::event::CursorId,
         deleted_text: &str,
@@ -494,16 +465,16 @@ impl EditorState {
         // so no manual invalidation needed
 
         // Adjust all cursors after the edit
-        self.cursors.adjust_for_edit(range.start, len, 0);
+        cursors.adjust_for_edit(range.start, len, 0);
 
         // Move the cursor that made the edit to the start of deletion
-        if let Some(cursor) = self.cursors.get_mut(cursor_id) {
+        if let Some(cursor) = cursors.get_mut(cursor_id) {
             cursor.position = range.start;
             cursor.clear_selection();
         }
 
         // Update primary cursor line number if this was the primary cursor
-        if cursor_id == self.cursors.primary_id() {
+        if cursor_id == cursors.primary_id() {
             self.primary_cursor_line_number = match self.primary_cursor_line_number {
                 LineNumber::Absolute(line) => {
                     LineNumber::Absolute(line.saturating_sub(newlines_deleted))
@@ -521,19 +492,19 @@ impl EditorState {
 
     /// Apply an event to the state - THE ONLY WAY TO MODIFY STATE
     /// This is the heart of the event-driven architecture
-    pub fn apply(&mut self, event: &Event) {
+    pub fn apply(&mut self, cursors: &mut Cursors, event: &Event) {
         match event {
             Event::Insert {
                 position,
                 text,
                 cursor_id,
-            } => self.apply_insert(*position, text, *cursor_id),
+            } => self.apply_insert(cursors, *position, text, *cursor_id),
 
             Event::Delete {
                 range,
                 cursor_id,
                 deleted_text,
-            } => self.apply_delete(range, *cursor_id, deleted_text),
+            } => self.apply_delete(cursors, range, *cursor_id, deleted_text),
 
             Event::MoveCursor {
                 cursor_id,
@@ -542,7 +513,7 @@ impl EditorState {
                 new_sticky_column,
                 ..
             } => {
-                if let Some(cursor) = self.cursors.get_mut(*cursor_id) {
+                if let Some(cursor) = cursors.get_mut(*cursor_id) {
                     cursor.position = *new_position;
                     cursor.anchor = *new_anchor;
                     cursor.sticky_column = *new_sticky_column;
@@ -550,7 +521,7 @@ impl EditorState {
 
                 // Update primary cursor line number if this is the primary cursor
                 // Try to get exact line number from buffer, or estimate for large files
-                if *cursor_id == self.cursors.primary_id() {
+                if *cursor_id == cursors.primary_id() {
                     self.primary_cursor_line_number =
                         match self.buffer.offset_to_position(*new_position) {
                             Some(pos) => LineNumber::Absolute(pos.line),
@@ -577,13 +548,13 @@ impl EditorState {
 
                 // Insert cursor with the specific ID from the event
                 // This is important for undo/redo to work correctly
-                self.cursors.insert_with_id(*cursor_id, cursor);
+                cursors.insert_with_id(*cursor_id, cursor);
 
-                self.cursors.normalize();
+                cursors.normalize();
             }
 
             Event::RemoveCursor { cursor_id, .. } => {
-                self.cursors.remove(*cursor_id);
+                cursors.remove(*cursor_id);
             }
 
             // View events (Scroll, SetViewport, Recenter) are now handled at Editor level
@@ -600,7 +571,7 @@ impl EditorState {
             } => {
                 // Set the anchor (selection start) for a specific cursor
                 // Also disable deselect_on_move so movement preserves the selection (Emacs mark mode)
-                if let Some(cursor) = self.cursors.get_mut(*cursor_id) {
+                if let Some(cursor) = cursors.get_mut(*cursor_id) {
                     cursor.anchor = Some(*position);
                     cursor.deselect_on_move = false;
                 }
@@ -609,7 +580,7 @@ impl EditorState {
             Event::ClearAnchor { cursor_id } => {
                 // Clear the anchor and reset deselect_on_move to cancel mark mode
                 // Also clear block selection if active
-                if let Some(cursor) = self.cursors.get_mut(*cursor_id) {
+                if let Some(cursor) = cursors.get_mut(*cursor_id) {
                     cursor.anchor = None;
                     cursor.deselect_on_move = true;
                     cursor.clear_block_selection();
@@ -771,7 +742,7 @@ impl EditorState {
                 // Apply all events in the batch sequentially
                 // This ensures multi-cursor operations are applied atomically
                 for event in events {
-                    self.apply(event);
+                    self.apply(cursors, event);
                 }
             }
 
@@ -792,7 +763,7 @@ impl EditorState {
 
                 // Update cursor positions
                 for (cursor_id, position, anchor) in new_cursors {
-                    if let Some(cursor) = self.cursors.get_mut(*cursor_id) {
+                    if let Some(cursor) = cursors.get_mut(*cursor_id) {
                         cursor.position = *position;
                         cursor.anchor = *anchor;
                     }
@@ -802,7 +773,7 @@ impl EditorState {
                 self.highlighter.invalidate_all();
 
                 // Update primary cursor line number
-                let primary_pos = self.cursors.primary().position;
+                let primary_pos = cursors.primary().position;
                 self.primary_cursor_line_number = match self.buffer.offset_to_position(primary_pos)
                 {
                     Some(pos) => crate::model::buffer::LineNumber::Absolute(pos.line),
@@ -813,20 +784,10 @@ impl EditorState {
     }
 
     /// Apply multiple events in sequence
-    pub fn apply_many(&mut self, events: &[Event]) {
+    pub fn apply_many(&mut self, cursors: &mut Cursors, events: &[Event]) {
         for event in events {
-            self.apply(event);
+            self.apply(cursors, event);
         }
-    }
-
-    /// Get the primary cursor
-    pub fn primary_cursor(&self) -> &Cursor {
-        self.cursors.primary()
-    }
-
-    /// Get the primary cursor mutably (for reading state only, not for modification!)
-    pub fn primary_cursor_mut(&mut self) -> &mut Cursor {
-        self.cursors.primary_mut()
     }
 
     /// Called when this buffer loses focus (e.g., switching to another buffer,
@@ -1360,8 +1321,6 @@ mod tests {
             test_fs(),
         );
         assert!(state.buffer.is_empty());
-        assert_eq!(state.cursors.count(), 1);
-        assert_eq!(state.cursors.primary().position, 0);
     }
 
     #[test]
@@ -1372,16 +1331,20 @@ mod tests {
             crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
             test_fs(),
         );
-        let cursor_id = state.cursors.primary_id();
+        let mut cursors = Cursors::new();
+        let cursor_id = cursors.primary_id();
 
-        state.apply(&Event::Insert {
-            position: 0,
-            text: "hello".to_string(),
-            cursor_id,
-        });
+        state.apply(
+            &mut cursors,
+            &Event::Insert {
+                position: 0,
+                text: "hello".to_string(),
+                cursor_id,
+            },
+        );
 
         assert_eq!(state.buffer.to_string().unwrap(), "hello");
-        assert_eq!(state.cursors.primary().position, 5);
+        assert_eq!(cursors.primary().position, 5);
         assert!(state.buffer.is_modified());
     }
 
@@ -1393,23 +1356,30 @@ mod tests {
             crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
             test_fs(),
         );
-        let cursor_id = state.cursors.primary_id();
+        let mut cursors = Cursors::new();
+        let cursor_id = cursors.primary_id();
 
         // Insert then delete
-        state.apply(&Event::Insert {
-            position: 0,
-            text: "hello world".to_string(),
-            cursor_id,
-        });
+        state.apply(
+            &mut cursors,
+            &Event::Insert {
+                position: 0,
+                text: "hello world".to_string(),
+                cursor_id,
+            },
+        );
 
-        state.apply(&Event::Delete {
-            range: 5..11,
-            deleted_text: " world".to_string(),
-            cursor_id,
-        });
+        state.apply(
+            &mut cursors,
+            &Event::Delete {
+                range: 5..11,
+                deleted_text: " world".to_string(),
+                cursor_id,
+            },
+        );
 
         assert_eq!(state.buffer.to_string().unwrap(), "hello");
-        assert_eq!(state.cursors.primary().position, 5);
+        assert_eq!(cursors.primary().position, 5);
     }
 
     #[test]
@@ -1420,25 +1390,32 @@ mod tests {
             crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
             test_fs(),
         );
-        let cursor_id = state.cursors.primary_id();
+        let mut cursors = Cursors::new();
+        let cursor_id = cursors.primary_id();
 
-        state.apply(&Event::Insert {
-            position: 0,
-            text: "hello".to_string(),
-            cursor_id,
-        });
+        state.apply(
+            &mut cursors,
+            &Event::Insert {
+                position: 0,
+                text: "hello".to_string(),
+                cursor_id,
+            },
+        );
 
-        state.apply(&Event::MoveCursor {
-            cursor_id,
-            old_position: 5,
-            new_position: 2,
-            old_anchor: None,
-            new_anchor: None,
-            old_sticky_column: 0,
-            new_sticky_column: 0,
-        });
+        state.apply(
+            &mut cursors,
+            &Event::MoveCursor {
+                cursor_id,
+                old_position: 5,
+                new_position: 2,
+                old_anchor: None,
+                new_anchor: None,
+                old_sticky_column: 0,
+                new_sticky_column: 0,
+            },
+        );
 
-        assert_eq!(state.cursors.primary().position, 2);
+        assert_eq!(cursors.primary().position, 2);
     }
 
     #[test]
@@ -1449,15 +1426,19 @@ mod tests {
             crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
             test_fs(),
         );
+        let mut cursors = Cursors::new();
         let cursor_id = CursorId(1);
 
-        state.apply(&Event::AddCursor {
-            cursor_id,
-            position: 5,
-            anchor: None,
-        });
+        state.apply(
+            &mut cursors,
+            &Event::AddCursor {
+                cursor_id,
+                position: 5,
+                anchor: None,
+            },
+        );
 
-        assert_eq!(state.cursors.count(), 2);
+        assert_eq!(cursors.count(), 2);
     }
 
     #[test]
@@ -1468,7 +1449,8 @@ mod tests {
             crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
             test_fs(),
         );
-        let cursor_id = state.cursors.primary_id();
+        let mut cursors = Cursors::new();
+        let cursor_id = cursors.primary_id();
 
         let events = vec![
             Event::Insert {
@@ -1483,7 +1465,7 @@ mod tests {
             },
         ];
 
-        state.apply_many(&events);
+        state.apply_many(&mut cursors, &events);
 
         assert_eq!(state.buffer.to_string().unwrap(), "hello world");
     }
@@ -1496,24 +1478,31 @@ mod tests {
             crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
             test_fs(),
         );
-        let cursor_id = state.cursors.primary_id();
+        let mut cursors = Cursors::new();
+        let cursor_id = cursors.primary_id();
 
         // Add a second cursor at position 5
-        state.apply(&Event::AddCursor {
-            cursor_id: CursorId(1),
-            position: 5,
-            anchor: None,
-        });
+        state.apply(
+            &mut cursors,
+            &Event::AddCursor {
+                cursor_id: CursorId(1),
+                position: 5,
+                anchor: None,
+            },
+        );
 
         // Insert at position 0 - should push second cursor forward
-        state.apply(&Event::Insert {
-            position: 0,
-            text: "abc".to_string(),
-            cursor_id,
-        });
+        state.apply(
+            &mut cursors,
+            &Event::Insert {
+                position: 0,
+                text: "abc".to_string(),
+                cursor_id,
+            },
+        );
 
         // Second cursor should be at position 5 + 3 = 8
-        if let Some(cursor) = state.cursors.get(CursorId(1)) {
+        if let Some(cursor) = cursors.get(CursorId(1)) {
             assert_eq!(cursor.position, 8);
         }
     }
@@ -1862,12 +1851,16 @@ mod tests {
             );
 
             // Insert "beautiful " at position 6 using Event
-            let cursor_id = state.cursors.primary_id();
-            state.apply(&Event::Insert {
-                position: 6,
-                text: "beautiful ".to_string(),
-                cursor_id,
-            });
+            let mut cursors = Cursors::new();
+            let cursor_id = cursors.primary_id();
+            state.apply(
+                &mut cursors,
+                &Event::Insert {
+                    position: 6,
+                    text: "beautiful ".to_string(),
+                    cursor_id,
+                },
+            );
 
             // Virtual text should now be at position 16 (6 + 10)
             let results = state.virtual_texts.query_range(&state.marker_list, 0, 30);
@@ -1902,12 +1895,16 @@ mod tests {
             );
 
             // Delete "beautiful " (positions 6-16) using Event
-            let cursor_id = state.cursors.primary_id();
-            state.apply(&Event::Delete {
-                range: 6..16,
-                deleted_text: "beautiful ".to_string(),
-                cursor_id,
-            });
+            let mut cursors = Cursors::new();
+            let cursor_id = cursors.primary_id();
+            state.apply(
+                &mut cursors,
+                &Event::Delete {
+                    range: 6..16,
+                    deleted_text: "beautiful ".to_string(),
+                    cursor_id,
+                },
+            );
 
             // Virtual text should now be at position 6
             let results = state.virtual_texts.query_range(&state.marker_list, 0, 20);

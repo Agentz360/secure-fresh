@@ -565,6 +565,64 @@ impl PluginThreadHandle {
         commands
     }
 
+    /// Process commands, blocking until `HookCompleted` for the given hook arrives.
+    ///
+    /// After the render loop fires a hook like `lines_changed`, the plugin thread
+    /// processes it and sends back commands (AddConceal, etc.) followed by a
+    /// `HookCompleted` sentinel. This method waits for that sentinel so the
+    /// render has all conceal/overlay updates before painting the frame.
+    ///
+    /// Returns all non-sentinel commands collected while waiting.
+    /// Falls back to non-blocking drain if the timeout expires.
+    pub fn process_commands_until_hook_completed(
+        &mut self,
+        hook_name: &str,
+        timeout: std::time::Duration,
+    ) -> Vec<PluginCommand> {
+        let mut commands = Vec::new();
+        let deadline = std::time::Instant::now() + timeout;
+
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                // Timeout: drain whatever is available
+                while let Ok(cmd) = self.command_receiver.try_recv() {
+                    if !matches!(&cmd, PluginCommand::HookCompleted { .. }) {
+                        commands.push(cmd);
+                    }
+                }
+                break;
+            }
+
+            match self.command_receiver.recv_timeout(remaining) {
+                Ok(PluginCommand::HookCompleted {
+                    hook_name: ref name,
+                }) if name == hook_name => {
+                    // Got our sentinel — drain any remaining commands
+                    while let Ok(cmd) = self.command_receiver.try_recv() {
+                        if !matches!(&cmd, PluginCommand::HookCompleted { .. }) {
+                            commands.push(cmd);
+                        }
+                    }
+                    break;
+                }
+                Ok(PluginCommand::HookCompleted { .. }) => {
+                    // Sentinel for a different hook, keep waiting
+                    continue;
+                }
+                Ok(cmd) => {
+                    commands.push(cmd);
+                }
+                Err(_) => {
+                    // Timeout or disconnected
+                    break;
+                }
+            }
+        }
+
+        commands
+    }
+
     /// Get the state snapshot handle for editor to update
     pub fn state_snapshot_handle(&self) -> Arc<RwLock<EditorStateSnapshot>> {
         Arc::clone(&self.state_snapshot)
@@ -917,6 +975,9 @@ async fn handle_request(
                 // Surface the error to the UI
                 runtime.borrow_mut().send_status(error_msg);
             }
+            // Send sentinel so the main thread can wait deterministically
+            // for all commands from this hook to be available.
+            runtime.borrow().send_hook_completed(hook_name.clone());
             if hook_name == "prompt_confirmed" || hook_name == "prompt_cancelled" {
                 tracing::info!(
                     hook = %hook_name,

@@ -78,9 +78,10 @@ impl Editor {
 
     /// Check if compose mode is active in the current buffer.
     fn is_compose_mode(&self) -> bool {
-        self.buffers
-            .get(&self.active_buffer())
-            .map(|state| state.compose.view_mode == crate::state::ViewMode::Compose)
+        let active_split = self.split_manager.active_split();
+        self.split_view_states
+            .get(&active_split)
+            .map(|vs| vs.view_mode == crate::state::ViewMode::Compose)
             .unwrap_or(false)
     }
 

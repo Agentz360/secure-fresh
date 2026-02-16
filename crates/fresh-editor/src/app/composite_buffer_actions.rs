@@ -201,7 +201,7 @@ impl Editor {
             crate::config::LARGE_FILE_THRESHOLD_BYTES as usize,
             std::sync::Arc::clone(&self.filesystem),
         );
-        state.compose.is_composite_buffer = true;
+        state.is_composite_buffer = true;
         state.editing_disabled = true;
         state.mode = mode;
         self.buffers.insert(buffer_id, state);
@@ -706,7 +706,11 @@ impl Editor {
         if let Some(state) = self.buffers.get_mut(&buffer_id) {
             state.primary_cursor_line_number =
                 crate::model::buffer::LineNumber::Absolute(display_line);
-            state.cursors.primary_mut().position = cursor_column;
+        }
+        // Update cursor position in SplitViewState
+        let active_split = self.split_manager.active_split();
+        if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
+            view_state.cursors.primary_mut().position = cursor_column;
         }
     }
 

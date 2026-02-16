@@ -17,63 +17,53 @@ use super::Editor;
 impl Editor {
     /// Split the current pane horizontally
     pub fn split_pane_horizontal(&mut self) {
-        // Save current split's view state before creating a new one
-        self.save_current_split_view_state();
-
-        // Share the current buffer with the new split (Emacs-style)
-        let current_buffer_id = self.active_buffer();
-
-        // Split the pane
-        match self.split_manager.split_active(
-            crate::model::event::SplitDirection::Horizontal,
-            current_buffer_id,
-            0.5,
-        ) {
-            Ok(new_split_id) => {
-                // Create independent view state for the new split with the current buffer
-                let mut view_state = SplitViewState::with_buffer(
-                    self.terminal_width,
-                    self.terminal_height,
-                    current_buffer_id,
-                );
-                view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
-                self.split_view_states.insert(new_split_id, view_state);
-                // Restore the new split's view state to the buffer
-                self.restore_current_split_view_state();
-                self.set_status_message(t!("split.horizontal").to_string());
-            }
-            Err(e) => {
-                self.set_status_message(t!("split.error", error = e.to_string()).to_string());
-            }
-        }
+        self.split_pane_impl(crate::model::event::SplitDirection::Horizontal);
     }
 
     /// Split the current pane vertically
     pub fn split_pane_vertical(&mut self) {
-        // Save current split's view state before creating a new one
-        self.save_current_split_view_state();
+        self.split_pane_impl(crate::model::event::SplitDirection::Vertical);
+    }
 
-        // Share the current buffer with the new split (Emacs-style)
+    /// Common split creation logic
+    fn split_pane_impl(&mut self, direction: crate::model::event::SplitDirection) {
         let current_buffer_id = self.active_buffer();
+        let active_split = self.split_manager.active_split();
 
-        // Split the pane
-        match self.split_manager.split_active(
-            crate::model::event::SplitDirection::Vertical,
-            current_buffer_id,
-            0.5,
-        ) {
+        // Copy keyed states from source split so the new split inherits per-buffer state
+        let source_keyed_states = self
+            .split_view_states
+            .get(&active_split)
+            .map(|vs| vs.keyed_states.clone());
+
+        match self
+            .split_manager
+            .split_active(direction, current_buffer_id, 0.5)
+        {
             Ok(new_split_id) => {
-                // Create independent view state for the new split with the current buffer
                 let mut view_state = SplitViewState::with_buffer(
                     self.terminal_width,
                     self.terminal_height,
                     current_buffer_id,
                 );
                 view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+
+                // Copy keyed states from source split for OTHER buffers (not the active one).
+                // The active buffer gets a fresh cursor in the new split.
+                if let Some(source) = source_keyed_states {
+                    for (buf_id, buf_state) in source {
+                        if buf_id != current_buffer_id {
+                            view_state.keyed_states.insert(buf_id, buf_state);
+                        }
+                    }
+                }
+
                 self.split_view_states.insert(new_split_id, view_state);
-                // Restore the new split's view state to the buffer
-                self.restore_current_split_view_state();
-                self.set_status_message(t!("split.vertical").to_string());
+                let msg = match direction {
+                    crate::model::event::SplitDirection::Horizontal => t!("split.horizontal"),
+                    crate::model::event::SplitDirection::Vertical => t!("split.vertical"),
+                };
+                self.set_status_message(msg.to_string());
             }
             Err(e) => {
                 self.set_status_message(t!("split.error", error = e.to_string()).to_string());
@@ -112,9 +102,6 @@ impl Editor {
 
                 // NOTE: active_buffer is now derived from split_manager, no sync needed
 
-                // Sync the view state to editor state
-                self.sync_split_view_state_to_editor_state();
-
                 self.set_status_message(t!("split.closed").to_string());
             }
             Err(e) => {
@@ -139,13 +126,15 @@ impl Editor {
 
     /// Common split switching logic
     fn switch_split(&mut self, next: bool) {
-        self.save_current_split_view_state();
         if next {
             self.split_manager.next_split();
         } else {
             self.split_manager.prev_split();
         }
-        self.restore_current_split_view_state();
+
+        // Ensure the active tab is visible in the newly active split
+        let split_id = self.split_manager.active_split();
+        self.ensure_active_tab_visible(split_id, self.active_buffer(), self.effective_tabs_width());
 
         let buffer_id = self.active_buffer();
 
@@ -159,41 +148,6 @@ impl Editor {
         if self.is_terminal_buffer(buffer_id) {
             self.terminal_mode = true;
             self.key_context = crate::input::keybindings::KeyContext::Terminal;
-        }
-    }
-
-    /// Save the current split's cursor state (viewport is owned by SplitViewState)
-    pub(crate) fn save_current_split_view_state(&mut self) {
-        let split_id = self.split_manager.active_split();
-        if let Some(buffer_state) = self.buffers.get(&self.active_buffer()) {
-            if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
-                view_state.cursors = buffer_state.cursors.clone();
-                // Note: viewport is now owned by SplitViewState, no sync needed
-            }
-        }
-    }
-
-    /// Restore the current split's cursor state (viewport is owned by SplitViewState)
-    pub(crate) fn restore_current_split_view_state(&mut self) {
-        let split_id = self.split_manager.active_split();
-        // NOTE: active_buffer is now derived from split_manager, no sync needed
-        // Restore cursor from split view state (viewport stays in SplitViewState)
-        self.sync_split_view_state_to_editor_state();
-        // Ensure the active tab is visible in the newly active split
-        // Use effective_tabs_width() to account for file explorer taking 30% of width
-        self.ensure_active_tab_visible(split_id, self.active_buffer(), self.effective_tabs_width());
-    }
-
-    /// Sync SplitViewState's cursors to EditorState
-    /// Called when switching splits to restore the split's cursor state
-    /// Note: Viewport is now owned by SplitViewState, not synced to EditorState
-    pub(crate) fn sync_split_view_state_to_editor_state(&mut self) {
-        let split_id = self.split_manager.active_split();
-        if let Some(view_state) = self.split_view_states.get(&split_id) {
-            if let Some(buffer_state) = self.buffers.get_mut(&self.active_buffer()) {
-                buffer_state.cursors = view_state.cursors.clone();
-                // Note: viewport is now owned by SplitViewState, no sync needed
-            }
         }
     }
 
@@ -375,21 +329,5 @@ impl Editor {
         source_split_id: SplitId,
     ) -> Option<super::types::TabDropZone> {
         self.compute_tab_drop_zone(col, row, source_split_id)
-    }
-
-    /// Sync EditorState's cursors back to SplitViewState
-    ///
-    /// This keeps SplitViewState's cursor state in sync with EditorState after
-    /// events are applied. This is necessary because cursor events (cursor
-    /// movements, edits) still update EditorState.cursors directly.
-    /// Note: Viewport is now owned by SplitViewState, no sync needed.
-    pub(crate) fn sync_editor_state_to_split_view_state(&mut self) {
-        let split_id = self.split_manager.active_split();
-        if let Some(buffer_state) = self.buffers.get(&self.active_buffer()) {
-            if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
-                view_state.cursors = buffer_state.cursors.clone();
-                // Note: viewport is now owned by SplitViewState, no sync needed
-            }
-        }
     }
 }

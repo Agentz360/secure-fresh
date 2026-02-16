@@ -22,16 +22,44 @@ const config: MarkdownConfig = {
   hideLineNumbers: true,
 };
 
-// Track buffers in compose mode (explicit toggle)
-const composeBuffers = new Set<number>();
-
-// Table column widths: bufferId → line number → TableWidthInfo
-// Each entry is keyed by the line number within the table group.
+// Table column widths stored per-buffer-per-split via setViewState/getViewState.
+// Persisted across sessions and independent per split.
 interface TableWidthInfo {
   maxW: number[];
   allocated: number[];
 }
-const tableColumnWidths = new Map<number, Map<number, TableWidthInfo>>();
+
+// Helper: check whether a buffer is in compose mode (source of truth is Rust-side view_mode)
+function isComposing(bufferId: number): boolean {
+  const info = editor.getBufferInfo(bufferId);
+  editor.debug("getBufferInfo: " + String(info && info.view_mode));
+  return info != null && info.view_mode === "compose";
+}
+
+// Helper: get cached table column widths from per-buffer-per-split view state
+function getTableWidths(bufferId: number): Map<number, TableWidthInfo> | undefined {
+  const obj = editor.getViewState(bufferId, "table-widths") as Record<string, { maxW: number[]; allocated: number[] }> | undefined;
+  if (!obj || typeof obj !== "object") return undefined;
+  const map = new Map<number, TableWidthInfo>();
+  for (const [k, v] of Object.entries(obj)) {
+    map.set(parseInt(k, 10), v);
+  }
+  return map;
+}
+
+// Helper: store cached table column widths in per-buffer-per-split view state
+function setTableWidths(bufferId: number, widthMap: Map<number, TableWidthInfo>): void {
+  const obj: Record<string, TableWidthInfo> = {};
+  for (const [k, v] of widthMap) {
+    obj[String(k)] = v;
+  }
+  editor.setViewState(bufferId, "table-widths", obj);
+}
+
+// Helper: clear cached table column widths
+function clearTableWidths(bufferId: number): void {
+  editor.setViewState(bufferId, "table-widths", null);
+}
 
 // Static map of named HTML entities to their Unicode replacements
 const HTML_ENTITY_MAP: Record<string, string> = {
@@ -334,53 +362,39 @@ function isMarkdownFile(path: string): boolean {
   return path.endsWith('.md') || path.endsWith('.markdown');
 }
 
-// Process a buffer in compose mode - just enables compose mode
-// The actual transform happens via view_transform_request hook
-function processBuffer(bufferId: number, _splitId?: number): void {
-  if (!composeBuffers.has(bufferId)) return;
 
-  const info = editor.getBufferInfo(bufferId);
-  if (!info || !isMarkdownFile(info.path)) return;
-
-  editor.debug(`processBuffer: enabling compose mode for ${info.path}, buffer_id=${bufferId}`);
-
-  // Trigger a refresh to get the view_transform_request hook called
-  editor.refreshLines(bufferId);
-}
-
-// Enable full compose mode for a buffer (explicit toggle)
+// Enable full compose mode for a buffer (explicit toggle or restore from session).
+// Idempotent: safe to call when already in compose mode (re-applies line numbers,
+// line wrap, and layout hints — needed after session restore where Rust already has
+// ViewMode::Compose but the plugin hasn't applied its settings yet).
 function enableMarkdownCompose(bufferId: number): void {
   const info = editor.getBufferInfo(bufferId);
   if (!info || !isMarkdownFile(info.path)) return;
 
-  if (!composeBuffers.has(bufferId)) {
-    composeBuffers.add(bufferId);
+  // Tell Rust side this buffer is in compose mode (idempotent)
+  editor.setViewMode(bufferId, "compose");
 
-    // Tell Rust side this buffer is in compose mode (persisted in session)
-    editor.setViewMode(bufferId, "compose");
+  // Hide line numbers in compose mode
+  editor.setLineNumbers(bufferId, false);
 
-    // Hide line numbers in compose mode
-    editor.setLineNumbers(bufferId, false);
+  // Enable native line wrapping so that long lines without whitespace
+  // (which the plugin can't soft-break) are force-wrapped by the Rust
+  // wrapping transform at the content width.
+  editor.setLineWrap(bufferId, null, true);
 
-    // Enable native line wrapping so that long lines without whitespace
-    // (which the plugin can't soft-break) are force-wrapped by the Rust
-    // wrapping transform at the content width.
-    editor.setLineWrap(bufferId, null, true);
+  // Set layout hints for centered margins
+  editor.setLayoutHints(bufferId, null, { composeWidth: config.composeWidth });
 
-    // Set layout hints for centered margins
-    editor.setLayoutHints(bufferId, null, { composeWidth: config.composeWidth });
-
-    processBuffer(bufferId);
-    editor.debug(`Markdown compose enabled for buffer ${bufferId}`);
-  }
+  // Trigger a refresh so lines_changed hooks fire for visible content
+  editor.refreshLines(bufferId);
+  editor.debug(`Markdown compose enabled for buffer ${bufferId}`);
 }
 
 // Disable compose mode for a buffer
 function disableMarkdownCompose(bufferId: number): void {
-  if (composeBuffers.has(bufferId)) {
-    composeBuffers.delete(bufferId);
-    lastCursorLine.delete(bufferId);
-    tableColumnWidths.delete(bufferId);
+  if (isComposing(bufferId)) {
+    editor.setViewState(bufferId, "last-cursor-line", null);
+    clearTableWidths(bufferId);
 
     // Tell Rust side this buffer is back in source mode
     editor.setViewMode(bufferId, "source");
@@ -412,7 +426,7 @@ globalThis.markdownToggleCompose = function(): void {
     return;
   }
 
-  if (composeBuffers.has(bufferId)) {
+  if (isComposing(bufferId)) {
     disableMarkdownCompose(bufferId);
     editor.setStatus(editor.t("status.compose_off"));
   } else {
@@ -839,7 +853,7 @@ function processLineConceals(
     const isSeparator = /^\|[-:\s|]+\|$/.test(trimmed);
 
     // Look up stored column widths for alignment padding
-    const bufWidths = lineNumber !== undefined ? tableColumnWidths.get(bufferId) : undefined;
+    const bufWidths = lineNumber !== undefined ? getTableWidths(bufferId) : undefined;
     const widthInfo = bufWidths && lineNumber !== undefined ? bufWidths.get(lineNumber) : undefined;
     const colWidths = widthInfo ? widthInfo.allocated : undefined;
 
@@ -1049,8 +1063,7 @@ function processLineConceals(
   }
 }
 
-// Track which line the cursor was last on, per buffer (for cursor-aware reveal updates)
-const lastCursorLine = new Map<number, number>();
+// Last cursor line is tracked per-buffer-per-split via setViewState/getViewState
 
 // Track viewport width per buffer for resize detection
 let lastViewportWidth = 0;
@@ -1104,7 +1117,7 @@ function processLineSoftBreaks(
     const trimmedLine = lineContent.trim();
     const isSep = /^\|[-:\s|]+\|$/.test(trimmedLine);
     if (!isSep) {
-      const bufWidths = tableColumnWidths.get(bufferId);
+      const bufWidths = getTableWidths(bufferId);
       const widthInfo = bufWidths ? bufWidths.get(lineNumber) : undefined;
       const colWidths = widthInfo ? widthInfo.allocated : undefined;
       if (colWidths) {
@@ -1210,7 +1223,7 @@ function processTableAlignment(
   lines: Array<{ line_number: number; byte_start: number; byte_end: number; content: string }>,
 ): boolean {
   // Get existing cache (accumulate-and-grow — don't discard previous widths)
-  const widthMap = tableColumnWidths.get(bufferId) ?? new Map<number, TableWidthInfo>();
+  const widthMap = getTableWidths(bufferId) ?? new Map<number, TableWidthInfo>();
   let needsRefresh = false;
 
   // Group consecutive table rows
@@ -1335,7 +1348,7 @@ function processTableAlignment(
     }
   }
 
-  tableColumnWidths.set(bufferId, widthMap);
+  setTableWidths(bufferId, widthMap);
   return needsRefresh;
 }
 
@@ -1349,7 +1362,7 @@ globalThis.onMarkdownLinesChanged = function(data: {
     content: string;
   }>;
 }): void {
-  if (!composeBuffers.has(data.buffer_id)) return;
+  if (!isComposing(data.buffer_id)) return;
   const lineNums = data.lines.map(l => `${l.line_number}(${l.byte_start}..${l.byte_end})`).join(', ');
   editor.debug(`[mc] lines_changed: ${data.lines.length} lines: [${lineNums}]`);
   const cursors = [editor.getCursorPosition()];
@@ -1384,7 +1397,7 @@ globalThis.onMarkdownAfterInsert = function(data: {
   affected_start: number;
   affected_end: number;
 }): void {
-  if (!composeBuffers.has(data.buffer_id)) return;
+  if (!isComposing(data.buffer_id)) return;
   editor.debug(`[mc] after_insert: pos=${data.position} text="${data.text.replace(/\n/g,'\\n')}" affected=${data.affected_start}..${data.affected_end}`);
 };
 
@@ -1397,7 +1410,7 @@ globalThis.onMarkdownAfterDelete = function(data: {
   affected_start: number;
   deleted_len: number;
 }): void {
-  if (!composeBuffers.has(data.buffer_id)) return;
+  if (!isComposing(data.buffer_id)) return;
   editor.debug(`[mc] after_delete: start=${data.start} end=${data.end} deleted="${data.deleted_text.replace(/\n/g,'\\n')}" affected_start=${data.affected_start} deleted_len=${data.deleted_len}`);
 };
 
@@ -1409,10 +1422,10 @@ globalThis.onMarkdownCursorMoved = function(data: {
   new_position: number;
   line: number;
 }): void {
-  if (!composeBuffers.has(data.buffer_id)) return;
+  if (!isComposing(data.buffer_id)) return;
 
-  const prevLine = lastCursorLine.get(data.buffer_id);
-  lastCursorLine.set(data.buffer_id, data.line);
+  const prevLine = editor.getViewState(data.buffer_id, "last-cursor-line") as number | undefined;
+  editor.setViewState(data.buffer_id, "last-cursor-line", data.line);
 
   editor.debug(`[mc] cursor_moved: old_pos=${data.old_position} new_pos=${data.new_position} line=${data.line} prevLine=${prevLine}`);
 
@@ -1429,8 +1442,7 @@ globalThis.onMarkdownCursorMoved = function(data: {
 
 // Handle buffer close events - clean up compose mode tracking
 globalThis.onMarkdownBufferClosed = function(data: { buffer_id: number }): void {
-  composeBuffers.delete(data.buffer_id);
-  lastCursorLine.delete(data.buffer_id);
+  // View state is cleaned up automatically when the buffer is removed from keyed_states
 };
 
 // viewport_changed: recalculate table column widths on terminal resize
@@ -1441,33 +1453,33 @@ globalThis.onMarkdownViewportChanged = function(data: {
   width: number;
   height: number;
 }): void {
-  if (!composeBuffers.has(data.buffer_id)) return;
+  if (!isComposing(data.buffer_id)) return;
   if (data.width === lastViewportWidth) return;
   lastViewportWidth = data.width;
 
   // Recompute allocated table column widths for new viewport width
-  const bufWidths = tableColumnWidths.get(data.buffer_id);
+  const bufWidths = getTableWidths(data.buffer_id);
   if (bufWidths) {
     const composeW = config.composeWidth ?? data.width;
-    const seen = new Set<TableWidthInfo>();
-    for (const info of bufWidths.values()) {
-      if (seen.has(info)) continue;
-      seen.add(info);
+    const seen = new Set<string>(); // Track by JSON key to deduplicate shared TableWidthInfo
+    for (const [lineNum, info] of bufWidths) {
+      const key = info.maxW.join(",");
+      if (seen.has(key)) continue;
+      seen.add(key);
       const numCols = info.maxW.length;
       const available = composeW - (numCols + 1);
       info.allocated = distributeColumnWidths(info.maxW, available);
     }
+    setTableWidths(data.buffer_id, bufWidths);
   }
   editor.refreshLines(data.buffer_id);
 };
 
 // Re-enable compose mode for buffers restored from a saved session.
-// The Rust side restores ViewMode::Compose and compose_width, but the plugin's
-// composeBuffers set is empty after restart. This hook detects the mismatch
-// and re-enables compose mode so the plugin takes over rendering.
+// The Rust side restores ViewMode::Compose and compose_width, but the plugin
+// needs to re-apply line numbers, line wrap, and layout hints when activated.
 globalThis.onMarkdownBufferActivated = function(data: { buffer_id: number }): void {
   const bufferId = data.buffer_id;
-  if (composeBuffers.has(bufferId)) return;
 
   const info = editor.getBufferInfo(bufferId);
   if (!info || !isMarkdownFile(info.path)) return;
@@ -1518,7 +1530,7 @@ globalThis.onMarkdownComposeWidthConfirmed = function(args: {
     editor.setStatus(editor.t("status.width_none"));
 
     const bufferId = editor.getActiveBufferId();
-    if (composeBuffers.has(bufferId)) {
+    if (isComposing(bufferId)) {
       editor.setLayoutHints(bufferId, null, { composeWidth: null });
       editor.refreshLines(bufferId);
     }
@@ -1532,7 +1544,7 @@ globalThis.onMarkdownComposeWidthConfirmed = function(args: {
 
     // Re-process active buffer if in compose mode
     const bufferId = editor.getActiveBufferId();
-    if (composeBuffers.has(bufferId)) {
+    if (isComposing(bufferId)) {
       editor.setLayoutHints(bufferId, null, { composeWidth: config.composeWidth });
       editor.refreshLines(bufferId);  // Trigger soft break recomputation
     }

@@ -1169,6 +1169,17 @@ interface EditorAPI {
 	*/
 	setViewMode(bufferId: number, mode: string): boolean;
 	/**
+	* Set plugin-managed per-buffer view state.
+	* State is stored per-buffer per-split and persisted across sessions.
+	* Pass undefined/null as value to delete the key.
+	*/
+	setViewState(bufferId: number, key: string, value: unknown): boolean;
+	/**
+	* Get plugin-managed per-buffer view state.
+	* Returns undefined if the key is not set.
+	*/
+	getViewState(bufferId: number, key: string): unknown | undefined;
+	/**
 	* Enable or disable line wrapping for a buffer/split
 	*/
 	setLineWrap(bufferId: number, splitId: number | null, enabled: boolean): boolean;

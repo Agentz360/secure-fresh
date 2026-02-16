@@ -736,7 +736,7 @@ impl EditorTestHarness {
             let is_redo =
                 modifiers.contains(KeyModifiers::CONTROL) && matches!(code, KeyCode::Char('y'));
             if is_undo || is_redo {
-                self.shadow_cursor = self.editor.active_state().cursors.primary().position;
+                self.shadow_cursor = self.editor.active_cursors().primary().position;
             }
         }
 
@@ -1650,7 +1650,7 @@ impl EditorTestHarness {
 
     /// Get the primary cursor position
     pub fn cursor_position(&self) -> usize {
-        self.editor.active_state().cursors.primary().position
+        self.editor.active_cursors().primary().position
     }
 
     /// Get the buffer length in bytes
@@ -1678,7 +1678,7 @@ impl EditorTestHarness {
 
     /// Get the number of cursors
     pub fn cursor_count(&self) -> usize {
-        self.editor.active_state().cursors.count()
+        self.editor.active_cursors().count()
     }
 
     /// Count the number of search highlight overlays in the current buffer
@@ -1837,16 +1837,12 @@ impl EditorTestHarness {
 
     /// Get the primary cursor's selection range, if any
     pub fn get_selection_range(&self) -> Option<std::ops::Range<usize>> {
-        self.editor
-            .active_state()
-            .cursors
-            .primary()
-            .selection_range()
+        self.editor.active_cursors().primary().selection_range()
     }
 
     /// Check if there's an active selection
     pub fn has_selection(&self) -> bool {
-        !self.editor.active_state().cursors.primary().collapsed()
+        !self.editor.active_cursors().primary().collapsed()
     }
 
     /// Get the selected text (if any)
@@ -1934,6 +1930,26 @@ impl EditorTestHarness {
             self.advance_time(WAIT_SLEEP);
         }
     }
+    /// Like `wait_until`, but after the condition is met, continues waiting
+    /// until the screen stops changing (two consecutive renders produce the
+    /// same output).  Use this when the semantic condition can be met before
+    /// all async plugin work (conceals, soft-breaks, etc.) has settled.
+    pub fn wait_until_stable<F>(&mut self, mut condition: F) -> anyhow::Result<()>
+    where
+        F: FnMut(&Self) -> bool,
+    {
+        // Phase 1: wait for the semantic condition
+        self.wait_until(&mut condition)?;
+        // Phase 2: wait for screen stability
+        let mut prev = String::new();
+        self.wait_until(|h| {
+            let s = h.screen_to_string();
+            let stable = s == prev;
+            prev = s;
+            stable
+        })
+    }
+
     // ===== File Explorer Wait Helpers =====
 
     /// Wait for file explorer to be initialized (has a view)

@@ -1,11 +1,31 @@
 // E2E tests for the locale/i18n system
+//
+// These tests mutate global locale state (rust_i18n::set_locale) and MUST run
+// sequentially.  We use a module-level mutex to prevent parallel execution.
 
 use crate::common::harness::EditorTestHarness;
 use crossterm::event::{KeyCode, KeyModifiers};
 use fresh::config::{Config, LocaleName};
+use std::sync::Mutex;
+
+static LOCALE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire the locale lock and reset to English on drop.
+fn lock_locale() -> impl Drop {
+    struct Guard(std::sync::MutexGuard<'static, ()>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            fresh::i18n::set_locale("en");
+        }
+    }
+    let guard = LOCALE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    fresh::i18n::set_locale("en");
+    Guard(guard)
+}
 
 #[test]
 fn test_default_locale_shows_english_search_options() {
+    let _lock = lock_locale();
     let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
@@ -23,6 +43,7 @@ fn test_default_locale_shows_english_search_options() {
 
 #[test]
 fn test_locale_from_config_spanish_search_options() {
+    let _lock = lock_locale();
     let config = Config {
         locale: LocaleName(Some("es".to_string())),
         ..Default::default()
@@ -44,6 +65,7 @@ fn test_locale_from_config_spanish_search_options() {
 
 #[test]
 fn test_locale_from_config_german_search_options() {
+    let _lock = lock_locale();
     let config = Config {
         locale: LocaleName(Some("de".to_string())),
         ..Default::default()
@@ -64,6 +86,7 @@ fn test_locale_from_config_german_search_options() {
 
 #[test]
 fn test_locale_from_config_french_search_options() {
+    let _lock = lock_locale();
     let config = Config {
         locale: LocaleName(Some("fr".to_string())),
         ..Default::default()
@@ -84,6 +107,7 @@ fn test_locale_from_config_french_search_options() {
 
 #[test]
 fn test_locale_from_config_japanese_buffer_name() {
+    let _lock = lock_locale();
     let config = Config {
         locale: LocaleName(Some("ja".to_string())),
         ..Default::default()
@@ -99,6 +123,7 @@ fn test_locale_from_config_japanese_buffer_name() {
 
 #[test]
 fn test_locale_from_config_chinese_buffer_name() {
+    let _lock = lock_locale();
     let config = Config {
         locale: LocaleName(Some("zh-CN".to_string())),
         ..Default::default()
@@ -114,6 +139,7 @@ fn test_locale_from_config_chinese_buffer_name() {
 
 #[test]
 fn test_locale_switch_via_command_palette() {
+    let _lock = lock_locale();
     let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
@@ -181,6 +207,7 @@ fn test_locale_switch_via_command_palette() {
 
 #[test]
 fn test_invalid_locale_falls_back_to_english() {
+    let _lock = lock_locale();
     let config = Config {
         locale: LocaleName(Some("nonexistent-locale".to_string())),
         ..Default::default()
@@ -201,6 +228,7 @@ fn test_invalid_locale_falls_back_to_english() {
 
 #[test]
 fn test_locale_switch_updates_search_cancelled_message() {
+    let _lock = lock_locale();
     let config = Config {
         locale: LocaleName(Some("es".to_string())),
         ..Default::default()
@@ -225,6 +253,7 @@ fn test_locale_switch_updates_search_cancelled_message() {
 
 #[test]
 fn test_locale_switch_updates_menu_labels() {
+    let _lock = lock_locale();
     let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
@@ -291,6 +320,7 @@ fn test_locale_switch_updates_menu_labels() {
 
 #[test]
 fn test_multiple_locales_can_be_loaded() {
+    let _lock = lock_locale();
     // Test a few key locales with search UI elements
     // For CJK locales, we test for a single character since wide chars may have spaces
     let locales_and_expected = vec![
@@ -361,6 +391,7 @@ fn switch_locale(harness: &mut EditorTestHarness, locale: &str, search_command: 
 
 #[test]
 fn test_locale_switch_affects_file_browser_columns() {
+    let _lock = lock_locale();
     // Test that file browser column headers are properly localized when switching locales
     // on a live editor instance
     let mut harness = EditorTestHarness::new(100, 24).unwrap();
@@ -405,6 +436,7 @@ fn test_locale_switch_affects_file_browser_columns() {
 
 #[test]
 fn test_locale_switch_affects_clipboard_messages() {
+    let _lock = lock_locale();
     // Test that clipboard status messages are properly localized when switching locales
     let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
@@ -455,6 +487,7 @@ fn test_locale_switch_affects_clipboard_messages() {
 
 #[test]
 fn test_locale_switch_affects_file_browser_show_hidden() {
+    let _lock = lock_locale();
     // Test that "Show Hidden" checkbox label is properly localized when switching locales
     let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
@@ -481,6 +514,7 @@ fn test_locale_switch_affects_file_browser_show_hidden() {
 
 #[test]
 fn test_locale_switch_affects_command_palette_commands() {
+    let _lock = lock_locale();
     let mut harness = EditorTestHarness::new(100, 24).unwrap();
     harness.render().unwrap();
 
