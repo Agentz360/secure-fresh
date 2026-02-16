@@ -1091,6 +1091,7 @@ impl Viewport {
 
                 let new_top_byte = iter.current_position();
                 self.set_top_byte_with_limit(buffer, new_top_byte);
+                self.top_view_line_offset = 0;
             } else {
                 // Non-wrapped mode: each prev() moves back one logical line
                 let target_rows_from_top = if cursor_near_top {
@@ -1109,6 +1110,7 @@ impl Viewport {
 
                 let new_top_byte = iter.current_position();
                 self.set_top_byte_with_limit(buffer, new_top_byte);
+                self.top_view_line_offset = 0;
             }
         }
 

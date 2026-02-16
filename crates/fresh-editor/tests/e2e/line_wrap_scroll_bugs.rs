@@ -597,14 +597,19 @@ fn test_scrollbar_thumb_drag_no_jump_on_start() {
     let top_line_before = harness.top_line_number();
     eprintln!("Top line before drag: {}", top_line_before);
 
-    // Get the scrollbar area info
+    // Get the actual thumb position from the cached layout
     let scrollbar_col = TERMINAL_WIDTH - 1;
-    let (content_first_row, _content_last_row) = harness.content_area_rows();
-
-    // Find where the thumb currently is by getting scroll state
-    // The thumb should be roughly 30% down since we're at line 30 of 100
-    // For a 20-row scrollbar, that's roughly row 6 from the top
-    let thumb_row = content_first_row as u16 + 6;
+    let split_areas = harness.editor().get_split_areas().to_vec();
+    let (_split_id, _buffer_id, _content_rect, scrollbar_rect, thumb_start, thumb_end) =
+        split_areas[0];
+    assert!(
+        thumb_end > thumb_start,
+        "Thumb should have nonzero size: start={}, end={}",
+        thumb_start,
+        thumb_end
+    );
+    let thumb_mid = (thumb_start + thumb_end) / 2;
+    let thumb_row = scrollbar_rect.y + thumb_mid as u16;
 
     eprintln!(
         "Starting drag at thumb position: col={}, row={}",
