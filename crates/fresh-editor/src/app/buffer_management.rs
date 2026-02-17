@@ -265,8 +265,10 @@ impl Editor {
         let target_split = self.preferred_split_for_file();
         if let Some(view_state) = self.split_view_states.get_mut(&target_split) {
             view_state.add_buffer(buffer_id);
-            // Apply line_wrap default from config (per-view setting, applies to split)
-            view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            // Initialize per-buffer view state for the new buffer with config defaults
+            let buf_state = view_state.ensure_buffer_state(buffer_id);
+            buf_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            buf_state.rulers = self.config.editor.rulers.clone();
         }
 
         // Restore global file state (scroll/cursor position) if available
@@ -356,7 +358,9 @@ impl Editor {
         let target_split = self.preferred_split_for_file();
         if let Some(view_state) = self.split_view_states.get_mut(&target_split) {
             view_state.add_buffer(buffer_id);
-            view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            let buf_state = view_state.ensure_buffer_state(buffer_id);
+            buf_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            buf_state.rulers = self.config.editor.rulers.clone();
         }
 
         self.set_active_buffer(buffer_id);
@@ -454,7 +458,9 @@ impl Editor {
         let target_split = self.preferred_split_for_file();
         if let Some(view_state) = self.split_view_states.get_mut(&target_split) {
             view_state.add_buffer(buffer_id);
-            view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            let buf_state = view_state.ensure_buffer_state(buffer_id);
+            buf_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            buf_state.rulers = self.config.editor.rulers.clone();
         }
 
         self.set_active_buffer(buffer_id);
@@ -588,7 +594,9 @@ impl Editor {
         let target_split = self.preferred_split_for_file();
         if let Some(view_state) = self.split_view_states.get_mut(&target_split) {
             view_state.add_buffer(buffer_id);
-            view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            let buf_state = view_state.ensure_buffer_state(buffer_id);
+            buf_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            buf_state.rulers = self.config.editor.rulers.clone();
         }
 
         self.set_active_buffer(buffer_id);
@@ -807,10 +815,12 @@ impl Editor {
         self.buffer_metadata
             .insert(buffer_id, crate::app::types::BufferMetadata::new());
 
-        // Apply line_wrap default from config to the active split
+        // Initialize per-buffer view state with config defaults
         let active_split = self.split_manager.active_split();
         if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
-            view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            let buf_state = view_state.ensure_buffer_state(buffer_id);
+            buf_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            buf_state.rulers = self.config.editor.rulers.clone();
         }
 
         self.set_active_buffer(buffer_id);
@@ -906,8 +916,9 @@ impl Editor {
         let active_split = self.split_manager.active_split();
         if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
             view_state.add_buffer(buffer_id);
-            // Apply line_wrap default from config
-            view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            let buf_state = view_state.ensure_buffer_state(buffer_id);
+            buf_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            buf_state.rulers = self.config.editor.rulers.clone();
         }
 
         self.set_active_buffer(buffer_id);
@@ -1077,11 +1088,15 @@ impl Editor {
         let active_split = self.split_manager.active_split();
         if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
             view_state.add_buffer(buffer_id);
+            let buf_state = view_state.ensure_buffer_state(buffer_id);
+            buf_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            buf_state.rulers = self.config.editor.rulers.clone();
         } else {
             // Create view state if it doesn't exist
             let mut view_state =
                 SplitViewState::with_buffer(self.terminal_width, self.terminal_height, buffer_id);
             view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            view_state.rulers = self.config.editor.rulers.clone();
             self.split_view_states.insert(active_split, view_state);
         }
 

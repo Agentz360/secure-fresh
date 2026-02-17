@@ -136,6 +136,15 @@
             38,
             30
           ]
+        },
+        "ruler_bg": {
+          "description": "Vertical ruler background color",
+          "$ref": "#/$defs/ColorDef",
+          "default": [
+            50,
+            50,
+            50
+          ]
         }
       }
     },
