@@ -726,6 +726,14 @@
       "action": "menu_right",
       "args": {},
       "when": "menu"
+    },
+    {
+      "comment": "Play last recorded macro (F4)",
+      "key": "F4",
+      "modifiers": [],
+      "action": "play_last_macro",
+      "args": {},
+      "when": "normal"
     }
   ]
 }

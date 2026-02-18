@@ -53,6 +53,12 @@ pub struct Viewport {
     /// Maximum line length encountered so far (in display columns).
     /// Updated incrementally as visible lines are rendered, avoiding full-file scans.
     pub max_line_length_seen: usize,
+
+    /// When true, the next render pass should scroll to show the last line at
+    /// the bottom of the viewport.  Set by same-buffer scroll sync when the
+    /// active split is at the end of the document.  Consumed (cleared) during
+    /// rendering after the adjustment is applied.
+    pub sync_scroll_to_end: bool,
 }
 
 impl Viewport {
@@ -71,6 +77,7 @@ impl Viewport {
             skip_resize_sync: false,
             skip_ensure_visible: false,
             max_line_length_seen: 0,
+            sync_scroll_to_end: false,
         }
     }
 
@@ -837,6 +844,27 @@ impl Viewport {
         self.set_top_byte_with_limit(buffer, target_position);
     }
 
+    /// Scroll so the last view line sits at the bottom of the viewport.
+    ///
+    /// Works in view-line space (soft-break-aware) — the same coordinate system
+    /// used by `ensure_visible_in_layout`.  Returns `true` if the viewport was
+    /// actually adjusted.
+    pub fn scroll_to_end_of_view(&mut self, view_lines: &[ViewLine]) -> bool {
+        let viewport_height = self.visible_line_count();
+        if view_lines.is_empty() || viewport_height == 0 {
+            return false;
+        }
+        let max_top = view_lines.len().saturating_sub(viewport_height);
+        if self.top_view_line_offset == max_top {
+            return false;
+        }
+        self.top_view_line_offset = max_top;
+        if let Some(new_top_byte) = self.get_source_byte_for_view_line(view_lines, max_top) {
+            self.top_byte = new_top_byte;
+        }
+        true
+    }
+
     /// Mark viewport as needing synchronization with cursor positions
     /// This defers the actual viewport update until sync_with_cursor is called
     pub fn mark_needs_sync(&mut self) {
@@ -916,8 +944,13 @@ impl Viewport {
         // Apply scroll_offset to keep cursor away from edges
         let effective_offset = self.scroll_offset.min(viewport_lines / 2);
 
+        // Track whether cursor needs scrolling and in which direction:
+        // true = cursor is near/above the top edge, false = near/below the bottom edge
+        let mut cursor_near_top = false;
+
         let cursor_is_visible = if cursor_line_start < self.top_byte {
             // Cursor is above viewport
+            cursor_near_top = true;
             false
         } else if self.line_wrap_enabled {
             // With line wrapping: count VISUAL ROWS (wrapped segments), not logical lines
@@ -957,10 +990,16 @@ impl Viewport {
                         // For empty lines, cursor_segment_idx is 0, so we add 1 row
                         visual_rows += cursor_segment_idx.min(segments_count - 1) + 1;
 
-                        // Check if cursor's row is within viewport with scroll offset applied
-                        // Cursor should be between effective_offset and (viewport_lines - effective_offset)
-                        break visual_rows > effective_offset
+                        // Check if cursor's row is within viewport with scroll offset applied.
+                        // visual_rows is 1-based (includes cursor's own row), so use `>`
+                        // to match the 0-based `lines_from_top >= effective_offset` in non-wrapped mode.
+                        // Both give a margin of exactly `effective_offset` rows from the top edge.
+                        let vis = visual_rows > effective_offset
                             && visual_rows <= viewport_lines.saturating_sub(effective_offset);
+                        if !vis && visual_rows <= effective_offset {
+                            cursor_near_top = true;
+                        }
+                        break vis;
                     } else {
                         // We passed the cursor's line without finding it - shouldn't happen
                         break false;
@@ -996,7 +1035,10 @@ impl Viewport {
             }
 
             // Apply scroll offset: cursor should be between offset and (viewport_lines - offset)
-            let visible = lines_from_top > effective_offset
+            if lines_from_top < effective_offset {
+                cursor_near_top = true;
+            }
+            let visible = lines_from_top >= effective_offset
                 && lines_from_top < viewport_lines.saturating_sub(effective_offset);
             tracing::trace!(
                 "ensure_visible (no wrap): lines_from_top={}, effective_offset={}, visible={}",
@@ -1013,13 +1055,24 @@ impl Viewport {
             cursor_is_visible
         );
 
-        // If cursor is not visible, scroll to make it visible
+        // If cursor is not visible, scroll minimally to bring it within the margin.
+        // Instead of centering, we place the cursor just inside the scroll margin:
+        // - If cursor is below viewport: place cursor at (viewport - margin) from top
+        // - If cursor is above viewport: place cursor at margin from top
         if !cursor_is_visible {
-            // Position cursor at center of viewport when jumping
-            let target_rows_from_top = viewport_lines / 2;
+            // We want cursor at (viewport_lines - 1 - effective_offset) rows from new top
+            // when scrolling down, or at effective_offset rows from new top when scrolling up.
 
             if self.line_wrap_enabled {
-                // When wrapping is enabled, count visual rows (wrapped segments) not logical lines
+                // When wrapping is enabled, count visual rows (wrapped segments) not logical lines.
+                // The wrapped backward scan starts visual_rows_counted at 1+ (cursor's line),
+                // so the target must be 1 more than for the non-wrapped case.
+                let target_visual_rows = if cursor_near_top {
+                    effective_offset + 1
+                } else {
+                    viewport_lines.saturating_sub(effective_offset)
+                };
+
                 let gutter_width = self.gutter_width(buffer);
                 let wrap_config = WrapConfig::new(self.width as usize, gutter_width, true);
 
@@ -1045,7 +1098,7 @@ impl Viewport {
 
                 // Now move backwards counting visual rows until we reach target
                 iter = buffer.line_iterator(cursor_line_start, 80);
-                while visual_rows_counted < target_rows_from_top {
+                while visual_rows_counted < target_visual_rows {
                     if iter.prev().is_none() {
                         break; // Hit beginning of buffer
                     }
@@ -1066,8 +1119,15 @@ impl Viewport {
 
                 let new_top_byte = iter.current_position();
                 self.set_top_byte_with_limit(buffer, new_top_byte);
+                self.top_view_line_offset = 0;
             } else {
-                // Non-wrapped mode: count logical lines as before
+                // Non-wrapped mode: each prev() moves back one logical line
+                let target_rows_from_top = if cursor_near_top {
+                    effective_offset
+                } else {
+                    viewport_lines.saturating_sub(effective_offset + 1)
+                };
+
                 let mut iter = buffer.line_iterator(cursor_line_start, 80);
 
                 for _ in 0..target_rows_from_top {
@@ -1077,11 +1137,8 @@ impl Viewport {
                 }
 
                 let new_top_byte = iter.current_position();
-                tracing::trace!(
-                    "ensure_visible: SCROLLING from top_byte={} to new_top_byte={} (target_rows={})",
-                    self.top_byte, new_top_byte, target_rows_from_top
-                );
                 self.set_top_byte_with_limit(buffer, new_top_byte);
+                self.top_view_line_offset = 0;
             }
         }
 
@@ -1494,12 +1551,13 @@ mod tests {
             "Cursor should be within visible area"
         );
 
-        // Verify cursor is centered (or close to center)
-        let expected_center = vp.visible_line_count() / 2;
+        // Verify cursor is placed near the scroll margin (not centered)
+        // With minimal scroll, cursor above viewport is placed at scroll_offset from top
+        let expected_offset = vp.scroll_offset.min(vp.visible_line_count() / 2);
         assert!(
-            lines_from_top >= expected_center - 1 && lines_from_top <= expected_center + 1,
-            "Cursor should be centered in viewport, expected around {}, got {}",
-            expected_center,
+            lines_from_top <= expected_offset + 1,
+            "Cursor should be near scroll margin, expected around {}, got {}",
+            expected_offset,
             lines_from_top
         );
     }
@@ -1528,16 +1586,19 @@ mod tests {
 
         vp.ensure_visible(&mut buffer, &cursor);
 
-        // Verify cursor is centered
+        // Verify cursor is placed near the bottom scroll margin (not centered)
+        // With minimal scroll, cursor below viewport is placed at (viewport - scroll_offset) from top
         let new_top_line = buffer.get_line_number(vp.top_byte);
         let cursor_line = buffer.get_line_number(line_15_byte);
         let lines_from_top = cursor_line.saturating_sub(new_top_line);
 
-        let expected_center = vp.visible_line_count() / 2;
+        let viewport_lines = vp.visible_line_count();
+        let expected_offset = vp.scroll_offset.min(viewport_lines / 2);
+        let expected_bottom = viewport_lines.saturating_sub(expected_offset + 1);
         assert!(
-            lines_from_top >= expected_center - 1 && lines_from_top <= expected_center + 1,
-            "Cursor should be centered in viewport when jumping down, expected around {}, got {}",
-            expected_center,
+            lines_from_top >= expected_bottom.saturating_sub(1),
+            "Cursor should be near bottom margin when jumping down, expected around {}, got {}",
+            expected_bottom,
             lines_from_top
         );
     }

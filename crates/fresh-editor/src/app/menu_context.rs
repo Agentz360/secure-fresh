@@ -37,6 +37,10 @@ impl Editor {
         // Session mode (for detach command availability)
         let session_mode = self.session_mode;
 
+        // Scroll sync state
+        let scroll_sync = self.same_buffer_scroll_sync;
+        let has_same_buffer_splits = self.has_same_buffer_splits();
+
         // Apply all context values
         self.menu_state
             .context
@@ -56,14 +60,17 @@ impl Editor {
             .set(context_keys::FORMATTER_AVAILABLE, formatter_available)
             .set(context_keys::SESSION_MODE, session_mode)
             .set(context_keys::VERTICAL_SCROLLBAR, vertical_scrollbar)
-            .set(context_keys::HORIZONTAL_SCROLLBAR, horizontal_scrollbar);
+            .set(context_keys::HORIZONTAL_SCROLLBAR, horizontal_scrollbar)
+            .set(context_keys::SCROLL_SYNC, scroll_sync)
+            .set(context_keys::HAS_SAME_BUFFER_SPLITS, has_same_buffer_splits);
     }
 
-    /// Check if line numbers are visible in the active buffer.
+    /// Check if line numbers are visible in the active split.
     fn is_line_numbers_visible(&self) -> bool {
-        self.buffers
-            .get(&self.active_buffer())
-            .map(|state| state.margins.show_line_numbers)
+        let active_split = self.split_manager.active_split();
+        self.split_view_states
+            .get(&active_split)
+            .map(|vs| vs.show_line_numbers)
             .unwrap_or(true)
     }
 
@@ -128,6 +135,23 @@ impl Editor {
                     .map(|lsp| lsp.is_server_ready(&state.language))
             })
             .unwrap_or(false)
+    }
+
+    /// Check if the active buffer is shown in more than one visible split.
+    fn has_same_buffer_splits(&self) -> bool {
+        let active_split = self.split_manager.active_split();
+        let active_buf_id = self.split_manager.buffer_for_split(active_split);
+        if let Some(buf_id) = active_buf_id {
+            self.split_view_states
+                .keys()
+                .filter(|&&s| {
+                    s != active_split && self.split_manager.buffer_for_split(s) == Some(buf_id)
+                })
+                .next()
+                .is_some()
+        } else {
+            false
+        }
     }
 
     /// Check if a formatter is configured for the current buffer's language.

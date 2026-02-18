@@ -231,6 +231,11 @@ impl PluginManager {
 
     /// Process commands, blocking until `HookCompleted` for the given hook arrives.
     /// See [`PluginThreadHandle::process_commands_until_hook_completed`] for details.
+    ///
+    // TODO: This method is currently unused (dead code). Either wire it into the
+    // render path to synchronously wait for plugin responses (e.g. conceals from
+    // lines_changed), or remove it along with PluginThreadHandle's implementation
+    // and the HookCompleted sentinel if the non-blocking drain approach is sufficient.
     pub fn process_commands_until_hook_completed(
         &mut self,
         hook_name: &str,

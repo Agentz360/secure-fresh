@@ -25,8 +25,7 @@ impl Editor {
             }
         };
 
-        // Update split view state (source of truth for view mode)
-        let current_line_numbers = self.active_state().margins.show_line_numbers;
+        // Update split view state (source of truth for view mode and line numbers)
         if let Some(vs) = self.split_view_states.get_mut(&active_split) {
             vs.view_mode = view_mode.clone();
             // In Compose mode, disable builtin line wrap - the plugin handles
@@ -38,18 +37,13 @@ impl Editor {
             };
             match view_mode {
                 ViewMode::Compose => {
-                    vs.compose_prev_line_numbers = Some(current_line_numbers);
-                    self.active_state_mut().margins.set_line_numbers(false);
+                    vs.show_line_numbers = false;
                 }
                 ViewMode::Source => {
                     // Clear compose width to remove margins
                     vs.compose_width = None;
                     vs.view_transform = None;
-                    let restore = vs
-                        .compose_prev_line_numbers
-                        .take()
-                        .unwrap_or(default_line_numbers);
-                    self.active_state_mut().margins.set_line_numbers(restore);
+                    vs.show_line_numbers = default_line_numbers;
                 }
             }
         }

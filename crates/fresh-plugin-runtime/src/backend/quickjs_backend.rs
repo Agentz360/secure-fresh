@@ -791,6 +791,7 @@ impl JsEditorApi {
     }
 
     /// Get primary cursor info for active buffer
+    #[plugin_api(ts_return = "CursorInfo | null")]
     pub fn get_primary_cursor<'js>(&self, ctx: rquickjs::Ctx<'js>) -> rquickjs::Result<Value<'js>> {
         let cursor = if let Ok(s) = self.state_snapshot.read() {
             s.primary_cursor.clone()
@@ -802,6 +803,7 @@ impl JsEditorApi {
     }
 
     /// Get all cursors for active buffer
+    #[plugin_api(ts_return = "CursorInfo[]")]
     pub fn get_all_cursors<'js>(&self, ctx: rquickjs::Ctx<'js>) -> rquickjs::Result<Value<'js>> {
         let cursors = if let Ok(s) = self.state_snapshot.read() {
             s.all_cursors.clone()
@@ -813,6 +815,7 @@ impl JsEditorApi {
     }
 
     /// Get all cursor positions as byte offsets
+    #[plugin_api(ts_return = "number[]")]
     pub fn get_all_cursor_positions<'js>(
         &self,
         ctx: rquickjs::Ctx<'js>,
@@ -2712,7 +2715,8 @@ impl JsEditorApi {
                 .map(|s| s.working_dir.to_string_lossy().to_string())
         });
         tracing::info!(
-            "spawn_process_start: command='{}', args={:?}, cwd={:?}, callback_id={}",
+            "spawn_process_start: plugin='{}', command='{}', args={:?}, cwd={:?}, callback_id={}",
+            self.plugin_name,
             command,
             args,
             effective_cwd,
@@ -5307,6 +5311,7 @@ mod tests {
                     length: 100,
                     is_virtual: false,
                     view_mode: "source".to_string(),
+                    is_composing_in_any_split: false,
                     compose_width: None,
                 },
             );
@@ -5319,6 +5324,7 @@ mod tests {
                     length: 200,
                     is_virtual: false,
                     view_mode: "source".to_string(),
+                    is_composing_in_any_split: false,
                     compose_width: None,
                 },
             );

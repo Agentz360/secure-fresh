@@ -235,7 +235,7 @@ impl Editor {
         // Apply line_numbers default from config
         state
             .margins
-            .set_line_numbers(self.config.editor.line_numbers);
+            .configure_for_line_numbers(self.config.editor.line_numbers);
 
         self.buffers.insert(buffer_id, state);
         self.event_logs
@@ -444,7 +444,7 @@ impl Editor {
 
         state
             .margins
-            .set_line_numbers(self.config.editor.line_numbers);
+            .configure_for_line_numbers(self.config.editor.line_numbers);
 
         self.buffers.insert(buffer_id, state);
         self.event_logs
@@ -580,7 +580,7 @@ impl Editor {
 
         state
             .margins
-            .set_line_numbers(self.config.editor.line_numbers);
+            .configure_for_line_numbers(self.config.editor.line_numbers);
 
         self.buffers.insert(buffer_id, state);
         self.event_logs
@@ -804,7 +804,7 @@ impl Editor {
         // Note: line_wrap_enabled is set on SplitViewState.viewport when the split is created
         state
             .margins
-            .set_line_numbers(self.config.editor.line_numbers);
+            .configure_for_line_numbers(self.config.editor.line_numbers);
         // Set default line ending for new buffers from config
         state
             .buffer
@@ -815,15 +815,18 @@ impl Editor {
         self.buffer_metadata
             .insert(buffer_id, crate::app::types::BufferMetadata::new());
 
-        // Initialize per-buffer view state with config defaults
+        self.set_active_buffer(buffer_id);
+
+        // Initialize per-buffer view state with config defaults.
+        // Must happen AFTER set_active_buffer, because switch_buffer creates
+        // the new BufferViewState with defaults (show_line_numbers=true).
         let active_split = self.split_manager.active_split();
         if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
-            let buf_state = view_state.ensure_buffer_state(buffer_id);
-            buf_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
-            buf_state.rulers = self.config.editor.rulers.clone();
+            view_state.show_line_numbers = self.config.editor.line_numbers;
+            view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
+            view_state.rulers = self.config.editor.rulers.clone();
         }
 
-        self.set_active_buffer(buffer_id);
         self.status_message = Some(t!("buffer.new").to_string());
 
         buffer_id
@@ -901,7 +904,7 @@ impl Editor {
         // Apply line_numbers default from config
         state
             .margins
-            .set_line_numbers(self.config.editor.line_numbers);
+            .configure_for_line_numbers(self.config.editor.line_numbers);
 
         self.buffers.insert(buffer_id, state);
         self.event_logs
@@ -1074,7 +1077,7 @@ impl Editor {
         // Apply line_numbers default from config
         state
             .margins
-            .set_line_numbers(self.config.editor.line_numbers);
+            .configure_for_line_numbers(self.config.editor.line_numbers);
 
         self.buffers.insert(buffer_id, state);
         self.event_logs
@@ -1097,6 +1100,7 @@ impl Editor {
                 SplitViewState::with_buffer(self.terminal_width, self.terminal_height, buffer_id);
             view_state.viewport.line_wrap_enabled = self.config.editor.line_wrap;
             view_state.rulers = self.config.editor.rulers.clone();
+            view_state.show_line_numbers = self.config.editor.line_numbers;
             self.split_view_states.insert(active_split, view_state);
         }
 
@@ -1192,7 +1196,7 @@ impl Editor {
             state.editing_disabled = true;
 
             // Disable line numbers for cleaner display
-            state.margins.set_line_numbers(false);
+            state.margins.configure_for_line_numbers(false);
         }
 
         self.set_active_buffer(buffer_id);
@@ -1263,7 +1267,7 @@ impl Editor {
             state.editing_disabled = true;
 
             // Disable line numbers for cleaner display
-            state.margins.set_line_numbers(false);
+            state.margins.configure_for_line_numbers(false);
         }
 
         self.set_active_buffer(buffer_id);

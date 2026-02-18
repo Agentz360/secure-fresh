@@ -350,6 +350,9 @@ pub struct Editor {
     /// Whether mouse capture is enabled
     mouse_enabled: bool,
 
+    /// Whether same-buffer splits sync their scroll positions
+    same_buffer_scroll_sync: bool,
+
     /// Mouse cursor position (for GPM software cursor rendering)
     /// When GPM is active, we need to draw our own cursor since GPM can't
     /// draw on the alternate screen buffer used by TUI applications.
@@ -546,7 +549,7 @@ pub struct Editor {
     /// Macro recording state (Some(key) if recording, None otherwise)
     macro_recording: Option<MacroRecordingState>,
 
-    /// Last recorded macro register (for F12 to replay)
+    /// Last recorded macro register (for F4 to replay)
     last_macro_register: Option<char>,
 
     /// Flag to prevent recursive macro playback
@@ -892,8 +895,10 @@ impl Editor {
             config.editor.large_file_threshold_bytes as usize,
             Arc::clone(&filesystem),
         );
-        // Apply line_numbers default from config (fixes #539)
-        state.margins.set_line_numbers(config.editor.line_numbers);
+        // Configure initial margin layout from config default
+        state
+            .margins
+            .configure_for_line_numbers(config.editor.line_numbers);
         // Note: line_wrap_enabled is now stored in SplitViewState.viewport
         tracing::info!("EditorState created for buffer {:?}", buffer_id);
         buffers.insert(buffer_id, state);
@@ -945,6 +950,7 @@ impl Editor {
         let mut initial_view_state = SplitViewState::with_buffer(width, height, buffer_id);
         initial_view_state.viewport.line_wrap_enabled = config.editor.line_wrap;
         initial_view_state.rulers = config.editor.rulers.clone();
+        initial_view_state.show_line_numbers = config.editor.line_numbers;
         split_view_states.insert(initial_split_id, initial_view_state);
 
         // Initialize filesystem manager for file explorer
@@ -1153,6 +1159,7 @@ impl Editor {
             menu_bar_auto_shown: false,
             tab_bar_visible: show_tab_bar,
             mouse_enabled: true,
+            same_buffer_scroll_sync: false,
             mouse_cursor_position: None,
             gpm_active: false,
             key_context: KeyContext::Normal,
@@ -4235,7 +4242,7 @@ impl Editor {
                         // Ensure buffer remains read-only with no line numbers
                         if let Some(state) = self.buffers.get_mut(&buffer_id) {
                             state.editing_disabled = true;
-                            state.margins.set_line_numbers(false);
+                            state.margins.configure_for_line_numbers(false);
                             state.buffer.set_modified(false);
                         }
 
@@ -4411,21 +4418,27 @@ impl Editor {
                     .get(buffer_id)
                     .map(|m| m.is_virtual())
                     .unwrap_or(false);
-                // Find view_mode and compose_width from any split that has this buffer
-                let split_state = self
-                    .split_view_states
-                    .values()
-                    .find(|vs| vs.open_buffers.contains(buffer_id));
-                let view_mode = split_state
+                // Report the ACTIVE split's view_mode so plugins can distinguish
+                // which mode the user is currently in. Separately, report whether
+                // ANY split has compose mode so plugins can maintain decorations
+                // for compose-mode splits even when a source-mode split is active.
+                let active_split = self.split_manager.active_split();
+                let active_vs = self.split_view_states.get(&active_split);
+                let view_mode = active_vs
                     .and_then(|vs| vs.buffer_state(*buffer_id))
                     .map(|bs| match bs.view_mode {
                         crate::state::ViewMode::Source => "source",
                         crate::state::ViewMode::Compose => "compose",
                     })
                     .unwrap_or("source");
-                let compose_width = split_state
+                let compose_width = active_vs
                     .and_then(|vs| vs.buffer_state(*buffer_id))
                     .and_then(|bs| bs.compose_width);
+                let is_composing_in_any_split = self.split_view_states.values().any(|vs| {
+                    vs.buffer_state(*buffer_id)
+                        .map(|bs| matches!(bs.view_mode, crate::state::ViewMode::Compose))
+                        .unwrap_or(false)
+                });
                 let buffer_info = BufferInfo {
                     id: *buffer_id,
                     path: state.buffer.file_path().map(|p| p.to_path_buf()),
@@ -4433,6 +4446,7 @@ impl Editor {
                     length: state.buffer.len(),
                     is_virtual,
                     view_mode: view_mode.to_string(),
+                    is_composing_in_any_split,
                     compose_width,
                 };
                 snapshot.buffers.insert(*buffer_id, buffer_info);
@@ -4456,9 +4470,11 @@ impl Editor {
                 };
                 snapshot.buffer_saved_diffs.insert(*buffer_id, diff);
 
-                // Store cursor position for this buffer (from SplitViewState)
-                let cursor_pos = split_state
-                    .and_then(|vs| vs.buffer_state(*buffer_id))
+                // Store cursor position for this buffer (from any split that has it)
+                let cursor_pos = self
+                    .split_view_states
+                    .values()
+                    .find_map(|vs| vs.buffer_state(*buffer_id))
                     .map(|bs| bs.cursors.primary().position)
                     .unwrap_or(0);
                 snapshot
@@ -5227,7 +5243,7 @@ impl Editor {
 
                 // Apply view options to the buffer
                 if let Some(state) = self.buffers.get_mut(&buffer_id) {
-                    state.margins.set_line_numbers(show_line_numbers);
+                    state.margins.configure_for_line_numbers(show_line_numbers);
                     state.show_cursors = show_cursors;
                     state.editing_disabled = editing_disabled;
                     tracing::debug!(
@@ -5356,7 +5372,7 @@ impl Editor {
 
                 // Apply view options to the buffer
                 if let Some(state) = self.buffers.get_mut(&buffer_id) {
-                    state.margins.set_line_numbers(show_line_numbers);
+                    state.margins.configure_for_line_numbers(show_line_numbers);
                     state.show_cursors = show_cursors;
                     state.editing_disabled = editing_disabled;
                     tracing::debug!(
@@ -5400,6 +5416,7 @@ impl Editor {
                         view_state.viewport.line_wrap_enabled =
                             line_wrap.unwrap_or(self.config.editor.line_wrap);
                         view_state.rulers = self.config.editor.rulers.clone();
+                        view_state.show_line_numbers = self.config.editor.line_numbers;
                         self.split_view_states.insert(new_split_id, view_state);
 
                         // Focus the new split (the diagnostics panel)
@@ -5487,7 +5504,7 @@ impl Editor {
 
                 // Apply view options to the buffer
                 if let Some(state) = self.buffers.get_mut(&buffer_id) {
-                    state.margins.set_line_numbers(show_line_numbers);
+                    state.margins.configure_for_line_numbers(show_line_numbers);
                     state.show_cursors = show_cursors;
                     state.editing_disabled = editing_disabled;
                 }
@@ -5891,6 +5908,7 @@ impl Editor {
                                     );
                                     view_state.viewport.line_wrap_enabled = false;
                                     view_state.rulers = self.config.editor.rulers.clone();
+                                    view_state.show_line_numbers = self.config.editor.line_numbers;
                                     self.split_view_states.insert(new_split_id, view_state);
 
                                     if focus.unwrap_or(true) {

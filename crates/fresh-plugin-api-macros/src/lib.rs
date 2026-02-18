@@ -452,14 +452,19 @@ fn rust_to_typescript(ty: &Type, attrs: &[Attribute]) -> String {
                 | "ViewTokenStyle"
                 | "LayoutHints"
                 | "FileExplorerDecoration"
-                | "TsCreateCompositeBufferOptions"
                 | "TsCompositeLayoutConfig"
                 | "TsCompositeSourceConfig"
                 | "TsCompositePaneStyle"
-                | "TsCompositeHunk"
                 | "TsHighlightSpan"
                 | "TsActionPopupAction"
-                | "JsDiagnostic" => type_name,
+                | "JsDiagnostic"
+                | "CreateTerminalOptions"
+                | "TerminalResult" => type_name,
+
+                // Types renamed by ts-rs — map Rust name to TypeScript name
+                "CompositeHunk" => "TsCompositeHunk".to_string(),
+                "CreateCompositeBufferOptions" => "TsCreateCompositeBufferOptions".to_string(),
+                "Suggestion" => "PromptSuggestion".to_string(),
 
                 // Default: use type name as-is
                 _ => type_name,
@@ -517,12 +522,15 @@ fn parse_method(method: &ImplItemFn) -> Option<ApiMethod> {
                 return None;
             };
 
-            let param_name = pat_ident.ident.to_string();
+            let raw_name = pat_ident.ident.to_string();
 
             // Skip self parameter
-            if param_name == "self" {
+            if raw_name == "self" {
                 return None;
             }
+
+            // Strip leading underscore (Rust convention for "unused" params)
+            let param_name = raw_name.strip_prefix('_').unwrap_or(&raw_name);
 
             let ty = &*pat_type.ty;
 
@@ -922,6 +930,9 @@ mod tests {
         assert_eq!(to_camel_case("get_active_buffer"), "getActiveBuffer");
         assert_eq!(to_camel_case("simple"), "simple");
         assert_eq!(to_camel_case("a_b_c"), "aBC");
+        // Note: leading underscores in parameter names are stripped by parse_method
+        // before to_camel_case is called, so "process_id" is the input, not "_process_id"
+        assert_eq!(to_camel_case("process_id"), "processId");
         assert_eq!(to_camel_case("already_camel"), "alreadyCamel");
         assert_eq!(to_camel_case(""), "");
         assert_eq!(to_camel_case("_leading"), "Leading");
@@ -1115,5 +1126,291 @@ mod tests {
         assert!(
             ts.contains("spawnProcess(command: string, args: string): ProcessHandle<SpawnResult>;")
         );
+    }
+
+    // ========================================================================
+    // Tests for ts-rs renamed type mappings
+    // ========================================================================
+
+    /// Helper to parse a Rust type string into a syn::Type
+    fn parse_type(s: &str) -> Type {
+        syn::parse_str::<Type>(s).unwrap()
+    }
+
+    #[test]
+    fn test_renamed_type_composite_hunk() {
+        let ty = parse_type("Vec<CompositeHunk>");
+        let ts = rust_to_typescript(&ty, &[]);
+        assert_eq!(ts, "TsCompositeHunk[]");
+    }
+
+    #[test]
+    fn test_renamed_type_create_composite_buffer_options() {
+        let ty = parse_type("CreateCompositeBufferOptions");
+        let ts = rust_to_typescript(&ty, &[]);
+        assert_eq!(ts, "TsCreateCompositeBufferOptions");
+    }
+
+    #[test]
+    fn test_renamed_type_suggestion() {
+        let ty = parse_type("Vec<Suggestion>");
+        let ts = rust_to_typescript(&ty, &[]);
+        assert_eq!(ts, "PromptSuggestion[]");
+    }
+
+    #[test]
+    fn test_passthrough_type_terminal_result() {
+        let ty = parse_type("TerminalResult");
+        let ts = rust_to_typescript(&ty, &[]);
+        assert_eq!(ts, "TerminalResult");
+    }
+
+    #[test]
+    fn test_passthrough_type_create_terminal_options() {
+        let ty = parse_type("CreateTerminalOptions");
+        let ts = rust_to_typescript(&ty, &[]);
+        assert_eq!(ts, "CreateTerminalOptions");
+    }
+
+    #[test]
+    fn test_passthrough_type_cursor_info() {
+        let ty = parse_type("CursorInfo");
+        let ts = rust_to_typescript(&ty, &[]);
+        assert_eq!(ts, "CursorInfo");
+    }
+
+    #[test]
+    fn test_option_cursor_info() {
+        let ty = parse_type("Option<CursorInfo>");
+        let ts = rust_to_typescript(&ty, &[]);
+        assert_eq!(ts, "CursorInfo | null");
+    }
+
+    #[test]
+    fn test_extract_type_references_renamed_types() {
+        // Renamed types should be extracted by their TS name
+        assert_eq!(
+            extract_type_references("TsCompositeHunk[]"),
+            vec!["TsCompositeHunk"]
+        );
+        assert_eq!(
+            extract_type_references("TsCreateCompositeBufferOptions"),
+            vec!["TsCreateCompositeBufferOptions"]
+        );
+        assert_eq!(
+            extract_type_references("PromptSuggestion[]"),
+            vec!["PromptSuggestion"]
+        );
+    }
+
+    #[test]
+    fn test_extract_type_references_terminal_types() {
+        assert_eq!(
+            extract_type_references("Promise<TerminalResult>"),
+            vec!["TerminalResult"]
+        );
+        assert_eq!(
+            extract_type_references("CreateTerminalOptions"),
+            vec!["CreateTerminalOptions"]
+        );
+    }
+
+    #[test]
+    fn test_extract_type_references_cursor_types() {
+        assert_eq!(
+            extract_type_references("CursorInfo | null"),
+            vec!["CursorInfo"]
+        );
+        assert_eq!(extract_type_references("CursorInfo[]"), vec!["CursorInfo"]);
+    }
+
+    #[test]
+    fn test_generate_ts_method_with_renamed_param_type() {
+        let method = ApiMethod {
+            js_name: "updateCompositeAlignment".to_string(),
+            kind: ApiKind::Sync,
+            params: vec![
+                ParamInfo {
+                    name: "bufferId".to_string(),
+                    ts_type: "number".to_string(),
+                    optional: false,
+                    variadic: false,
+                },
+                ParamInfo {
+                    name: "hunks".to_string(),
+                    ts_type: "TsCompositeHunk[]".to_string(),
+                    optional: false,
+                    variadic: false,
+                },
+            ],
+            return_type: "boolean".to_string(),
+            doc: "Update alignment hunks".to_string(),
+        };
+
+        let ts = generate_ts_method(&method);
+        assert!(ts.contains(
+            "updateCompositeAlignment(bufferId: number, hunks: TsCompositeHunk[]): boolean;"
+        ));
+    }
+
+    #[test]
+    fn test_generate_ts_method_cursor_return_types() {
+        let method = ApiMethod {
+            js_name: "getPrimaryCursor".to_string(),
+            kind: ApiKind::Sync,
+            params: vec![],
+            return_type: "CursorInfo | null".to_string(),
+            doc: "Get primary cursor".to_string(),
+        };
+        let ts = generate_ts_method(&method);
+        assert!(ts.contains("getPrimaryCursor(): CursorInfo | null;"));
+
+        let method = ApiMethod {
+            js_name: "getAllCursors".to_string(),
+            kind: ApiKind::Sync,
+            params: vec![],
+            return_type: "CursorInfo[]".to_string(),
+            doc: "Get all cursors".to_string(),
+        };
+        let ts = generate_ts_method(&method);
+        assert!(ts.contains("getAllCursors(): CursorInfo[];"));
+
+        let method = ApiMethod {
+            js_name: "getAllCursorPositions".to_string(),
+            kind: ApiKind::Sync,
+            params: vec![],
+            return_type: "number[]".to_string(),
+            doc: "Get all cursor positions".to_string(),
+        };
+        let ts = generate_ts_method(&method);
+        assert!(ts.contains("getAllCursorPositions(): number[];"));
+    }
+
+    #[test]
+    fn test_generate_ts_method_terminal() {
+        let method = ApiMethod {
+            js_name: "createTerminal".to_string(),
+            kind: ApiKind::AsyncPromise,
+            params: vec![ParamInfo {
+                name: "opts".to_string(),
+                ts_type: "CreateTerminalOptions".to_string(),
+                optional: true,
+                variadic: false,
+            }],
+            return_type: "TerminalResult".to_string(),
+            doc: "Create a terminal".to_string(),
+        };
+
+        let ts = generate_ts_method(&method);
+        assert!(
+            ts.contains("createTerminal(opts?: CreateTerminalOptions): Promise<TerminalResult>;")
+        );
+    }
+
+    #[test]
+    fn test_collect_referenced_types_includes_renamed() {
+        let methods = vec![
+            ApiMethod {
+                js_name: "updateAlignment".to_string(),
+                kind: ApiKind::Sync,
+                params: vec![ParamInfo {
+                    name: "hunks".to_string(),
+                    ts_type: "TsCompositeHunk[]".to_string(),
+                    optional: false,
+                    variadic: false,
+                }],
+                return_type: "boolean".to_string(),
+                doc: "".to_string(),
+            },
+            ApiMethod {
+                js_name: "setSuggestions".to_string(),
+                kind: ApiKind::Sync,
+                params: vec![ParamInfo {
+                    name: "suggestions".to_string(),
+                    ts_type: "PromptSuggestion[]".to_string(),
+                    optional: false,
+                    variadic: false,
+                }],
+                return_type: "boolean".to_string(),
+                doc: "".to_string(),
+            },
+            ApiMethod {
+                js_name: "getPrimaryCursor".to_string(),
+                kind: ApiKind::Sync,
+                params: vec![],
+                return_type: "CursorInfo | null".to_string(),
+                doc: "".to_string(),
+            },
+            ApiMethod {
+                js_name: "createTerminal".to_string(),
+                kind: ApiKind::AsyncPromise,
+                params: vec![ParamInfo {
+                    name: "opts".to_string(),
+                    ts_type: "CreateTerminalOptions".to_string(),
+                    optional: true,
+                    variadic: false,
+                }],
+                return_type: "TerminalResult".to_string(),
+                doc: "".to_string(),
+            },
+        ];
+
+        let types = collect_referenced_types(&methods);
+        assert!(types.contains(&"TsCompositeHunk".to_string()));
+        assert!(types.contains(&"PromptSuggestion".to_string()));
+        assert!(types.contains(&"CursorInfo".to_string()));
+        assert!(types.contains(&"TerminalResult".to_string()));
+        assert!(types.contains(&"CreateTerminalOptions".to_string()));
+    }
+
+    #[test]
+    fn test_all_known_types_are_passthrough_or_renamed() {
+        // Verify that all known types produce expected output
+        let passthrough_types = vec![
+            "BufferInfo",
+            "CursorInfo",
+            "ViewportInfo",
+            "SpawnResult",
+            "BackgroundProcessResult",
+            "DirEntry",
+            "PromptSuggestion",
+            "ActionSpec",
+            "ActionPopupOptions",
+            "VirtualBufferResult",
+            "TerminalResult",
+            "CreateTerminalOptions",
+            "TsHighlightSpan",
+            "JsDiagnostic",
+        ];
+
+        for type_name in &passthrough_types {
+            let ty = parse_type(type_name);
+            let ts = rust_to_typescript(&ty, &[]);
+            assert_eq!(
+                &ts, type_name,
+                "Type {} should pass through unchanged",
+                type_name
+            );
+        }
+
+        // Renamed types
+        let renamed = vec![
+            ("CompositeHunk", "TsCompositeHunk"),
+            (
+                "CreateCompositeBufferOptions",
+                "TsCreateCompositeBufferOptions",
+            ),
+            ("Suggestion", "PromptSuggestion"),
+        ];
+
+        for (rust_name, ts_name) in &renamed {
+            let ty = parse_type(rust_name);
+            let ts = rust_to_typescript(&ty, &[]);
+            assert_eq!(
+                &ts, ts_name,
+                "Type {} should be renamed to {}",
+                rust_name, ts_name
+            );
+        }
     }
 }

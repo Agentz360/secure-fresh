@@ -153,24 +153,28 @@ impl CompositeViewState {
         }
     }
 
-    /// Move cursor down, auto-scrolling if needed
+    /// Move cursor down, auto-scrolling if needed.
+    /// Keeps cursor at least SCROLL_MARGIN lines from the bottom edge of the viewport.
     pub fn move_cursor_down(&mut self, max_row: usize, viewport_height: usize) {
+        const SCROLL_MARGIN: usize = 3;
         if self.cursor_row < max_row {
             self.cursor_row += 1;
-            // Auto-scroll if cursor goes below viewport
-            if self.cursor_row >= self.scroll_row + viewport_height {
-                self.scroll_row = self.cursor_row.saturating_sub(viewport_height - 1);
+            let margin = SCROLL_MARGIN.min(viewport_height.saturating_sub(1) / 2);
+            if self.cursor_row + margin >= self.scroll_row + viewport_height {
+                self.scroll_row += 1;
             }
         }
     }
 
-    /// Move cursor up, auto-scrolling if needed
-    pub fn move_cursor_up(&mut self) {
+    /// Move cursor up, auto-scrolling if needed.
+    /// Keeps cursor at least SCROLL_MARGIN lines from the top edge of the viewport.
+    pub fn move_cursor_up(&mut self, viewport_height: usize) {
+        const SCROLL_MARGIN: usize = 3;
         if self.cursor_row > 0 {
             self.cursor_row -= 1;
-            // Auto-scroll if cursor goes above viewport
-            if self.cursor_row < self.scroll_row {
-                self.scroll_row = self.cursor_row;
+            let margin = SCROLL_MARGIN.min(viewport_height.saturating_sub(1) / 2);
+            if self.cursor_row < self.scroll_row + margin && self.scroll_row > 0 {
+                self.scroll_row -= 1;
             }
         }
     }

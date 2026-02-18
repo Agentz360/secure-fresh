@@ -255,9 +255,16 @@ type BufferInfo = {
 	*/
 	is_virtual: boolean;
 	/**
-	* Current view mode: "source" or "compose"
+	* Current view mode of the active split: "source" or "compose"
 	*/
 	view_mode: string;
+	/**
+	* True if any split showing this buffer has compose mode enabled.
+	* Plugins should use this (not view_mode) to decide whether to maintain
+	* decorations, since decorations live on the buffer and are filtered
+	* per-split at render time.
+	*/
+	is_composing_in_any_split: boolean;
 	/**
 	* Compose width (if set), from the active split's view state
 	*/
@@ -371,6 +378,51 @@ type FormatterPackConfig = {
 	*/
 	args: Array<string>;
 };
+type TerminalResult = {
+	/**
+	* The created buffer ID (for use with setSplitBuffer, etc.)
+	*/
+	bufferId: number;
+	/**
+	* The terminal ID (for use with sendTerminalInput, closeTerminal)
+	*/
+	terminalId: number;
+	/**
+	* The split ID (if created in a new split)
+	*/
+	splitId: number | null;
+};
+type CreateTerminalOptions = {
+	/**
+	* Working directory for the terminal (defaults to editor cwd)
+	*/
+	cwd?: string;
+	/**
+	* Split direction: "horizontal" or "vertical" (default: "vertical")
+	*/
+	direction?: string;
+	/**
+	* Split ratio 0.0-1.0 (default: 0.5)
+	*/
+	ratio?: number;
+	/**
+	* Whether to focus the new terminal split (default: true)
+	*/
+	focus?: boolean;
+};
+type CursorInfo = {
+	/**
+	* Byte position of the cursor
+	*/
+	position: number;
+	/**
+	* Selection range (if any)
+	*/
+	selection: {
+		start: number;
+		end: number;
+	} | null;
+};
 type BackgroundProcessResult = {
 	/**
 	* Unique process ID for later reference
@@ -386,46 +438,6 @@ type BufferSavedDiff = {
 	equal: boolean;
 	byte_ranges: Array<[number, number]>;
 	line_ranges: Array<[number, number]> | null;
-};
-type TsCompositeHunk = {
-	/**
-	* Starting line in old buffer (0-indexed)
-	*/
-	oldStart: number;
-	/**
-	* Number of lines in old buffer
-	*/
-	oldCount: number;
-	/**
-	* Starting line in new buffer (0-indexed)
-	*/
-	newStart: number;
-	/**
-	* Number of lines in new buffer
-	*/
-	newCount: number;
-};
-type TsCreateCompositeBufferOptions = {
-	/**
-	* Buffer name (displayed in tabs/title)
-	*/
-	name: string;
-	/**
-	* Mode for keybindings
-	*/
-	mode: string;
-	/**
-	* Layout configuration
-	*/
-	layout: TsCompositeLayoutConfig;
-	/**
-	* Source pane configurations
-	*/
-	sources: Array<TsCompositeSourceConfig>;
-	/**
-	* Diff hunks for alignment (optional)
-	*/
-	hunks: Array<TsCompositeHunk> | null;
 };
 type CreateVirtualBufferInExistingSplitOptions = {
 	/**
@@ -616,28 +628,6 @@ type SpawnResult = {
 	*/
 	exit_code: number;
 };
-type PromptSuggestion = {
-	/**
-	* The text to display
-	*/
-	text: string;
-	/**
-	* Optional description
-	*/
-	description?: string;
-	/**
-	* The value to use when selected (defaults to text if None)
-	*/
-	value?: string;
-	/**
-	* Whether this suggestion is disabled (greyed out, defaults to false)
-	*/
-	disabled?: boolean;
-	/**
-	* Optional keyboard shortcut
-	*/
-	keybinding?: string;
-};
 type TextPropertiesAtCursor = Array<Record<string, unknown>>;
 type TsHighlightSpan = {
 	start: number;
@@ -734,15 +724,15 @@ interface EditorAPI {
 	/**
 	* Get primary cursor info for active buffer
 	*/
-	getPrimaryCursor(): unknown;
+	getPrimaryCursor(): CursorInfo | null;
 	/**
 	* Get all cursors for active buffer
 	*/
-	getAllCursors(): unknown;
+	getAllCursors(): CursorInfo[];
 	/**
 	* Get all cursor positions as byte offsets
 	*/
-	getAllCursorPositions(): unknown;
+	getAllCursorPositions(): number[];
 	/**
 	* Get viewport info for active buffer
 	*/
@@ -937,7 +927,7 @@ interface EditorAPI {
 	/**
 	* Check if a background process is still running
 	*/
-	isProcessRunning(ProcessId: number): boolean;
+	isProcessRunning(processId: number): boolean;
 	/**
 	* Kill a process by ID (alias for killBackgroundProcess)
 	*/
@@ -952,13 +942,13 @@ interface EditorAPI {
 	* Uses typed CreateCompositeBufferOptions - serde validates field names at runtime
 	* via `deny_unknown_fields` attribute
 	*/
-	createCompositeBuffer(opts: CreateCompositeBufferOptions): Promise<number>;
+	createCompositeBuffer(opts: TsCreateCompositeBufferOptions): Promise<number>;
 	/**
 	* Update alignment hunks for a composite buffer
 	* 
 	* Uses typed Vec<CompositeHunk> - serde validates field names at runtime
 	*/
-	updateCompositeAlignment(bufferId: number, hunks: CompositeHunk[]): boolean;
+	updateCompositeAlignment(bufferId: number, hunks: TsCompositeHunk[]): boolean;
 	/**
 	* Close a composite buffer
 	*/
@@ -1098,7 +1088,7 @@ interface EditorAPI {
 	* 
 	* Uses typed Vec<Suggestion> - serde validates field names at runtime
 	*/
-	setPromptSuggestions(suggestions: Suggestion[]): boolean;
+	setPromptSuggestions(suggestions: PromptSuggestion[]): boolean;
 	setPromptInputSync(sync: boolean): boolean;
 	/**
 	* Define a buffer mode (takes bindings as array of [key, command] pairs)
@@ -1169,20 +1159,17 @@ interface EditorAPI {
 	*/
 	setViewMode(bufferId: number, mode: string): boolean;
 	/**
-	* Set plugin-managed per-buffer view state.
-	* State is stored per-buffer per-split and persisted across sessions.
-	* Pass undefined/null as value to delete the key.
-	*/
-	setViewState(bufferId: number, key: string, value: unknown): boolean;
-	/**
-	* Get plugin-managed per-buffer view state.
-	* Returns undefined if the key is not set.
-	*/
-	getViewState(bufferId: number, key: string): unknown | undefined;
-	/**
 	* Enable or disable line wrapping for a buffer/split
 	*/
 	setLineWrap(bufferId: number, splitId: number | null, enabled: boolean): boolean;
+	/**
+	* Set plugin-managed per-buffer view state (write-through to snapshot + command for persistence)
+	*/
+	setViewState(bufferId: number, key: string, value: unknown): boolean;
+	/**
+	* Get plugin-managed per-buffer view state (reads from snapshot)
+	*/
+	getViewState(bufferId: number, key: string): unknown;
 	/**
 	* Create a scroll sync group for anchor-based synchronized scrolling
 	*/

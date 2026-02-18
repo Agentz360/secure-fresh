@@ -157,14 +157,14 @@ Cursor information with optional selection
 ```typescript
 interface CursorInfo {
   position: number;
-  selection?: SelectionRange | null;
+  selection: { start: number; end: number } | null;
 }
 ```
 
 | Field | Description |
 |-------|-------------|
 | `position` | Byte position of the cursor |
-| `selection` | Selection range if text is selected, null otherwise |
+| `selection` | Selection range `{ start, end }` if text is selected, `null` otherwise |
 
 ### TsDiagnosticPosition
 
@@ -469,12 +469,12 @@ interface TsCompositeHunk {
 | `new_start` | Start line in new file (0-indexed) |
 | `new_count` | Number of lines in new file |
 
-### CreateCompositeBufferOptions
+### TsCreateCompositeBufferOptions
 
 Options for creating a composite buffer
 
 ```typescript
-interface CreateCompositeBufferOptions {
+interface TsCreateCompositeBufferOptions {
   name: string;
   mode: string;
   layout: TsCompositeLayoutConfig;
@@ -490,6 +490,44 @@ interface CreateCompositeBufferOptions {
 | `layout` | Layout configuration |
 | `sources` | Source panes to display |
 | `hunks` | Optional diff hunks for line alignment |
+
+### TerminalResult
+
+Result returned when creating a terminal
+
+```typescript
+interface TerminalResult {
+  bufferId: number;
+  terminalId: number;
+  splitId: number | null;
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `bufferId` | The created buffer ID (for use with `setSplitBuffer`, etc.) |
+| `terminalId` | The terminal ID (for use with `sendTerminalInput`, `closeTerminal`) |
+| `splitId` | The split ID (if created in a new split) |
+
+### CreateTerminalOptions
+
+Options for creating a terminal
+
+```typescript
+interface CreateTerminalOptions {
+  cwd?: string;
+  direction?: string;
+  ratio?: number;
+  focus?: boolean;
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `cwd` | Working directory for the terminal (defaults to editor cwd) |
+| `direction` | Split direction: `"horizontal"` or `"vertical"` (default: `"vertical"`) |
+| `ratio` | Split ratio 0.0–1.0 (default: 0.5) |
+| `focus` | Whether to focus the new terminal split (default: true) |
 
 ### ActionSpecJs
 

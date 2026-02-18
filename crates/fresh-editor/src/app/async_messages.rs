@@ -964,20 +964,26 @@ impl Editor {
 
     /// Process TypeScript plugin commands
     ///
-    /// Returns true if any commands were processed
+    /// Returns true if any visual commands were processed (i.e. a re-render is needed).
+    /// No-op sentinels like `HookCompleted` do not count.
     pub(super) fn process_plugin_commands(&mut self) -> bool {
         let commands = self.plugin_manager.process_commands();
         if commands.is_empty() {
             return false;
         }
 
+        let has_visual_commands = commands
+            .iter()
+            .any(|c| !matches!(c, fresh_core::api::PluginCommand::HookCompleted { .. }));
+
+        let cmd_names: Vec<String> = commands.iter().map(|c| c.debug_variant_name()).collect();
         tracing::info!(
-            "[SYNTAX DEBUG] process_plugin_commands: processing {} commands",
-            commands.len()
+            count = commands.len(),
+            cmds = ?cmd_names,
+            "process_plugin_commands"
         );
 
         for command in &commands {
-            // Log RegisterGrammar and ReloadGrammars commands specifically
             match command {
                 fresh_core::api::PluginCommand::RegisterGrammar {
                     language,
@@ -1008,7 +1014,7 @@ impl Editor {
             }
         }
 
-        true
+        has_visual_commands
     }
 
     /// Process pending plugin action completions

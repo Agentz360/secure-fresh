@@ -2514,3 +2514,149 @@ fn test_enter_resets_horizontal_scroll() {
 
     println!("\n✓ Enter correctly reset horizontal scroll");
 }
+
+/// Test that vertical scrolling with arrow keys uses a scroll margin.
+/// When moving the cursor down, scrolling should start 3 lines before the cursor
+/// reaches the bottom edge of the viewport (and similarly for up).
+#[test]
+fn test_vertical_scroll_margin_down() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+
+    // Create a file with many lines (more than any reasonable viewport)
+    let total_lines = 60;
+    let mut content = String::new();
+    for i in 0..total_lines {
+        if i > 0 {
+            content.push('\n');
+        }
+        content.push_str(&format!("Line {i:03}"));
+    }
+    let _fixture = harness.load_buffer_from_text(&content).unwrap();
+
+    // Go to beginning and render to establish layout
+    harness
+        .send_key(KeyCode::Home, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Read viewport height AFTER render so it reflects actual content area
+    let viewport_height = harness.viewport_height();
+    let initial_top = harness.top_line_number();
+
+    // Move cursor down to just before the scroll margin triggers (viewport_height - 3 - 1 presses)
+    // With scroll margin=3: scrolling starts when cursor is 3 lines from the bottom edge,
+    // which is at (viewport_height - 3) Down presses from the top.
+    let presses_before_scroll = viewport_height - 3 - 1;
+    for _ in 0..presses_before_scroll {
+        harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    }
+
+    // Viewport should NOT have scrolled yet
+    assert_eq!(
+        harness.top_line_number(),
+        initial_top,
+        "Viewport should not scroll before cursor reaches bottom margin zone"
+    );
+
+    // Press Down one more time - this should trigger the first scroll
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+
+    assert_eq!(
+        harness.top_line_number(),
+        initial_top + 1,
+        "Viewport should scroll by exactly 1 when cursor enters bottom margin zone"
+    );
+
+    // Each subsequent Down press should scroll by exactly 1
+    for i in 0..5 {
+        let top_before = harness.top_line_number();
+        harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            harness.top_line_number(),
+            top_before + 1,
+            "Down press {} in margin zone should scroll by exactly 1",
+            i + 1
+        );
+    }
+}
+
+/// Test that moving up with arrow keys uses the same scroll margin.
+/// Once the cursor enters the top margin zone, each Up press scrolls exactly 1 line.
+#[test]
+fn test_vertical_scroll_margin_up() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    let mut harness = EditorTestHarness::new(80, 24).unwrap();
+
+    // Create a file with many lines
+    let total_lines = 60;
+    let mut content = String::new();
+    for i in 0..total_lines {
+        if i > 0 {
+            content.push('\n');
+        }
+        content.push_str(&format!("Line {i:03}"));
+    }
+    let _fixture = harness.load_buffer_from_text(&content).unwrap();
+
+    // Go to beginning and render to establish layout
+    harness
+        .send_key(KeyCode::Home, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    let viewport_height = harness.viewport_height();
+
+    // Move cursor down far enough to scroll the viewport well past the top.
+    let moves_down = viewport_height + 15;
+    for _ in 0..moves_down {
+        harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    }
+
+    let top_after_down = harness.top_line_number();
+    assert!(
+        top_after_down >= 10,
+        "Should have scrolled down at least 10 lines"
+    );
+
+    // Press Up until the first scroll occurs, counting presses in the safe zone
+    let mut safe_presses = 0;
+    while harness.top_line_number() == top_after_down {
+        harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        safe_presses += 1;
+        assert!(
+            safe_presses <= viewport_height,
+            "Scroll should have triggered by now"
+        );
+    }
+
+    // The first scroll moved top by exactly 1
+    assert_eq!(
+        harness.top_line_number(),
+        top_after_down - 1,
+        "First Up scroll should move viewport by exactly 1"
+    );
+
+    // There should have been a meaningful safe zone (at least viewport_height - 8 presses)
+    // before scrolling started (cursor traverses from bottom margin to top margin)
+    assert!(
+        safe_presses >= viewport_height - 8,
+        "Expected at least {} safe presses before scroll, got {}",
+        viewport_height - 8,
+        safe_presses
+    );
+
+    // Each subsequent Up press should scroll by exactly 1
+    for i in 0..5 {
+        let top_before = harness.top_line_number();
+        harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            harness.top_line_number(),
+            top_before - 1,
+            "Up press {} in margin zone should scroll by exactly 1",
+            i + 1
+        );
+    }
+}

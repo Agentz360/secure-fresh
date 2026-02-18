@@ -315,8 +315,13 @@ pub struct BufferInfo {
     pub length: usize,
     /// Whether this is a virtual buffer (not backed by a file)
     pub is_virtual: bool,
-    /// Current view mode: "source" or "compose"
+    /// Current view mode of the active split: "source" or "compose"
     pub view_mode: String,
+    /// True if any split showing this buffer has compose mode enabled.
+    /// Plugins should use this (not `view_mode`) to decide whether to maintain
+    /// decorations, since decorations live on the buffer and are filtered
+    /// per-split at render time.
+    pub is_composing_in_any_split: bool,
     /// Compose width (if set), from the active split's view state
     pub compose_width: Option<u16>,
 }
@@ -1644,6 +1649,17 @@ pub enum PluginCommand {
     },
 }
 
+impl PluginCommand {
+    /// Extract the enum variant name from the Debug representation.
+    pub fn debug_variant_name(&self) -> String {
+        let dbg = format!("{:?}", self);
+        dbg.split(|ch: char| ch == ' ' || ch == '{' || ch == '(')
+            .next()
+            .unwrap_or("?")
+            .to_string()
+    }
+}
+
 // =============================================================================
 // Language Pack Configuration Types
 // =============================================================================
@@ -2764,6 +2780,7 @@ mod tests {
                 length: 100,
                 is_virtual: false,
                 view_mode: "source".to_string(),
+                is_composing_in_any_split: false,
                 compose_width: None,
             };
             snapshot.buffers.insert(BufferId(1), buffer_info);
@@ -2806,6 +2823,7 @@ mod tests {
                     length: 50,
                     is_virtual: false,
                     view_mode: "source".to_string(),
+                    is_composing_in_any_split: false,
                     compose_width: None,
                 },
             );
@@ -2818,6 +2836,7 @@ mod tests {
                     length: 100,
                     is_virtual: false,
                     view_mode: "source".to_string(),
+                    is_composing_in_any_split: false,
                     compose_width: None,
                 },
             );
@@ -2830,6 +2849,7 @@ mod tests {
                     length: 0,
                     is_virtual: true,
                     view_mode: "source".to_string(),
+                    is_composing_in_any_split: false,
                     compose_width: None,
                 },
             );

@@ -409,7 +409,7 @@ impl Editor {
                     view_state.move_cursor_down(max_row, viewport_height);
                 }
                 CursorMovement::Up => {
-                    view_state.move_cursor_up();
+                    view_state.move_cursor_up(viewport_height);
                 }
                 CursorMovement::Left => {
                     if view_state.cursor_column > 0 {

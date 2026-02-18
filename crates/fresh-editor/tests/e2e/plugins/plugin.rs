@@ -1282,3 +1282,117 @@ editor.debug("Theme overlay test plugin loaded");
     let screen = harness.screen_to_string();
     println!("Final screen:\n{}", screen);
 }
+
+/// Test getAllCursors with active selection: select text and uppercase it
+///
+/// This verifies the full round-trip of:
+/// 1. getAllCursors() returns CursorInfo[] with selection ranges
+/// 2. getBufferText() reads selected byte range
+/// 3. deleteRange() + insertText() replaces selection with uppercased text
+#[test]
+fn test_get_all_cursors_uppercase_selection() {
+    init_tracing_from_env();
+
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let project_root = temp_dir.path().join("project_root");
+    fs::create_dir(&project_root).unwrap();
+
+    let plugins_dir = project_root.join("plugins");
+    fs::create_dir(&plugins_dir).unwrap();
+    copy_plugin_lib(&plugins_dir);
+
+    // Plugin: read each cursor's selection, fetch text, uppercase, replace
+    let test_plugin = r#"/// <reference path="./lib/fresh.d.ts" />
+const editor = getEditor();
+
+globalThis.uppercase_selection = async function(): Promise<void> {
+    const bufferId = editor.getActiveBufferId();
+    if (bufferId === null || bufferId === undefined) {
+        editor.setStatus("ERR: no buffer");
+        return;
+    }
+    const cursors = editor.getAllCursors();
+    if (!cursors || cursors.length === 0) {
+        editor.setStatus("ERR: no cursors");
+        return;
+    }
+    let replaced = 0;
+    for (const c of cursors) {
+        if (c.selection) {
+            const start = c.selection.start;
+            const end = c.selection.end;
+            const text: string = await editor.getBufferText(bufferId, start, end);
+            const upper = text.toUpperCase();
+            editor.deleteRange(bufferId, start, end);
+            editor.insertText(bufferId, start, upper);
+            replaced++;
+        }
+    }
+    editor.setStatus(`Uppercased ${replaced} selection(s)`);
+};
+
+editor.registerCommand(
+    "Test: Uppercase Selection",
+    "Uppercase the selected text via getAllCursors",
+    "uppercase_selection",
+    null
+);
+editor.setStatus("Uppercase plugin loaded");
+"#;
+
+    fs::write(plugins_dir.join("test_uppercase.ts"), test_plugin).unwrap();
+
+    // Create test file with known content
+    let test_file_path = project_root.join("test_upper.txt");
+    fs::write(&test_file_path, "hello world\n").unwrap();
+
+    let mut harness =
+        EditorTestHarness::with_config_and_working_dir(120, 30, Default::default(), project_root)
+            .unwrap();
+
+    harness.open_file(&test_file_path).unwrap();
+    harness.render().unwrap();
+    harness.assert_screen_contains("hello world");
+
+    // Wait for plugin to load
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Uppercase plugin loaded"))
+        .unwrap();
+
+    // Move cursor to beginning of "hello" and select 5 characters ("hello")
+    harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+    for _ in 0..5 {
+        harness
+            .send_key(KeyCode::Right, KeyModifiers::SHIFT)
+            .unwrap();
+    }
+    harness.render().unwrap();
+
+    // Execute uppercase command via command palette
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.type_text("Test: Uppercase Selection").unwrap();
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Uppercase Selection"))
+        .unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Wait for the async plugin to finish
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Uppercased 1 selection(s)"))
+        .unwrap();
+
+    harness.render().unwrap();
+
+    // Verify: "hello" should now be "HELLO", rest unchanged
+    let screen = harness.screen_to_string();
+    println!("Screen after uppercase:\n{}", screen);
+    assert!(
+        screen.contains("HELLO world"),
+        "Expected 'HELLO world' after uppercasing selection. Got:\n{}",
+        screen
+    );
+}

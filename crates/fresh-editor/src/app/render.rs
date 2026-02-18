@@ -336,32 +336,8 @@ impl Editor {
             // ensures a follow-up render cycle picks up any missed commands.
             let commands = self.plugin_manager.process_commands();
             if !commands.is_empty() {
-                let cmd_names: Vec<&str> = commands
-                    .iter()
-                    .map(|c| match c {
-                        fresh_core::api::PluginCommand::AddOverlay { .. } => "AddOverlay",
-                        fresh_core::api::PluginCommand::AddConceal { .. } => "AddConceal",
-                        fresh_core::api::PluginCommand::ClearOverlaysInRange { .. } => {
-                            "ClearOverlaysInRange"
-                        }
-                        fresh_core::api::PluginCommand::ClearConcealsInRange { .. } => {
-                            "ClearConcealsInRange"
-                        }
-                        fresh_core::api::PluginCommand::ClearNamespace { .. } => "ClearNamespace",
-                        fresh_core::api::PluginCommand::ClearConcealNamespace { .. } => {
-                            "ClearConcealNamespace"
-                        }
-                        fresh_core::api::PluginCommand::AddSoftBreak { .. } => "AddSoftBreak",
-                        fresh_core::api::PluginCommand::ClearSoftBreakNamespace { .. } => {
-                            "ClearSoftBreakNamespace"
-                        }
-                        fresh_core::api::PluginCommand::ClearSoftBreaksInRange { .. } => {
-                            "ClearSoftBreaksInRange"
-                        }
-                        fresh_core::api::PluginCommand::RefreshLines { .. } => "RefreshLines",
-                        _ => "Other",
-                    })
-                    .collect();
+                let cmd_names: Vec<String> =
+                    commands.iter().map(|c| c.debug_variant_name()).collect();
                 tracing::info!(count = commands.len(), cmds = ?cmd_names, "process_commands during render");
             }
             for command in commands {
@@ -3972,7 +3948,12 @@ impl Editor {
 
     /// Build a hint message for how to play a macro
     fn build_macro_play_hint(&self) -> String {
-        // Get command palette keybinding
+        // Check for play_last_macro keybinding (e.g. F4)
+        if let Some(play_key) = self.get_keybinding_for_action("play_last_macro") {
+            return format!("{} → Play Last Macro", play_key);
+        }
+
+        // Fall back to command palette hint
         let palette_key = self
             .get_keybinding_for_action("command_palette")
             .unwrap_or_else(|| "Ctrl+P".to_string());
@@ -4087,7 +4068,7 @@ impl Editor {
         );
         state
             .margins
-            .set_line_numbers(self.config.editor.line_numbers);
+            .configure_for_line_numbers(self.config.editor.line_numbers);
 
         self.buffers.insert(buffer_id, state);
         self.event_logs.insert(buffer_id, EventLog::new());
@@ -4162,7 +4143,7 @@ impl Editor {
         );
         state
             .margins
-            .set_line_numbers(self.config.editor.line_numbers);
+            .configure_for_line_numbers(self.config.editor.line_numbers);
 
         self.buffers.insert(buffer_id, state);
         self.event_logs.insert(buffer_id, EventLog::new());
@@ -4483,6 +4464,73 @@ impl Editor {
                 }
             }
         }
+
+        // Same-buffer scroll sync: when two splits show the same buffer (e.g., source
+        // vs compose mode), sync the inactive split's viewport to match the active
+        // split's scroll position.  Gated on the user-togglable scroll sync flag.
+        //
+        // We copy top_byte directly for the general case.  At the bottom edge the
+        // two splits may disagree because compose mode has soft-break virtual lines.
+        // Rather than computing the correct position here (where view lines aren't
+        // available), we set a flag and let `render_buffer_in_split` fix it up using
+        // the same view-line-based logic that `ensure_visible_in_layout` uses.
+        let active_buffer_id = if self.same_buffer_scroll_sync {
+            self.split_manager.buffer_for_split(active_split)
+        } else {
+            None
+        };
+        if let Some(active_buf_id) = active_buffer_id {
+            let active_top_byte = self
+                .split_view_states
+                .get(&active_split)
+                .map(|vs| vs.viewport.top_byte);
+            let active_viewport_height = self
+                .split_view_states
+                .get(&active_split)
+                .map(|vs| vs.viewport.visible_line_count())
+                .unwrap_or(0);
+
+            if let Some(top_byte) = active_top_byte {
+                // Find other splits showing the same buffer (not in an explicit sync group)
+                let other_splits: Vec<_> = self
+                    .split_view_states
+                    .keys()
+                    .filter(|&&s| {
+                        s != active_split
+                            && self.split_manager.buffer_for_split(s) == Some(active_buf_id)
+                            && !self.scroll_sync_manager.is_split_synced(s)
+                    })
+                    .copied()
+                    .collect();
+
+                if !other_splits.is_empty() {
+                    // Detect whether the active split is at the bottom of the
+                    // buffer (remaining lines fit within the viewport).
+                    let at_bottom = if let Some(state) = self.buffers.get_mut(&active_buf_id) {
+                        let mut iter = state.buffer.line_iterator(top_byte, 80);
+                        let mut lines_remaining = 0;
+                        while iter.next_line().is_some() {
+                            lines_remaining += 1;
+                            if lines_remaining > active_viewport_height {
+                                break;
+                            }
+                        }
+                        lines_remaining <= active_viewport_height
+                    } else {
+                        false
+                    };
+
+                    for other_split in other_splits {
+                        if let Some(view_state) = self.split_view_states.get_mut(&other_split) {
+                            view_state.viewport.top_byte = top_byte;
+                            // At the bottom edge, tell the render pass to
+                            // adjust using view lines (soft-break-aware).
+                            view_state.viewport.sync_scroll_to_end = at_bottom;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Pre-sync ensure_visible for scroll sync groups
@@ -4500,42 +4548,63 @@ impl Editor {
             .find_group_for_split(active_split)
             .map(|g| (g.left_split, g.right_split));
 
-        let Some((left_split, right_split)) = group_info else {
-            return;
-        };
+        if let Some((left_split, right_split)) = group_info {
+            // Get the active split's buffer and update its viewport
+            if let Some(buffer_id) = self.split_manager.buffer_for_split(active_split) {
+                if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                    let buffer = &mut state.buffer;
 
-        // Get the active split's buffer and update its viewport
-        if let Some(buffer_id) = self.split_manager.buffer_for_split(active_split) {
-            if let Some(state) = self.buffers.get_mut(&buffer_id) {
-                let buffer = &mut state.buffer;
+                    if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
+                        let cursor = *view_state.cursors.primary();
+                        // Update viewport to show cursor - this is what ensure_visible does
+                        view_state.viewport.ensure_visible(buffer, &cursor);
 
-                if let Some(view_state) = self.split_view_states.get_mut(&active_split) {
-                    let cursor = *view_state.cursors.primary();
-                    // Update viewport to show cursor - this is what ensure_visible does
-                    view_state.viewport.ensure_visible(buffer, &cursor);
-
-                    tracing::debug!(
-                        "pre_sync_ensure_visible: updated active split {:?} viewport, top_byte={}",
-                        active_split,
-                        view_state.viewport.top_byte
-                    );
+                        tracing::debug!(
+                            "pre_sync_ensure_visible: updated active split {:?} viewport, top_byte={}",
+                            active_split,
+                            view_state.viewport.top_byte
+                        );
+                    }
                 }
+            }
+
+            // Mark the OTHER split to skip ensure_visible so the sync position isn't undone
+            let other_split = if active_split == left_split {
+                right_split
+            } else {
+                left_split
+            };
+
+            if let Some(view_state) = self.split_view_states.get_mut(&other_split) {
+                view_state.viewport.set_skip_ensure_visible();
+                tracing::debug!(
+                    "pre_sync_ensure_visible: marked other split {:?} to skip ensure_visible",
+                    other_split
+                );
             }
         }
 
-        // Mark the OTHER split to skip ensure_visible so the sync position isn't undone
-        let other_split = if active_split == left_split {
-            right_split
-        } else {
-            left_split
-        };
+        // Same-buffer scroll sync: also mark other splits showing the same buffer
+        // to skip ensure_visible, so our sync_scroll_groups position isn't undone.
+        if !self.same_buffer_scroll_sync {
+            // Scroll sync disabled — don't interfere with other splits.
+        } else if let Some(active_buf_id) = self.split_manager.buffer_for_split(active_split) {
+            let other_same_buffer_splits: Vec<_> = self
+                .split_view_states
+                .keys()
+                .filter(|&&s| {
+                    s != active_split
+                        && self.split_manager.buffer_for_split(s) == Some(active_buf_id)
+                        && !self.scroll_sync_manager.is_split_synced(s)
+                })
+                .copied()
+                .collect();
 
-        if let Some(view_state) = self.split_view_states.get_mut(&other_split) {
-            view_state.viewport.set_skip_ensure_visible();
-            tracing::debug!(
-                "pre_sync_ensure_visible: marked other split {:?} to skip ensure_visible",
-                other_split
-            );
+            for other_split in other_same_buffer_splits {
+                if let Some(view_state) = self.split_view_states.get_mut(&other_split) {
+                    view_state.viewport.set_skip_ensure_visible();
+                }
+            }
         }
     }
 }

@@ -356,6 +356,8 @@ struct ViewPreferences {
     compose_column_guides: Option<Vec<u16>>,
     view_transform: Option<ViewTransformPayload>,
     rulers: Vec<usize>,
+    /// Per-split line number visibility (from BufferViewState)
+    show_line_numbers: bool,
 }
 
 struct LineRenderInput<'a> {
@@ -380,6 +382,8 @@ struct LineRenderInput<'a> {
     relative_line_numbers: bool,
     /// Session mode: use hardware cursor only, skip REVERSED style for software cursor
     session_mode: bool,
+    /// Whether to show line numbers in the gutter
+    show_line_numbers: bool,
 }
 
 /// Context for computing the style of a single character
@@ -419,6 +423,8 @@ struct LeftMarginContext<'a> {
     cursor_line: usize,
     /// Whether to show relative line numbers
     relative_line_numbers: bool,
+    /// Whether to show line numbers in the gutter
+    show_line_numbers: bool,
 }
 
 /// Render the left margin (indicators + line numbers + separator) to line_spans
@@ -506,6 +512,7 @@ fn render_left_margin(
             ctx.current_source_line_num,
             crate::view::margin::MarginPosition::Left,
             ctx.estimated_lines,
+            ctx.show_line_numbers,
         );
         let (rendered_text, style_opt) = margin_content.render(ctx.state.margins.left_config.width);
 
@@ -1035,6 +1042,7 @@ impl SplitRenderer {
                     use_terminal_bg,
                     session_mode,
                     &view_prefs.rulers,
+                    view_prefs.show_line_numbers,
                 );
 
                 // Store view line mappings for mouse click handling
@@ -1343,6 +1351,7 @@ impl SplitRenderer {
                         false,        // line_wrap_enabled
                         content_width,
                         gutter_width,
+                        &ViewMode::Source, // Composite view uses source mode
                     );
 
                     // Build source_line -> ViewLine index mapping
@@ -1919,6 +1928,7 @@ impl SplitRenderer {
                     compose_column_guides: view_state.compose_column_guides.clone(),
                     view_transform: view_state.view_transform.clone(),
                     rulers: view_state.rulers.clone(),
+                    show_line_numbers: view_state.show_line_numbers,
                 };
             }
         }
@@ -1930,6 +1940,7 @@ impl SplitRenderer {
             compose_column_guides: None,
             view_transform: None,
             rulers: Vec::new(),
+            show_line_numbers: true,
         }
     }
 
@@ -2272,6 +2283,7 @@ impl SplitRenderer {
         line_wrap_enabled: bool,
         content_width: usize,
         gutter_width: usize,
+        view_mode: &ViewMode,
     ) -> ViewData {
         // Check if buffer is binary before building tokens
         let is_binary = state.buffer.is_binary();
@@ -2290,8 +2302,10 @@ impl SplitRenderer {
         // Use plugin transform if available, otherwise use base tokens
         let mut tokens = view_transform.map(|vt| vt.tokens).unwrap_or(base_tokens);
 
-        // Apply soft breaks — marker-based line wrapping that survives edits without flicker
-        if !state.soft_breaks.is_empty() {
+        // Apply soft breaks — marker-based line wrapping that survives edits without flicker.
+        // Only apply in Compose mode; Source mode shows the raw unwrapped text.
+        let is_compose = matches!(view_mode, ViewMode::Compose);
+        if is_compose && !state.soft_breaks.is_empty() {
             let viewport_end = tokens
                 .iter()
                 .filter_map(|t| t.source_offset)
@@ -2308,8 +2322,9 @@ impl SplitRenderer {
             }
         }
 
-        // Apply conceal ranges - filter/replace tokens that fall within concealed byte ranges
-        if !state.conceals.is_empty() {
+        // Apply conceal ranges - filter/replace tokens that fall within concealed byte ranges.
+        // Only apply in Compose mode; Source mode shows the raw markdown syntax.
+        if is_compose && !state.conceals.is_empty() {
             let viewport_end = tokens
                 .iter()
                 .filter_map(|t| t.source_offset)
@@ -3401,6 +3416,7 @@ impl SplitRenderer {
         primary_cursor_position: usize,
         theme: &crate::view::theme::Theme,
         highlight_context_bytes: usize,
+        view_mode: &ViewMode,
     ) -> DecorationContext {
         // Extend highlighting range by ~1 viewport size before/after for better context.
         // This helps tree-sitter parse multi-line constructs that span viewport boundaries.
@@ -3441,6 +3457,9 @@ impl SplitRenderer {
 
         // Semantic tokens are stored as overlays so their ranges track edits.
         // Convert them into highlight spans for the render pipeline.
+        let is_compose = matches!(view_mode, ViewMode::Compose);
+        let md_emphasis_ns =
+            fresh_core::overlay::OverlayNamespace::from_string("md-emphasis".to_string());
         let mut semantic_token_spans = Vec::new();
         let mut viewport_overlays = Vec::new();
         for (overlay, range) in
@@ -3456,6 +3475,14 @@ impl SplitRenderer {
                     });
                 }
                 continue;
+            }
+
+            // Skip markdown compose overlays in Source mode — they should only
+            // render in the Compose-mode split.
+            if !is_compose {
+                if overlay.namespace.as_ref() == Some(&md_emphasis_ns) {
+                    continue;
+                }
             }
 
             viewport_overlays.push((overlay.clone(), range));
@@ -3539,6 +3566,7 @@ impl SplitRenderer {
             left_column,
             relative_line_numbers,
             session_mode,
+            show_line_numbers,
         } = input;
 
         let selection_ranges = &selection.ranges;
@@ -3666,6 +3694,7 @@ impl SplitRenderer {
                     line_indicators,
                     cursor_line,
                     relative_line_numbers,
+                    show_line_numbers,
                 },
                 &mut line_spans,
                 &mut line_view_map,
@@ -4319,6 +4348,7 @@ impl SplitRenderer {
                         implicit_line_num,
                         crate::view::margin::MarginPosition::Left,
                         estimated_lines,
+                        show_line_numbers,
                     );
                     let (rendered_text, style_opt) =
                         margin_content.render(state.margins.left_config.width);
@@ -4443,8 +4473,14 @@ impl SplitRenderer {
         use_terminal_bg: bool,
         session_mode: bool,
         rulers: &[usize],
+        show_line_numbers: bool,
     ) -> Vec<ViewLineMapping> {
         let _span = tracing::trace_span!("render_buffer_in_split").entered();
+
+        // Configure shared margin layout for this split's line number setting.
+        // The per-split `show_line_numbers` is the single source of truth;
+        // we apply it to shared margins here so width calculations are correct.
+        state.margins.configure_for_line_numbers(show_line_numbers);
 
         // Compute effective editor background: terminal default or theme-defined
         let effective_editor_bg = if use_terminal_bg {
@@ -4464,7 +4500,9 @@ impl SplitRenderer {
 
         let buffer_len = state.buffer.len();
         let estimated_lines = (buffer_len / 80).max(1);
-        state.margins.update_width_for_buffer(estimated_lines);
+        state
+            .margins
+            .update_width_for_buffer(estimated_lines, show_line_numbers);
         let gutter_width = state.margins.left_total_width();
 
         let compose_layout = Self::calculate_compose_layout(area, &view_mode, compose_width);
@@ -4482,17 +4520,24 @@ impl SplitRenderer {
             line_wrap,
             render_area.width as usize,
             gutter_width,
+            &view_mode,
         );
 
-        // Ensure cursor is visible using Layout-aware check (handles virtual lines)
-        // This detects when cursor is beyond the rendered view_lines and scrolls
-        let primary = *cursors.primary();
-        let scrolled = viewport.ensure_visible_in_layout(&view_data.lines, &primary, gutter_width);
+        // Same-buffer scroll sync: if the sync code flagged this viewport to
+        // scroll to the end, apply it now using the view lines we just built.
+        // This is soft-break-aware (same coordinate system as ensure_visible_in_layout).
+        let sync_scrolled = if viewport.sync_scroll_to_end {
+            viewport.sync_scroll_to_end = false;
+            viewport.scroll_to_end_of_view(&view_data.lines)
+        } else {
+            false
+        };
 
-        // If we scrolled, rebuild view_data from new position WITH the view_transform
-        // This ensures virtual lines are included in the rebuilt view
-        let view_data = if scrolled {
-            Self::build_view_data(
+        // If the sync adjustment changed top_byte, rebuild view_data before
+        // ensure_visible_in_layout runs (so it sees the correct view lines).
+        let (view_data, view_transform_for_rebuild) = if sync_scrolled {
+            viewport.top_view_line_offset = 0;
+            let rebuilt = Self::build_view_data(
                 state,
                 viewport,
                 view_transform_for_rebuild,
@@ -4501,7 +4546,48 @@ impl SplitRenderer {
                 line_wrap,
                 render_area.width as usize,
                 gutter_width,
-            )
+                &view_mode,
+            );
+            viewport.scroll_to_end_of_view(&rebuilt.lines);
+            (rebuilt, None)
+        } else {
+            (view_data, Some(view_transform_for_rebuild))
+        };
+
+        // Ensure cursor is visible using Layout-aware check (handles virtual lines)
+        // This detects when cursor is beyond the rendered view_lines and scrolls
+        let primary = *cursors.primary();
+        let scrolled = viewport.ensure_visible_in_layout(&view_data.lines, &primary, gutter_width);
+
+        // If we scrolled, rebuild view_data from the new top_byte and then re-run the
+        // layout-aware check so that top_view_line_offset is correct for the rebuilt data.
+        // Without this, top_view_line_offset would be stale (relative to the old view_data),
+        // causing gutter line numbers to desync from content.
+        let view_data = if scrolled {
+            if let Some(vt) = view_transform_for_rebuild {
+                // Reset offset before rebuild — it will be set correctly by the second
+                // ensure_visible_in_layout call below.
+                viewport.top_view_line_offset = 0;
+                let rebuilt = Self::build_view_data(
+                    state,
+                    viewport,
+                    vt,
+                    estimated_line_length,
+                    visible_count,
+                    line_wrap,
+                    render_area.width as usize,
+                    gutter_width,
+                    &view_mode,
+                );
+                // Re-run layout-aware cursor check on the rebuilt data so top_view_line_offset
+                // correctly indexes the new view_lines (handles both source lines and virtual lines).
+                viewport.ensure_visible_in_layout(&rebuilt.lines, &primary, gutter_width);
+                rebuilt
+            } else {
+                // view_transform was already consumed by the sync rebuild — the
+                // ensure_visible scroll will take effect on the next frame.
+                view_data
+            }
         } else {
             view_data
         };
@@ -4558,6 +4644,7 @@ impl SplitRenderer {
             selection.primary_cursor_position,
             theme,
             highlight_context_bytes,
+            &view_mode,
         );
 
         // Use top_view_line_offset to handle scrolling through virtual lines.
@@ -4615,6 +4702,7 @@ impl SplitRenderer {
             left_column: viewport.left_column,
             relative_line_numbers,
             session_mode,
+            show_line_numbers,
         });
 
         let mut lines = render_output.lines;
@@ -5050,11 +5138,12 @@ mod tests {
             false, // line wrap disabled for tests
             render_area.width as usize,
             gutter_width,
+            &ViewMode::Source, // Tests use source mode
         );
         let view_anchor = SplitRenderer::calculate_view_anchor(&view_data.lines, 0);
 
         let estimated_lines = (state.buffer.len() / 80).max(1);
-        state.margins.update_width_for_buffer(estimated_lines);
+        state.margins.update_width_for_buffer(estimated_lines, true);
         let gutter_width = state.margins.left_total_width();
 
         let selection = SplitRenderer::selection_context(&state, &cursors);
@@ -5075,7 +5164,8 @@ mod tests {
             viewport_end,
             selection.primary_cursor_position,
             &theme,
-            100_000, // default highlight context bytes
+            100_000,           // default highlight context bytes
+            &ViewMode::Source, // Tests use source mode
         );
 
         let output = SplitRenderer::render_view_lines(LineRenderInput {
@@ -5096,6 +5186,7 @@ mod tests {
             left_column: viewport.left_column,
             relative_line_numbers: false,
             session_mode: false,
+            show_line_numbers: true, // Tests show line numbers
         });
 
         (
@@ -5454,7 +5545,7 @@ mod tests {
         let gutter_width = {
             let mut state = EditorState::new(20, 6, 1024, test_fs());
             state.margins.left_config.enabled = true;
-            state.margins.update_width_for_buffer(1);
+            state.margins.update_width_for_buffer(1, true);
             state.margins.left_total_width()
         };
         assert!(gutter_width > 0, "Gutter width should be > 0 when enabled");

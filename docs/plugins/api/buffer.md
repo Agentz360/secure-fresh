@@ -851,14 +851,14 @@ tab/view area with custom layouts (side-by-side, stacked, unified).
 This is useful for diff views, merge conflict resolution, etc.
 
 ```typescript
-createCompositeBuffer(options: CreateCompositeBufferOptions): Promise<number>
+createCompositeBuffer(options: TsCreateCompositeBufferOptions): Promise<number>
 ```
 
 **Parameters:**
 
 | Name | Type | Description |
 |------|------|-------------|
-| `options` | `CreateCompositeBufferOptions` | Configuration for the composite buffer |
+| `options` | `TsCreateCompositeBufferOptions` | Configuration for the composite buffer |
 
 #### `updateCompositeAlignment`
 
@@ -1090,3 +1090,48 @@ removeScrollSyncGroup(group_id: number): boolean
 | Name | Type | Description |
 |------|------|-------------|
 | `group_id` | `number` | - |
+
+## Terminal API
+
+### `createTerminal`
+
+Create a new terminal in a split. Returns a `TerminalResult` with buffer, terminal, and split IDs.
+
+```typescript
+createTerminal(opts?: CreateTerminalOptions): Promise<TerminalResult>
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `opts` | `CreateTerminalOptions` | Optional terminal configuration |
+
+### `sendTerminalInput`
+
+Send input data to a terminal by its terminal ID.
+
+```typescript
+sendTerminalInput(terminalId: number, data: string): boolean
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `terminalId` | `number` | The terminal ID (from `TerminalResult`) |
+| `data` | `string` | Data to write to the terminal PTY (UTF-8 string, may include escape sequences) |
+
+### `closeTerminal`
+
+Close a terminal by its terminal ID.
+
+```typescript
+closeTerminal(terminalId: number): boolean
+```
+
+**Parameters:**
+
+| Name | Type | Description |
+|------|------|-------------|
+| `terminalId` | `number` | The terminal ID to close |

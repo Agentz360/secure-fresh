@@ -555,6 +555,42 @@ fn test_no_pair_delete_with_content_between() {
 // Macro Recording and Playback Tests
 // =============================================================================
 
+/// Helper: open command palette, type a command, press Enter
+fn run_command(harness: &mut EditorTestHarness, command: &str) {
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+    harness.type_text(command).unwrap();
+    harness.render().unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+}
+
+/// Helper: start recording a macro via command palette ("Record Macro" → register digit)
+fn start_recording_macro(harness: &mut EditorTestHarness, register: char) {
+    run_command(harness, "Record Macro");
+    // The prompt asks for a register (0-9)
+    harness.type_text(&register.to_string()).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+}
+
+/// Helper: play a macro via command palette ("Play Macro" → register digit)
+fn play_macro_via_palette(harness: &mut EditorTestHarness, register: char) {
+    run_command(harness, "Play Macro");
+    // The prompt asks for a register (0-9)
+    harness.type_text(&register.to_string()).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+}
+
 /// Test starting and stopping macro recording
 #[test]
 fn test_macro_recording_toggle() {
@@ -565,11 +601,8 @@ fn test_macro_recording_toggle() {
     let mut harness = harness_with_auto_indent();
     harness.open_file(&file_path).unwrap();
 
-    // Start recording macro 0 with Alt+Shift+0
-    harness
-        .send_key(KeyCode::Char('0'), KeyModifiers::ALT | KeyModifiers::SHIFT)
-        .unwrap();
-    harness.render().unwrap();
+    // Start recording macro 0 via command palette
+    start_recording_macro(&mut harness, '0');
 
     // Verify recording state through status message
     let status = harness
@@ -583,11 +616,8 @@ fn test_macro_recording_toggle() {
         status
     );
 
-    // Stop recording by toggling again (Alt+Shift+0)
-    harness
-        .send_key(KeyCode::Char('0'), KeyModifiers::ALT | KeyModifiers::SHIFT)
-        .unwrap();
-    harness.render().unwrap();
+    // Stop recording by toggling again via command palette
+    start_recording_macro(&mut harness, '0');
 
     let status = harness
         .editor()
@@ -614,11 +644,8 @@ fn test_macro_record_and_playback() {
     // Position at beginning of line 1
     harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
 
-    // Start recording macro 1
-    harness
-        .send_key(KeyCode::Char('1'), KeyModifiers::ALT | KeyModifiers::SHIFT)
-        .unwrap();
-    harness.render().unwrap();
+    // Start recording macro 1 via command palette
+    start_recording_macro(&mut harness, '1');
 
     // Record actions: go to end of line, type "!"
     harness.send_key(KeyCode::End, KeyModifiers::NONE).unwrap();
@@ -628,10 +655,8 @@ fn test_macro_record_and_playback() {
     harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
     harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
 
-    // Stop recording by toggling again (Alt+Shift+1)
-    harness
-        .send_key(KeyCode::Char('1'), KeyModifiers::ALT | KeyModifiers::SHIFT)
-        .unwrap();
+    // Stop recording with F5
+    harness.send_key(KeyCode::F(5), KeyModifiers::NONE).unwrap();
     harness.render().unwrap();
 
     let content = harness.get_buffer_content().unwrap();
@@ -642,11 +667,8 @@ fn test_macro_record_and_playback() {
         content
     );
 
-    // Play macro 1 with Ctrl+1 to process line2
-    harness
-        .send_key(KeyCode::Char('1'), KeyModifiers::CONTROL)
-        .unwrap();
-    harness.render().unwrap();
+    // Play macro 1 via command palette to process line2
+    play_macro_via_palette(&mut harness, '1');
 
     let content = harness.get_buffer_content().unwrap();
     // line2 should now have "!" appended
@@ -657,10 +679,7 @@ fn test_macro_record_and_playback() {
     );
 
     // Play macro again for line3
-    harness
-        .send_key(KeyCode::Char('1'), KeyModifiers::CONTROL)
-        .unwrap();
-    harness.render().unwrap();
+    play_macro_via_palette(&mut harness, '1');
 
     let content = harness.get_buffer_content().unwrap();
     // line3 should now have "!" appended
@@ -681,11 +700,8 @@ fn test_multiple_macro_slots() {
     let mut harness = harness_with_auto_indent();
     harness.open_file(&file_path).unwrap();
 
-    // Record macro in slot 5
-    harness
-        .send_key(KeyCode::Char('5'), KeyModifiers::ALT | KeyModifiers::SHIFT)
-        .unwrap();
-    harness.render().unwrap();
+    // Record macro in slot 5 via command palette
+    start_recording_macro(&mut harness, '5');
 
     let status = harness
         .editor()
@@ -700,12 +716,10 @@ fn test_multiple_macro_slots() {
 
     // Stop recording
     harness.send_key(KeyCode::F(5), KeyModifiers::NONE).unwrap();
-
-    // Record macro in slot 9
-    harness
-        .send_key(KeyCode::Char('9'), KeyModifiers::ALT | KeyModifiers::SHIFT)
-        .unwrap();
     harness.render().unwrap();
+
+    // Record macro in slot 9 via command palette
+    start_recording_macro(&mut harness, '9');
 
     let status = harness
         .editor()
@@ -731,13 +745,8 @@ fn test_play_nonexistent_macro() {
     let mut harness = harness_with_auto_indent();
     harness.open_file(&file_path).unwrap();
 
-    // Try to play macro 8 (which was never recorded)
-    // Note: We use 8 instead of 7 because Ctrl+7 is now mapped to toggle_comment
-    // (as the terminal equivalent of Ctrl+/)
-    harness
-        .send_key(KeyCode::Char('8'), KeyModifiers::CONTROL)
-        .unwrap();
-    harness.render().unwrap();
+    // Try to play macro 8 (which was never recorded) via command palette
+    play_macro_via_palette(&mut harness, '8');
 
     let status = harness
         .editor()
@@ -765,11 +774,8 @@ fn test_toggle_macro_recording() {
     let mut harness = harness_with_auto_indent();
     harness.open_file(&file_path).unwrap();
 
-    // Toggle ON - start recording
-    harness
-        .send_key(KeyCode::Char('2'), KeyModifiers::ALT | KeyModifiers::SHIFT)
-        .unwrap();
-    harness.render().unwrap();
+    // Toggle ON - start recording via command palette
+    start_recording_macro(&mut harness, '2');
 
     let status = harness
         .editor()
@@ -782,11 +788,8 @@ fn test_toggle_macro_recording() {
         status
     );
 
-    // Toggle OFF - stop recording
-    harness
-        .send_key(KeyCode::Char('2'), KeyModifiers::ALT | KeyModifiers::SHIFT)
-        .unwrap();
-    harness.render().unwrap();
+    // Toggle OFF - toggle same register via command palette
+    start_recording_macro(&mut harness, '2');
 
     let status = harness
         .editor()
@@ -811,11 +814,8 @@ fn test_macro_recording_hint_shows_correct_keybinding() {
     let mut harness = harness_with_auto_indent();
     harness.open_file(&file_path).unwrap();
 
-    // Start recording macro 1 using Alt+Shift+1
-    harness
-        .send_key(KeyCode::Char('1'), KeyModifiers::ALT | KeyModifiers::SHIFT)
-        .unwrap();
-    harness.render().unwrap();
+    // Start recording macro 1 via command palette
+    start_recording_macro(&mut harness, '1');
 
     // Get the status message
     let status = harness
@@ -862,9 +862,11 @@ fn test_macro_recording_hint_shows_correct_keybinding() {
         status_after
     );
 
-    // The saved message should also contain a play hint mentioning command palette
+    // The saved message should also contain a play hint mentioning F4 or command palette
     assert!(
-        status_after.contains("Ctrl+P") || status_after.contains("Play"),
+        status_after.contains("Ctrl+P")
+            || status_after.contains("Play")
+            || status_after.contains("F4"),
         "Saved message should mention how to play macro, got: {}",
         status_after
     );
