@@ -8,6 +8,10 @@ impl Editor {
         let _span = tracing::trace_span!("render").entered();
         let size = frame.area();
 
+        // Save frame dimensions for recompute_layout (used by macro replay)
+        self.cached_layout.last_frame_width = size.width;
+        self.cached_layout.last_frame_height = size.height;
+
         // For scroll sync groups, we need to update the active split's viewport position BEFORE
         // calling sync_scroll_groups, so that the sync reads the correct position.
         // Otherwise, cursor movements like 'G' (go to end) won't sync properly because
@@ -1910,20 +1914,29 @@ impl Editor {
 
     /// Notify LSP of a file save
     pub(super) fn notify_lsp_save(&mut self) {
+        let buffer_id = self.active_buffer();
+        self.notify_lsp_save_buffer(buffer_id);
+    }
+
+    /// Notify LSP of a file save for a specific buffer
+    pub(super) fn notify_lsp_save_buffer(&mut self, buffer_id: BufferId) {
         // Check if LSP is enabled for this buffer
-        let metadata = match self.buffer_metadata.get(&self.active_buffer()) {
+        let metadata = match self.buffer_metadata.get(&buffer_id) {
             Some(m) => m,
             None => {
                 tracing::debug!(
-                    "notify_lsp_save: no metadata for buffer {:?}",
-                    self.active_buffer()
+                    "notify_lsp_save_buffer: no metadata for buffer {:?}",
+                    buffer_id
                 );
                 return;
             }
         };
 
         if !metadata.lsp_enabled {
-            tracing::debug!("notify_lsp_save: LSP disabled for this buffer");
+            tracing::debug!(
+                "notify_lsp_save_buffer: LSP disabled for buffer {:?}",
+                buffer_id
+            );
             return;
         }
 
@@ -1931,7 +1944,7 @@ impl Editor {
         let uri = match metadata.file_uri() {
             Some(u) => u.clone(),
             None => {
-                tracing::debug!("notify_lsp_save: no URI for buffer");
+                tracing::debug!("notify_lsp_save_buffer: no URI for buffer {:?}", buffer_id);
                 return;
             }
         };
@@ -3961,7 +3974,78 @@ impl Editor {
         format!("{} → Play Macro", palette_key)
     }
 
-    /// Play back a recorded macro
+    /// Recompute the view_line_mappings layout without drawing.
+    /// Used during macro replay so that visual-line movements (MoveLineEnd,
+    /// MoveUp, MoveDown on wrapped lines) see correct, up-to-date layout
+    /// information between each replayed action.
+    pub fn recompute_layout(&mut self, width: u16, height: u16) {
+        let size = ratatui::layout::Rect::new(0, 0, width, height);
+
+        // Replicate the pre-render sync steps from render()
+        let active_split = self.split_manager.active_split();
+        self.pre_sync_ensure_visible(active_split);
+        self.sync_scroll_groups();
+
+        // Replicate the layout computation that produces editor_content_area.
+        // Same constraints as render(): [menu_bar, main_content, status_bar, search_options, prompt_line]
+        let constraints = vec![
+            Constraint::Length(if self.menu_bar_visible { 1 } else { 0 }),
+            Constraint::Min(0),
+            Constraint::Length(1), // status bar
+            Constraint::Length(0), // search options (doesn't matter for layout)
+            Constraint::Length(1), // prompt line
+        ];
+        let main_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(constraints)
+            .split(size);
+        let main_content_area = main_chunks[1];
+
+        // Compute editor_content_area (with file explorer split if visible)
+        let file_explorer_should_show = self.file_explorer_visible
+            && (self.file_explorer.is_some() || self.file_explorer_sync_in_progress);
+        let editor_content_area = if file_explorer_should_show {
+            let explorer_percent = (self.file_explorer_width_percent * 100.0) as u16;
+            let editor_percent = 100 - explorer_percent;
+            let horizontal_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Percentage(explorer_percent),
+                    Constraint::Percentage(editor_percent),
+                ])
+                .split(main_content_area);
+            horizontal_chunks[1]
+        } else {
+            main_content_area
+        };
+
+        // Compute layout for all visible splits and update cached view_line_mappings
+        let view_line_mappings = SplitRenderer::compute_content_layout(
+            editor_content_area,
+            &self.split_manager,
+            &mut self.buffers,
+            &mut self.split_view_states,
+            &self.theme,
+            false, // lsp_waiting — not relevant for layout
+            self.config.editor.estimated_line_length,
+            self.config.editor.highlight_context_bytes,
+            self.config.editor.relative_line_numbers,
+            self.config.editor.use_terminal_bg,
+            self.session_mode,
+            self.tab_bar_visible,
+            self.config.editor.show_vertical_scrollbar,
+            self.config.editor.show_horizontal_scrollbar,
+        );
+
+        self.cached_layout.view_line_mappings = view_line_mappings;
+    }
+
+    /// Play back a recorded macro synchronously.
+    ///
+    /// All actions are executed in a tight loop. Between each action,
+    /// `recompute_layout` is called so that visual-line movements
+    /// (MoveLineEnd, etc.) see correct, up-to-date layout information.
+    /// Drawing is deferred until the next render cycle.
     pub(super) fn play_macro(&mut self, key: char) {
         // Prevent recursive macro playback
         if self.macro_playing {
@@ -3974,17 +4058,14 @@ impl Editor {
                 return;
             }
 
-            // Temporarily disable recording to avoid recording the playback
-            let was_recording = self.macro_recording.take();
             self.macro_playing = true;
-
             let action_count = actions.len();
+            let width = self.cached_layout.last_frame_width;
+            let height = self.cached_layout.last_frame_height;
             for action in actions {
                 let _ = self.handle_action(action);
+                self.recompute_layout(width, height);
             }
-
-            // Restore recording and playing state
-            self.macro_recording = was_recording;
             self.macro_playing = false;
 
             self.set_status_message(
@@ -3997,6 +4078,10 @@ impl Editor {
 
     /// Record an action to the current macro (if recording)
     pub(super) fn record_macro_action(&mut self, action: &Action) {
+        // Don't record actions that are being played back from a macro
+        if self.macro_playing {
+            return;
+        }
         if let Some(state) = &mut self.macro_recording {
             // Don't record macro control actions themselves
             match action {

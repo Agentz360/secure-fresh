@@ -10,9 +10,16 @@ mod protocol;
 mod spawner;
 
 pub use channel::AgentChannel;
+/// Test-only global: microseconds to sleep per chunk in the consumer loop.
+/// Defaults to 0 (no delay). Set non-zero from tests to simulate slow consumers.
+#[doc(hidden)]
+pub use channel::TEST_RECV_DELAY_US;
 /// Re-export for integration tests - spawns a local agent without SSH
 #[doc(hidden)]
 pub use connection::spawn_local_agent;
+/// Like `spawn_local_agent` but with a custom data channel capacity.
+#[doc(hidden)]
+pub use connection::spawn_local_agent_with_capacity;
 pub use connection::{ConnectionParams, SshConnection};
 pub use filesystem::RemoteFileSystem;
 pub use protocol::{

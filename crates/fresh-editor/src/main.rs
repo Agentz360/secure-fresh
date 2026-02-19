@@ -2759,8 +2759,12 @@ where
             needs_render = true;
         }
 
-        if let Err(e) = editor.auto_save_dirty_buffers() {
-            tracing::debug!("Auto-save error: {}", e);
+        if let Err(e) = editor.auto_recovery_save_dirty_buffers() {
+            tracing::debug!("Auto-recovery-save error: {}", e);
+        }
+
+        if let Err(e) = editor.auto_save_persistent_buffers() {
+            tracing::debug!("Auto-save (disk) error: {}", e);
         }
 
         // Handle hard redraw requests (e.g. after returning from sudo)

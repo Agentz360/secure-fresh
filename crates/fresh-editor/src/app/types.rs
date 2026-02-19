@@ -784,6 +784,9 @@ pub(crate) struct CachedLayout {
     pub search_options_layout: Option<crate::view::ui::status_bar::SearchOptionsLayout>,
     /// Menu bar layout for hit testing
     pub menu_layout: Option<crate::view::ui::menu::MenuLayout>,
+    /// Last frame dimensions — used by recompute_layout for macro replay
+    pub last_frame_width: u16,
+    pub last_frame_height: u16,
 }
 
 impl CachedLayout {

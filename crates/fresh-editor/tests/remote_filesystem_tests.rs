@@ -10,8 +10,30 @@
 
 use fresh::model::buffer::TextBuffer;
 use fresh::model::filesystem::{FileSystem, WriteOp};
-use fresh::services::remote::{spawn_local_agent, RemoteFileSystem};
+use fresh::services::remote::{
+    spawn_local_agent, spawn_local_agent_with_capacity, RemoteFileSystem, TEST_RECV_DELAY_US,
+};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
+
+/// Simple pseudo-random number generator (xorshift64) to avoid external deps.
+/// Not cryptographic — just deterministic and fast for test data generation.
+struct Rng(u64);
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+    /// Random usize in [0, max) — panics if max == 0
+    fn usize(&mut self, max: usize) -> usize {
+        (self.next() % max as u64) as usize
+    }
+}
 
 /// Creates a RemoteFileSystem using production code
 fn create_test_filesystem() -> Option<(RemoteFileSystem, tempfile::TempDir, tokio::runtime::Runtime)>
@@ -806,6 +828,17 @@ fn test_buffer_large_file_edits_at_beginning_middle_and_end_through_remote() {
     // Load through remote filesystem with default threshold (no customization)
     let mut buffer = TextBuffer::load_from_file(&file_path, 0, fs).unwrap();
 
+    // Verify no data was lost during streaming read (#1059)
+    assert_eq!(
+        buffer.total_bytes(),
+        size,
+        "Loaded buffer size ({}) != original file size ({}). \
+         {} bytes lost during streaming read!",
+        buffer.total_bytes(),
+        size,
+        size.saturating_sub(buffer.total_bytes()),
+    );
+
     let orig_line_count = original_lines.len();
 
     // Define the edits we'll make
@@ -1056,4 +1089,269 @@ fn test_buffer_huge_file_multi_save_cycle_through_remote() {
             }
         }
     }
+}
+
+#[test]
+fn test_buffer_shadow_random_ops_through_remote() {
+    // Shadow buffer test: perform many random insert/delete operations on both a
+    // TextBuffer (through RemoteFileSystem) and a plain Vec<u8> (the "shadow").
+    // After each save-and-reload cycle, verify the saved file matches the shadow.
+    //
+    // This catches:
+    // - Streaming data loss (try_send channel overflow, #1059)
+    // - Piece tree corruption during split/rebalance
+    // - Write recipe (Copy/Insert) offset miscalculation
+    // - Base64 encoding/decoding errors
+    // - Save path bugs (write_file vs write_patched)
+
+    let Some((fs, temp_dir, _rt)) = create_test_filesystem_arc() else {
+        eprintln!("Skipping test: could not create test filesystem");
+        return;
+    };
+
+    let file_path = temp_dir.path().join("shadow_random.txt");
+
+    // Start with a ~2MB file of recognizable content.
+    // Each line is 22 bytes: "Line NNNNNNNN content\n"
+    const LINE_LEN: usize = 22;
+    const NUM_LINES: usize = 100_000; // ~2.2MB — streamed as ~34 chunks
+    let mut shadow: Vec<u8> = Vec::with_capacity(LINE_LEN * NUM_LINES);
+    for i in 0..NUM_LINES {
+        let line = format!("Line {:08} content\n", i);
+        shadow.extend_from_slice(line.as_bytes());
+    }
+    std::fs::write(&file_path, &shadow).unwrap();
+
+    // Load through remote filesystem
+    let mut buffer = TextBuffer::load_from_file(&file_path, 0, fs.clone()).unwrap();
+
+    // Verify load was lossless
+    assert_eq!(
+        buffer.total_bytes(),
+        shadow.len(),
+        "Initial load lost data: buffer={} shadow={}",
+        buffer.total_bytes(),
+        shadow.len(),
+    );
+
+    let mut rng = Rng::new(0xDEAD_BEEF_CAFE_1059);
+
+    const NUM_OPS: usize = 2000;
+    const SAVE_EVERY: usize = 50; // save + verify every N ops
+
+    for op_idx in 0..NUM_OPS {
+        let buf_len = buffer.total_bytes();
+        assert_eq!(
+            buf_len,
+            shadow.len(),
+            "Size mismatch before op {}: buffer={} shadow={}",
+            op_idx,
+            buf_len,
+            shadow.len(),
+        );
+
+        // Pick operation: 50% insert, 30% delete, 20% replace (delete+insert)
+        let op_kind = rng.usize(10);
+
+        if buf_len == 0 || op_kind < 5 {
+            // INSERT: random position, random small payload
+            let pos = if buf_len == 0 {
+                0
+            } else {
+                rng.usize(buf_len + 1)
+            };
+            let payload_len = 1 + rng.usize(200);
+            let payload: Vec<u8> = (0..payload_len)
+                .map(|j| b'A' + ((op_idx + j) % 26) as u8)
+                .collect();
+
+            buffer.insert_bytes(pos, payload.clone());
+            shadow.splice(pos..pos, payload.iter().copied());
+        } else if op_kind < 8 {
+            // DELETE: random position, random length (up to 500 bytes)
+            let pos = rng.usize(buf_len);
+            let max_del = (buf_len - pos).min(500);
+            if max_del == 0 {
+                continue;
+            }
+            let del_len = 1 + rng.usize(max_del);
+
+            buffer.delete_bytes(pos, del_len);
+            shadow.drain(pos..pos + del_len);
+        } else {
+            // REPLACE: delete then insert at same position
+            let pos = rng.usize(buf_len);
+            let max_del = (buf_len - pos).min(300);
+            if max_del == 0 {
+                continue;
+            }
+            let del_len = 1 + rng.usize(max_del);
+
+            buffer.delete_bytes(pos, del_len);
+            shadow.drain(pos..pos + del_len);
+
+            let payload_len = 1 + rng.usize(200);
+            let payload: Vec<u8> = (0..payload_len)
+                .map(|j| b'a' + ((op_idx + j) % 26) as u8)
+                .collect();
+
+            let insert_pos = pos.min(buffer.total_bytes());
+            buffer.insert_bytes(insert_pos, payload.clone());
+            shadow.splice(insert_pos..insert_pos, payload.iter().copied());
+        }
+
+        // Periodic save-and-verify cycle
+        if (op_idx + 1) % SAVE_EVERY == 0 {
+            // Save through remote filesystem
+            buffer.save_to_file(&file_path).unwrap();
+
+            // Read back directly from disk
+            let on_disk = std::fs::read(&file_path).unwrap();
+
+            // Compare sizes first (cheap)
+            assert_eq!(
+                on_disk.len(),
+                shadow.len(),
+                "Size mismatch after save at op {}: disk={} shadow={}",
+                op_idx,
+                on_disk.len(),
+                shadow.len(),
+            );
+
+            // Find first differing byte for a useful error message
+            if on_disk != shadow {
+                let first_diff = on_disk
+                    .iter()
+                    .zip(shadow.iter())
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(on_disk.len().min(shadow.len()));
+                let context_start = first_diff.saturating_sub(20);
+                let context_end = (first_diff + 20).min(on_disk.len()).min(shadow.len());
+                panic!(
+                    "Content mismatch after op {}! First diff at byte {}.\n\
+                     disk[{}..{}]:   {:?}\n\
+                     shadow[{}..{}]: {:?}",
+                    op_idx,
+                    first_diff,
+                    context_start,
+                    context_end,
+                    &on_disk[context_start..context_end],
+                    context_start,
+                    context_end,
+                    &shadow[context_start..context_end],
+                );
+            }
+
+            println!("  verified after op {}: {} bytes OK", op_idx, shadow.len());
+
+            // Reload from disk through remote fs to test the full round-trip
+            buffer = TextBuffer::load_from_file(&file_path, 0, fs.clone()).unwrap();
+
+            assert_eq!(
+                buffer.total_bytes(),
+                shadow.len(),
+                "Reload lost data after op {}: buffer={} shadow={}",
+                op_idx,
+                buffer.total_bytes(),
+                shadow.len(),
+            );
+        }
+    }
+
+    // Final save and verify
+    buffer.save_to_file(&file_path).unwrap();
+    let final_content = std::fs::read(&file_path).unwrap();
+    assert_eq!(
+        final_content.len(),
+        shadow.len(),
+        "Final size mismatch: disk={} shadow={}",
+        final_content.len(),
+        shadow.len(),
+    );
+    assert_eq!(
+        final_content,
+        shadow,
+        "Final content mismatch (sizes matched at {} bytes)",
+        shadow.len(),
+    );
+    println!(
+        "Shadow test passed: {} ops, {} save/reload cycles, final size {} bytes",
+        NUM_OPS,
+        NUM_OPS / SAVE_EVERY,
+        shadow.len(),
+    );
+}
+
+/// Regression test for #1059: verifies that streaming reads don't lose data
+/// even under extreme backpressure (tiny channel + slow consumer).
+///
+/// This test is deterministic on all platforms — it doesn't rely on OS
+/// scheduling to trigger the bug. Before the fix (try_send → send().await),
+/// this test fails 100% of the time.
+#[test]
+fn test_regression_1059_streaming_read_backpressure() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let rt = tokio::runtime::Runtime::new().unwrap();
+
+    // Tiny channel capacity: only 2 slots before backpressure kicks in
+    let Some(channel) = rt.block_on(spawn_local_agent_with_capacity(2)).ok() else {
+        eprintln!("Skipping test: could not create test filesystem");
+        return;
+    };
+    let fs: Arc<dyn FileSystem + Send + Sync> =
+        Arc::new(RemoteFileSystem::new(channel, "test@localhost".to_string()));
+
+    // Slow down the consumer to guarantee the producer outruns it.
+    // 1ms per chunk × ~34 chunks ≈ 34ms total overhead — fast enough for CI.
+    TEST_RECV_DELAY_US.store(1000, Ordering::SeqCst);
+
+    let file_path = temp_dir.path().join("backpressure_test.txt");
+
+    // ~2.2MB file → ~34 streaming chunks of 65KB each.
+    // With channel capacity 2 and a 1ms consumer delay, the producer WILL
+    // fill the channel. Before the fix, this silently dropped chunks.
+    const LINE_LEN: usize = 22;
+    const NUM_LINES: usize = 100_000;
+    let mut original = Vec::with_capacity(LINE_LEN * NUM_LINES);
+    for i in 0..NUM_LINES {
+        let line = format!("Line {:08} content\n", i);
+        original.extend_from_slice(line.as_bytes());
+    }
+    std::fs::write(&file_path, &original).unwrap();
+
+    // Load through remote filesystem (streams the full file)
+    let mut buffer = TextBuffer::load_from_file(&file_path, 0, fs.clone()).unwrap();
+
+    // This is the core assertion: with the old try_send, loaded bytes < original
+    assert_eq!(
+        buffer.total_bytes(),
+        original.len(),
+        "Streaming read lost data: loaded {} bytes, expected {} ({} bytes lost)",
+        buffer.total_bytes(),
+        original.len(),
+        original.len().saturating_sub(buffer.total_bytes()),
+    );
+
+    // Also verify a save round-trip produces correct content
+    let insert_pos = 50_000 * LINE_LEN;
+    let insert_data = b"INSERTED LINE\n".to_vec();
+    buffer.insert_bytes(insert_pos, insert_data.clone());
+    buffer.save_to_file(&file_path).unwrap();
+
+    let saved = std::fs::read(&file_path).unwrap();
+    let mut expected = original.clone();
+    expected.splice(insert_pos..insert_pos, insert_data.iter().copied());
+    assert_eq!(
+        saved.len(),
+        expected.len(),
+        "Save round-trip size mismatch: got {} expected {}",
+        saved.len(),
+        expected.len(),
+    );
+    assert_eq!(saved, expected, "Save round-trip content mismatch");
+
+    // Reset the delay so other tests aren't affected
+    TEST_RECV_DELAY_US.store(0, Ordering::SeqCst);
+
+    println!("Regression test #1059 passed: streaming read + save correct under backpressure");
 }

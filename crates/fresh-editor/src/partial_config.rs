@@ -150,6 +150,8 @@ pub struct PartialEditorConfig {
     pub enable_inlay_hints: Option<bool>,
     pub enable_semantic_tokens_full: Option<bool>,
     pub recovery_enabled: Option<bool>,
+    pub auto_recovery_save_interval_secs: Option<u32>,
+    pub auto_save_enabled: Option<bool>,
     pub auto_save_interval_secs: Option<u32>,
     pub highlight_context_bytes: Option<usize>,
     pub mouse_hover_enabled: Option<bool>,
@@ -202,6 +204,9 @@ impl Merge for PartialEditorConfig {
         self.enable_semantic_tokens_full
             .merge_from(&other.enable_semantic_tokens_full);
         self.recovery_enabled.merge_from(&other.recovery_enabled);
+        self.auto_recovery_save_interval_secs
+            .merge_from(&other.auto_recovery_save_interval_secs);
+        self.auto_save_enabled.merge_from(&other.auto_save_enabled);
         self.auto_save_interval_secs
             .merge_from(&other.auto_save_interval_secs);
         self.highlight_context_bytes
@@ -437,6 +442,8 @@ impl From<&crate::config::EditorConfig> for PartialEditorConfig {
             enable_inlay_hints: Some(cfg.enable_inlay_hints),
             enable_semantic_tokens_full: Some(cfg.enable_semantic_tokens_full),
             recovery_enabled: Some(cfg.recovery_enabled),
+            auto_recovery_save_interval_secs: Some(cfg.auto_recovery_save_interval_secs),
+            auto_save_enabled: Some(cfg.auto_save_enabled),
             auto_save_interval_secs: Some(cfg.auto_save_interval_secs),
             highlight_context_bytes: Some(cfg.highlight_context_bytes),
             mouse_hover_enabled: Some(cfg.mouse_hover_enabled),
@@ -502,6 +509,10 @@ impl PartialEditorConfig {
                 .enable_semantic_tokens_full
                 .unwrap_or(defaults.enable_semantic_tokens_full),
             recovery_enabled: self.recovery_enabled.unwrap_or(defaults.recovery_enabled),
+            auto_recovery_save_interval_secs: self
+                .auto_recovery_save_interval_secs
+                .unwrap_or(defaults.auto_recovery_save_interval_secs),
+            auto_save_enabled: self.auto_save_enabled.unwrap_or(defaults.auto_save_enabled),
             auto_save_interval_secs: self
                 .auto_save_interval_secs
                 .unwrap_or(defaults.auto_save_interval_secs),

@@ -144,24 +144,24 @@ impl Editor {
         Ok(self.recovery_service.discard_all_recovery()?)
     }
 
-    /// Perform auto-save for all modified buffers if needed
+    /// Perform auto-recovery-save for all modified buffers if needed
     /// Returns the number of buffers saved, or an error
     ///
     /// This function is designed to be called frequently (every frame) and will:
     /// - Return immediately if recovery is disabled
-    /// - Return immediately if the auto-save interval hasn't passed
     /// - Return immediately if no buffers are modified
-    /// - Only save buffers that are marked as needing a save
-    pub fn auto_save_dirty_buffers(&mut self) -> AnyhowResult<usize> {
+    /// - Only save buffers that are marked as needing recovery
+    pub fn auto_recovery_save_dirty_buffers(&mut self) -> AnyhowResult<usize> {
         // Early exit if disabled
         if !self.recovery_service.is_enabled() {
             return Ok(0);
         }
 
-        // Check if enough time has passed since last auto-save
-        let interval =
-            std::time::Duration::from_secs(self.config.editor.auto_save_interval_secs as u64);
-        if self.time_source.elapsed_since(self.last_auto_save) < interval {
+        // Check if enough time has passed since last auto-recovery-save
+        let interval = std::time::Duration::from_secs(
+            self.config.editor.auto_recovery_save_interval_secs as u64,
+        );
+        if self.time_source.elapsed_since(self.last_auto_recovery_save) < interval {
             return Ok(0);
         }
 
@@ -231,7 +231,7 @@ impl Editor {
                 let recovery_pending = state.buffer.is_recovery_pending();
                 if self
                     .recovery_service
-                    .needs_auto_save(&recovery_id, recovery_pending)
+                    .needs_auto_recovery_save(&recovery_id, recovery_pending)
                 {
                     Some((buffer_id, recovery_id, path))
                 } else {
@@ -243,7 +243,7 @@ impl Editor {
         // Early exit if nothing to save
         if buffer_info.is_empty() {
             // Still update the timer to avoid checking buffers too frequently
-            self.last_auto_save = self.time_source.now();
+            self.last_auto_recovery_save = self.time_source.now();
             return Ok(0);
         }
 
@@ -278,7 +278,7 @@ impl Editor {
                     let final_size = state.buffer.total_bytes();
 
                     tracing::debug!(
-                        "auto_save_dirty_buffers: large file recovery - original_size={}, final_size={}, path={:?}",
+                        "auto_recovery_save_dirty_buffers: large file recovery - original_size={}, final_size={}, path={:?}",
                         original_size,
                         final_size,
                         path
@@ -330,11 +330,11 @@ impl Editor {
             }
         }
 
-        self.last_auto_save = self.time_source.now();
+        self.last_auto_recovery_save = self.time_source.now();
         Ok(saved_count)
     }
 
-    /// Check if the active buffer is marked dirty for recovery auto-save
+    /// Check if the active buffer is marked dirty for auto-recovery-save
     /// Used for testing to verify that edits properly trigger recovery tracking
     pub fn is_active_buffer_recovery_dirty(&self) -> bool {
         if let Some(state) = self.buffers.get(&self.active_buffer()) {

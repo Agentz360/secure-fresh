@@ -343,6 +343,21 @@ struct LastLineEnd {
     terminated_with_newline: bool,
 }
 
+/// Output of the pure layout computation phase of buffer rendering.
+/// Contains everything the drawing phase needs to produce the final frame.
+struct BufferLayoutOutput {
+    view_line_mappings: Vec<ViewLineMapping>,
+    render_output: LineRenderOutput,
+    render_area: Rect,
+    compose_layout: ComposeLayout,
+    effective_editor_bg: Color,
+    view_mode: ViewMode,
+    left_column: usize,
+    gutter_width: usize,
+    buffer_ends_with_newline: bool,
+    selection: SelectionContext,
+}
+
 struct SplitLayout {
     tabs_rect: Rect,
     content_rect: Rect,
@@ -1154,6 +1169,112 @@ impl SplitRenderer {
             view_line_mappings,
             horizontal_scrollbar_areas,
         )
+    }
+
+    /// Layout-only path: computes view_line_mappings for all visible splits
+    /// without drawing anything. Used by macro replay to keep the cached layout
+    /// fresh between actions without paying the cost of full rendering.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute_content_layout(
+        area: Rect,
+        split_manager: &SplitManager,
+        buffers: &mut HashMap<BufferId, EditorState>,
+        split_view_states: &mut HashMap<
+            crate::model::event::SplitId,
+            crate::view::split::SplitViewState,
+        >,
+        theme: &crate::view::theme::Theme,
+        lsp_waiting: bool,
+        estimated_line_length: usize,
+        highlight_context_bytes: usize,
+        relative_line_numbers: bool,
+        use_terminal_bg: bool,
+        session_mode: bool,
+        tab_bar_visible: bool,
+        show_vertical_scrollbar: bool,
+        show_horizontal_scrollbar: bool,
+    ) -> HashMap<crate::model::event::SplitId, Vec<ViewLineMapping>> {
+        let visible_buffers = split_manager.get_visible_buffers(area);
+        let active_split_id = split_manager.active_split();
+        let mut view_line_mappings: HashMap<crate::model::event::SplitId, Vec<ViewLineMapping>> =
+            HashMap::new();
+
+        for (split_id, buffer_id, split_area) in visible_buffers {
+            let is_active = split_id == active_split_id;
+
+            let layout = Self::split_layout(
+                split_area,
+                tab_bar_visible,
+                show_vertical_scrollbar,
+                show_horizontal_scrollbar,
+            );
+
+            let state = match buffers.get_mut(&buffer_id) {
+                Some(s) => s,
+                None => continue,
+            };
+
+            // Skip composite buffers — they don't produce view_line_mappings
+            if state.is_composite_buffer {
+                view_line_mappings.insert(split_id, Vec::new());
+                continue;
+            }
+
+            // Get viewport from SplitViewState (authoritative source)
+            let viewport_clone = split_view_states
+                .get(&split_id)
+                .map(|vs| vs.viewport.clone())
+                .unwrap_or_else(|| {
+                    crate::view::viewport::Viewport::new(
+                        layout.content_rect.width,
+                        layout.content_rect.height,
+                    )
+                });
+            let mut viewport = viewport_clone;
+
+            // Get cursors from the split's view state
+            let default_cursors = crate::model::cursor::Cursors::new();
+            let split_cursors = split_view_states
+                .get(&split_id)
+                .map(|vs| &vs.cursors)
+                .unwrap_or(&default_cursors);
+            Self::sync_viewport_to_content(
+                &mut viewport,
+                &mut state.buffer,
+                split_cursors,
+                layout.content_rect,
+            );
+            let view_prefs =
+                Self::resolve_view_preferences(state, Some(&*split_view_states), split_id);
+
+            let layout_output = Self::compute_buffer_layout(
+                state,
+                split_cursors,
+                &mut viewport,
+                layout.content_rect,
+                is_active,
+                theme,
+                lsp_waiting,
+                view_prefs.view_mode,
+                view_prefs.compose_width,
+                view_prefs.view_transform,
+                estimated_line_length,
+                highlight_context_bytes,
+                relative_line_numbers,
+                use_terminal_bg,
+                session_mode,
+                view_prefs.show_line_numbers,
+            );
+
+            view_line_mappings.insert(split_id, layout_output.view_line_mappings);
+
+            // Write back updated viewport to SplitViewState
+            if let Some(view_state) = split_view_states.get_mut(&split_id) {
+                view_state.viewport = viewport;
+            }
+        }
+
+        view_line_mappings
     }
 
     /// Render a split separator line
@@ -4446,40 +4567,31 @@ impl SplitRenderer {
         last_line_end.map(|end| end.pos)
     }
 
-    /// Render a single buffer in a split pane
-    /// Returns the view line mappings for mouse click handling
+    /// Pure layout computation for a buffer in a split pane.
+    /// No frame/drawing involved — produces a BufferLayoutOutput that the
+    /// drawing phase can consume.
     #[allow(clippy::too_many_arguments)]
-    fn render_buffer_in_split(
-        frame: &mut Frame,
+    fn compute_buffer_layout(
         state: &mut EditorState,
         cursors: &crate::model::cursor::Cursors,
         viewport: &mut crate::view::viewport::Viewport,
-        event_log: Option<&mut EventLog>,
         area: Rect,
         is_active: bool,
         theme: &crate::view::theme::Theme,
-        ansi_background: Option<&AnsiBackground>,
-        background_fade: f32,
         lsp_waiting: bool,
         view_mode: ViewMode,
         compose_width: Option<u16>,
-        compose_column_guides: Option<Vec<u16>>,
         view_transform: Option<ViewTransformPayload>,
         estimated_line_length: usize,
         highlight_context_bytes: usize,
-        _buffer_id: BufferId,
-        hide_cursor: bool,
         relative_line_numbers: bool,
         use_terminal_bg: bool,
         session_mode: bool,
-        rulers: &[usize],
         show_line_numbers: bool,
-    ) -> Vec<ViewLineMapping> {
-        let _span = tracing::trace_span!("render_buffer_in_split").entered();
+    ) -> BufferLayoutOutput {
+        let _span = tracing::trace_span!("compute_buffer_layout").entered();
 
         // Configure shared margin layout for this split's line number setting.
-        // The per-split `show_line_numbers` is the single source of truth;
-        // we apply it to shared margins here so width calculations are correct.
         state.margins.configure_for_line_numbers(show_line_numbers);
 
         // Compute effective editor background: terminal default or theme-defined
@@ -4525,7 +4637,6 @@ impl SplitRenderer {
 
         // Same-buffer scroll sync: if the sync code flagged this viewport to
         // scroll to the end, apply it now using the view lines we just built.
-        // This is soft-break-aware (same coordinate system as ensure_visible_in_layout).
         let sync_scrolled = if viewport.sync_scroll_to_end {
             viewport.sync_scroll_to_end = false;
             viewport.scroll_to_end_of_view(&view_data.lines)
@@ -4555,18 +4666,13 @@ impl SplitRenderer {
         };
 
         // Ensure cursor is visible using Layout-aware check (handles virtual lines)
-        // This detects when cursor is beyond the rendered view_lines and scrolls
         let primary = *cursors.primary();
         let scrolled = viewport.ensure_visible_in_layout(&view_data.lines, &primary, gutter_width);
 
         // If we scrolled, rebuild view_data from the new top_byte and then re-run the
         // layout-aware check so that top_view_line_offset is correct for the rebuilt data.
-        // Without this, top_view_line_offset would be stale (relative to the old view_data),
-        // causing gutter line numbers to desync from content.
         let view_data = if scrolled {
             if let Some(vt) = view_transform_for_rebuild {
-                // Reset offset before rebuild — it will be set correctly by the second
-                // ensure_visible_in_layout call below.
                 viewport.top_view_line_offset = 0;
                 let rebuilt = Self::build_view_data(
                     state,
@@ -4579,13 +4685,9 @@ impl SplitRenderer {
                     gutter_width,
                     &view_mode,
                 );
-                // Re-run layout-aware cursor check on the rebuilt data so top_view_line_offset
-                // correctly indexes the new view_lines (handles both source lines and virtual lines).
                 viewport.ensure_visible_in_layout(&rebuilt.lines, &primary, gutter_width);
                 rebuilt
             } else {
-                // view_transform was already consumed by the sync rebuild — the
-                // ensure_visible scroll will take effect on the next frame.
                 view_data
             }
         } else {
@@ -4593,14 +4695,6 @@ impl SplitRenderer {
         };
 
         let view_anchor = Self::calculate_view_anchor(&view_data.lines, viewport.top_byte);
-        Self::render_compose_margins(
-            frame,
-            area,
-            &compose_layout,
-            &view_mode,
-            theme,
-            effective_editor_bg,
-        );
 
         let selection = Self::selection_context(state, cursors);
 
@@ -4647,12 +4741,6 @@ impl SplitRenderer {
             &view_mode,
         );
 
-        // Use top_view_line_offset to handle scrolling through virtual lines.
-        // The viewport code (ensure_visible_in_layout) updates this when scrolling
-        // to keep the cursor visible, including special handling for virtual lines.
-        //
-        // We recalculate starting_line_num below to ensure line numbers stay in sync
-        // even if view_data was rebuilt from a different starting position.
         let calculated_offset = viewport.top_view_line_offset;
 
         tracing::trace!(
@@ -4666,8 +4754,6 @@ impl SplitRenderer {
             if calculated_offset > 0 && calculated_offset < view_data.lines.len() {
                 let sliced = &view_data.lines[calculated_offset..];
 
-                // Count how many source lines were in the skipped portion
-                // A view line is a "source line" if it shows a line number (not a continuation)
                 let skipped_lines = &view_data.lines[..calculated_offset];
                 let skipped_source_lines = skipped_lines
                     .iter()
@@ -4675,8 +4761,6 @@ impl SplitRenderer {
                     .count();
 
                 let adjusted_line_num = starting_line_num + skipped_source_lines;
-
-                // Recalculate view_anchor on the sliced array
                 let adjusted_anchor = Self::calculate_view_anchor(sliced, viewport.top_byte);
 
                 (sliced, adjusted_line_num, adjusted_anchor)
@@ -4705,8 +4789,62 @@ impl SplitRenderer {
             show_line_numbers,
         });
 
-        let mut lines = render_output.lines;
-        let background_x_offset = viewport.left_column;
+        let view_line_mappings = render_output.view_line_mappings.clone();
+
+        let buffer_ends_with_newline = if !state.buffer.is_empty() {
+            let last_char = state.get_text_range(state.buffer.len() - 1, state.buffer.len());
+            last_char == "\n"
+        } else {
+            false
+        };
+
+        BufferLayoutOutput {
+            view_line_mappings,
+            render_output,
+            render_area,
+            compose_layout,
+            effective_editor_bg,
+            view_mode,
+            left_column: viewport.left_column,
+            gutter_width,
+            buffer_ends_with_newline,
+            selection,
+        }
+    }
+
+    /// Draw a buffer into a frame using pre-computed layout output.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_buffer_in_split(
+        frame: &mut Frame,
+        state: &EditorState,
+        cursors: &crate::model::cursor::Cursors,
+        layout_output: BufferLayoutOutput,
+        event_log: Option<&mut EventLog>,
+        area: Rect,
+        is_active: bool,
+        theme: &crate::view::theme::Theme,
+        ansi_background: Option<&AnsiBackground>,
+        background_fade: f32,
+        hide_cursor: bool,
+        rulers: &[usize],
+        compose_column_guides: Option<Vec<u16>>,
+    ) {
+        let render_area = layout_output.render_area;
+        let effective_editor_bg = layout_output.effective_editor_bg;
+        let gutter_width = layout_output.gutter_width;
+        let starting_line_num = 0; // used only for background offset
+
+        Self::render_compose_margins(
+            frame,
+            area,
+            &layout_output.compose_layout,
+            &layout_output.view_mode,
+            theme,
+            effective_editor_bg,
+        );
+
+        let mut lines = layout_output.render_output.lines;
+        let background_x_offset = layout_output.left_column;
 
         if let Some(bg) = ansi_background {
             Self::apply_background_to_lines(
@@ -4727,22 +4865,13 @@ impl SplitRenderer {
             .style(Style::default().bg(effective_editor_bg));
         frame.render_widget(Paragraph::new(lines).block(editor_block), render_area);
 
-        // Resolve cursor screen position early so we can avoid clobbering it
-        // with OSC 8 2-char chunks.
-        let buffer_ends_with_newline = if !state.buffer.is_empty() {
-            let last_char = state.get_text_range(state.buffer.len() - 1, state.buffer.len());
-            last_char == "\n"
-        } else {
-            false
-        };
-
         let cursor = Self::resolve_cursor_fallback(
-            render_output.cursor,
-            selection.primary_cursor_position,
+            layout_output.render_output.cursor,
+            layout_output.selection.primary_cursor_position,
             state.buffer.len(),
-            buffer_ends_with_newline,
-            render_output.last_line_end,
-            render_output.content_lines_rendered,
+            layout_output.buffer_ends_with_newline,
+            layout_output.render_output.last_line_end,
+            layout_output.render_output.content_lines_rendered,
             gutter_width,
         );
 
@@ -4757,27 +4886,7 @@ impl SplitRenderer {
             None
         };
 
-        // TODO: Re-enable OSC 8 hyperlink overlays once we fix the ratatui
-        // Buffer::diff interaction. The 2-char chunking writes OSC 8 escape
-        // sequences into cell symbols, but ratatui's diff uses
-        // `symbol().width()` (unicode_width) to compute how many subsequent
-        // cells to skip. Because the URL inside the OSC 8 string contains
-        // printable characters, the width is ~30 instead of 2, causing the
-        // diff to skip legitimate cell updates. This leads to stale cells in
-        // the backend buffer when the overlay column range shifts (e.g.
-        // concealed → unconcealed transitions). The fix is to apply OSC 8
-        // after the ratatui diff, directly to the backend buffer.
-        //
-        // Self::apply_hyperlink_overlays(
-        //     frame,
-        //     &decorations.viewport_overlays,
-        //     &render_output.view_line_mappings,
-        //     render_area,
-        //     gutter_width,
-        //     cursor_screen_pos,
-        // );
-
-        // Render config-based vertical rulers (as background color tint)
+        // Render config-based vertical rulers
         if !rulers.is_empty() {
             let ruler_cols: Vec<u16> = rulers.iter().map(|&r| r as u16).collect();
             Self::render_ruler_bg(
@@ -4786,12 +4895,12 @@ impl SplitRenderer {
                 theme.ruler_bg,
                 render_area,
                 gutter_width,
-                render_output.content_lines_rendered,
-                viewport.left_column,
+                layout_output.render_output.content_lines_rendered,
+                layout_output.left_column,
             );
         }
 
-        // Render compose column guides (for tables, etc.)
+        // Render compose column guides
         if let Some(guides) = compose_column_guides {
             let guide_style = Style::default()
                 .fg(theme.line_number_fg)
@@ -4802,8 +4911,8 @@ impl SplitRenderer {
                 guide_style,
                 render_area,
                 gutter_width,
-                render_output.content_lines_rendered,
-                0, // compose guides are already relative to content
+                layout_output.render_output.content_lines_rendered,
+                0,
             );
         }
 
@@ -4816,10 +4925,76 @@ impl SplitRenderer {
                 event_log.log_render_state(cursor_pos, screen_x, screen_y, buffer_len);
             }
         }
+    }
 
-        // Extract view line mappings for mouse click handling
-        // This maps screen coordinates to buffer byte positions
-        render_output.view_line_mappings
+    /// Render a single buffer in a split pane (convenience wrapper).
+    /// Calls compute_buffer_layout then draw_buffer_in_split.
+    /// Returns the view line mappings for mouse click handling.
+    #[allow(clippy::too_many_arguments)]
+    fn render_buffer_in_split(
+        frame: &mut Frame,
+        state: &mut EditorState,
+        cursors: &crate::model::cursor::Cursors,
+        viewport: &mut crate::view::viewport::Viewport,
+        event_log: Option<&mut EventLog>,
+        area: Rect,
+        is_active: bool,
+        theme: &crate::view::theme::Theme,
+        ansi_background: Option<&AnsiBackground>,
+        background_fade: f32,
+        lsp_waiting: bool,
+        view_mode: ViewMode,
+        compose_width: Option<u16>,
+        compose_column_guides: Option<Vec<u16>>,
+        view_transform: Option<ViewTransformPayload>,
+        estimated_line_length: usize,
+        highlight_context_bytes: usize,
+        _buffer_id: BufferId,
+        hide_cursor: bool,
+        relative_line_numbers: bool,
+        use_terminal_bg: bool,
+        session_mode: bool,
+        rulers: &[usize],
+        show_line_numbers: bool,
+    ) -> Vec<ViewLineMapping> {
+        let layout_output = Self::compute_buffer_layout(
+            state,
+            cursors,
+            viewport,
+            area,
+            is_active,
+            theme,
+            lsp_waiting,
+            view_mode.clone(),
+            compose_width,
+            view_transform,
+            estimated_line_length,
+            highlight_context_bytes,
+            relative_line_numbers,
+            use_terminal_bg,
+            session_mode,
+            show_line_numbers,
+        );
+
+        let view_line_mappings = layout_output.view_line_mappings.clone();
+
+        Self::draw_buffer_in_split(
+            frame,
+            state,
+            cursors,
+            layout_output,
+            event_log,
+            area,
+            is_active,
+            theme,
+            ansi_background,
+            background_fade,
+            hide_cursor,
+            rulers,
+            compose_column_guides,
+        );
+
+        view_line_mappings
     }
 
     /// Render vertical column guide lines in the editor content area.

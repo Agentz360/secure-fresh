@@ -26,6 +26,8 @@
 
 ### Bug Fixes
 
+* **Macro correctness**: Replaying a macro now respects the exact same effect as interactive flow.
+
 * **Cursor Navigation**: Cursor up/down now lands at end-of-line when goal column is past content (#514).
 
 * **Line Numbers**: Fixed line numbers leaking between splits due to shared margins state. Line numbers now live exclusively in per-split BufferViewState.

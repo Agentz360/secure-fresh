@@ -263,6 +263,56 @@ pub async fn spawn_local_agent() -> Result<std::sync::Arc<AgentChannel>, SshErro
     Ok(std::sync::Arc::new(AgentChannel::new(reader, stdin)))
 }
 
+/// Spawn a local Python agent with a custom data channel capacity.
+///
+/// Same as `spawn_local_agent` but allows overriding the channel capacity
+/// for stress-testing backpressure handling.
+#[doc(hidden)]
+pub async fn spawn_local_agent_with_capacity(
+    data_channel_capacity: usize,
+) -> Result<std::sync::Arc<AgentChannel>, SshError> {
+    use tokio::process::Command as TokioCommand;
+
+    let mut child = TokioCommand::new("python3")
+        .arg("-u")
+        .arg("-c")
+        .arg(AGENT_SOURCE)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| SshError::AgentStartFailed("failed to get stdin".to_string()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| SshError::AgentStartFailed("failed to get stdout".to_string()))?;
+
+    let mut reader = BufReader::new(stdout);
+
+    // Wait for ready message
+    let mut ready_line = String::new();
+    reader.read_line(&mut ready_line).await?;
+
+    let ready: AgentResponse = serde_json::from_str(&ready_line)
+        .map_err(|e| SshError::AgentStartFailed(format!("invalid ready message: {}", e)))?;
+
+    if !ready.is_ready() {
+        return Err(SshError::AgentStartFailed(
+            "agent did not send ready message".to_string(),
+        ));
+    }
+
+    Ok(std::sync::Arc::new(AgentChannel::with_capacity(
+        reader,
+        stdin,
+        data_channel_capacity,
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

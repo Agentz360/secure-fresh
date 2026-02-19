@@ -237,6 +237,112 @@ fn test_play_last_macro_when_none_recorded() {
     );
 }
 
+/// Test that MoveLineEnd during macro replay uses the current line length,
+/// not the stale cached layout from before the macro modified the line.
+///
+/// Reproduces: macro inserts text, moves left, inserts more, then does MoveLineEnd.
+/// During replay MoveLineEnd should land at the *new* end of line (after all inserts),
+/// not at the old end that the cached visual layout remembers.
+///
+/// The bug only manifests when the target line already has content, because the
+/// cursor position after insertions must still fall within the stale cached
+/// row's byte range for visual_line_end to return the wrong value.
+#[test]
+fn test_macro_move_line_end_uses_current_line_length() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    let mut harness = EditorTestHarness::new(100, 24).unwrap();
+    harness.render().unwrap();
+
+    // --- Record macro on register 0 ---
+    // Macro: type "ab", MoveLeft, type ".", MoveLineEnd, type "!"
+    // On an empty line this produces "a.b!" — the "!" proves End went to true end.
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.wait_for_prompt().unwrap();
+    harness.type_text("Record Macro").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+    harness.type_text("0").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+    harness.assert_screen_contains("Recording");
+
+    // Type "ab"
+    harness.type_text("ab").unwrap();
+    harness.render().unwrap();
+
+    // Move left 1 (cursor between 'a' and 'b')
+    harness.send_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+
+    // Type "." → line becomes "a.b"
+    harness.type_text(".").unwrap();
+    harness.render().unwrap();
+
+    // MoveLineEnd → cursor should be after 'b'
+    harness.send_key(KeyCode::End, KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+
+    // Type "!" as end-of-line marker → "a.b!"
+    harness.type_text("!").unwrap();
+    harness.render().unwrap();
+
+    // --- Stop recording ---
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.wait_for_prompt().unwrap();
+    harness.type_text("Stop Recording").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Verify the recording produced the expected result: "a.b!"
+    harness.assert_screen_contains("a.b!");
+
+    // Move to start of this same line so the replay happens on a line with content.
+    // The line already has "a.b!" — the cached layout knows its byte range.
+    // The macro will insert more text, extending the line, but if MoveLineEnd
+    // consults the stale cached layout it will jump to the OLD end of line.
+    harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+
+    // --- Play the macro on the existing line ---
+    harness
+        .send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    harness.wait_for_prompt().unwrap();
+    harness.type_text("Play Last Macro").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Expected: macro inserts "ab" at beginning → "aba.b!"
+    //           MoveLeft → cursor between first 'a' and 'b'
+    //           insert "." → "a.ba.b!"
+    //           MoveLineEnd → cursor after the trailing "!"
+    //           insert "!" → "a.ba.b!!"
+    //
+    // With the bug: MoveLineEnd uses the old cached line_end_byte (which was
+    // the end of "a.b!" = 4 bytes from line start). After inserting 3 chars
+    // ("ab" + ".") the line is now "a.ba.b!" (7 bytes). The stale line_end_byte
+    // still points to offset 4, so "!" gets inserted at position 4:
+    //   "a.ba!.b!" instead of "a.ba.b!!"
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("a.ba.b!!"),
+        "Expected 'a.ba.b!!' but MoveLineEnd during replay likely used stale line end. Screen:\n{}",
+        screen
+    );
+}
+
 /// Test that macro playback is undoable as a single operation
 #[test]
 fn test_macro_playback_is_undoable() {

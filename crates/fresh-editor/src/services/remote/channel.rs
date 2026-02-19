@@ -9,6 +9,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
+use tracing::warn;
+
+/// Default capacity for the per-request streaming data channel.
+const DEFAULT_DATA_CHANNEL_CAPACITY: usize = 64;
+
+/// Test-only: microseconds to sleep in the consumer loop between chunks.
+/// Set to a non-zero value from tests to simulate a slow consumer and
+/// deterministically reproduce channel backpressure scenarios.
+/// Always compiled (not cfg(test)) because integration tests need access.
+pub static TEST_RECV_DELAY_US: AtomicU64 = AtomicU64::new(0);
 
 /// Error type for channel operations
 #[derive(Debug, thiserror::Error)]
@@ -52,6 +62,8 @@ pub struct AgentChannel {
     connected: Arc<std::sync::atomic::AtomicBool>,
     /// Runtime handle for blocking operations
     runtime_handle: tokio::runtime::Handle,
+    /// Capacity for per-request streaming data channels
+    data_channel_capacity: usize,
 }
 
 impl AgentChannel {
@@ -59,8 +71,20 @@ impl AgentChannel {
     ///
     /// Must be called from within a Tokio runtime context.
     pub fn new(
+        reader: tokio::io::BufReader<tokio::process::ChildStdout>,
+        writer: tokio::process::ChildStdin,
+    ) -> Self {
+        Self::with_capacity(reader, writer, DEFAULT_DATA_CHANNEL_CAPACITY)
+    }
+
+    /// Create a new channel with a custom data channel capacity.
+    ///
+    /// Lower capacity makes channel overflow more likely if `try_send` is used,
+    /// which is useful for stress-testing backpressure handling.
+    pub fn with_capacity(
         mut reader: tokio::io::BufReader<tokio::process::ChildStdout>,
         mut writer: tokio::process::ChildStdin,
+        data_channel_capacity: usize,
     ) -> Self {
         let pending: Arc<Mutex<HashMap<u64, PendingRequest>>> =
             Arc::new(Mutex::new(HashMap::new()));
@@ -101,7 +125,7 @@ impl AgentChannel {
                     }
                     Ok(_) => {
                         if let Ok(resp) = serde_json::from_str::<AgentResponse>(&line) {
-                            Self::handle_response(&pending_read, resp);
+                            Self::handle_response(&pending_read, resp).await;
                         }
                     }
                     Err(_) => {
@@ -111,10 +135,18 @@ impl AgentChannel {
                 }
             }
 
-            // Clean up pending requests on disconnect
+            // Clean up pending requests on disconnect.
             let mut pending = pending_read.lock().unwrap();
-            for (_, req) in pending.drain() {
-                let _ = req.result_tx.send(Err("connection closed".to_string()));
+            for (id, req) in pending.drain() {
+                match req.result_tx.send(Err("connection closed".to_string())) {
+                    Ok(()) => {}
+                    Err(_) => {
+                        // Receiver was dropped before we could notify it.
+                        // This is unexpected — callers should hold their
+                        // receivers until the operation completes.
+                        warn!("request {id}: receiver dropped during disconnect cleanup");
+                    }
+                }
             }
         });
 
@@ -124,28 +156,60 @@ impl AgentChannel {
             next_id: AtomicU64::new(1),
             connected,
             runtime_handle,
+            data_channel_capacity,
         }
     }
 
-    /// Handle an incoming response
-    fn handle_response(pending: &Arc<Mutex<HashMap<u64, PendingRequest>>>, resp: AgentResponse) {
-        let mut pending = pending.lock().unwrap();
-
-        if let Some(req) = pending.get(&resp.id) {
-            if let Some(data) = resp.data {
-                // Streaming data - send to channel (ignore if receiver dropped)
-                let _ = req.data_tx.try_send(data);
-            }
-
-            if let Some(result) = resp.result {
-                // Success - complete request
-                if let Some(req) = pending.remove(&resp.id) {
-                    let _ = req.result_tx.send(Ok(result));
+    /// Handle an incoming response.
+    ///
+    /// For streaming data, uses `send().await` to apply backpressure when the
+    /// consumer is slower than the producer. This prevents silent data loss
+    /// that occurred with `try_send` (#1059).
+    async fn handle_response(
+        pending: &Arc<Mutex<HashMap<u64, PendingRequest>>>,
+        resp: AgentResponse,
+    ) {
+        // Send streaming data without holding the mutex (send().await may yield)
+        if let Some(data) = resp.data {
+            let data_tx = {
+                let pending = pending.lock().unwrap();
+                pending.get(&resp.id).map(|req| req.data_tx.clone())
+            };
+            if let Some(tx) = data_tx {
+                // send().await blocks until the consumer drains a slot, providing
+                // backpressure instead of silently dropping data.
+                if tx.send(data).await.is_err() {
+                    // Receiver was dropped — this is unexpected since callers
+                    // should hold data_rx until the stream ends. Clean up the
+                    // pending entry to avoid leaking the dead request.
+                    warn!("request {}: data receiver dropped mid-stream", resp.id);
+                    let mut pending = pending.lock().unwrap();
+                    pending.remove(&resp.id);
+                    return;
                 }
-            } else if let Some(error) = resp.error {
-                // Error - complete request
-                if let Some(req) = pending.remove(&resp.id) {
-                    let _ = req.result_tx.send(Err(error));
+            }
+        }
+
+        // Handle final result/error
+        if resp.result.is_some() || resp.error.is_some() {
+            let mut pending = pending.lock().unwrap();
+            if let Some(req) = pending.remove(&resp.id) {
+                let outcome = if let Some(result) = resp.result {
+                    req.result_tx.send(Ok(result))
+                } else if let Some(error) = resp.error {
+                    req.result_tx.send(Err(error))
+                } else {
+                    // resp matched the outer condition (result or error is Some)
+                    // but neither branch fired — unreachable by construction.
+                    return;
+                };
+                match outcome {
+                    Ok(()) => {}
+                    Err(_) => {
+                        // Receiver was dropped — this is unexpected since
+                        // callers should hold result_rx until they get a result.
+                        warn!("request {}: result receiver dropped", resp.id);
+                    }
                 }
             }
         }
@@ -193,7 +257,7 @@ impl AgentChannel {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
 
         // Create channels for response
-        let (data_tx, data_rx) = mpsc::channel(64);
+        let (data_tx, data_rx) = mpsc::channel(self.data_channel_capacity);
         let (result_tx, result_rx) = oneshot::channel();
 
         // Register pending request
@@ -235,6 +299,13 @@ impl AgentChannel {
         let mut data = Vec::new();
         while let Some(chunk) = data_rx.recv().await {
             data.push(chunk);
+
+            // Test hook: simulate slow consumer for backpressure testing.
+            // Zero-cost in production (atomic load + branch-not-taken).
+            let delay_us = TEST_RECV_DELAY_US.load(Ordering::Relaxed);
+            if delay_us > 0 {
+                tokio::time::sleep(tokio::time::Duration::from_micros(delay_us)).await;
+            }
         }
 
         // Wait for final result
