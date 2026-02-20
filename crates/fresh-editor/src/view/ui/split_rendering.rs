@@ -6,7 +6,7 @@ use crate::app::types::ViewLineMapping;
 use crate::app::BufferMetadata;
 use crate::model::buffer::Buffer;
 use crate::model::cursor::SelectionMode;
-use crate::model::event::{BufferId, EventLog, SplitDirection};
+use crate::model::event::{BufferId, EventLog, LeafId, SplitDirection};
 use crate::primitives::ansi::AnsiParser;
 use crate::primitives::ansi_background::AnsiBackground;
 use crate::primitives::display_width::char_width;
@@ -754,7 +754,7 @@ impl SplitRenderer {
         event_logs: &mut HashMap<BufferId, EventLog>,
         composite_buffers: &HashMap<BufferId, crate::model::composite_buffer::CompositeBuffer>,
         composite_view_states: &mut HashMap<
-            (crate::model::event::SplitId, BufferId),
+            (LeafId, BufferId),
             crate::view::composite_view::CompositeViewState,
         >,
         theme: &crate::view::theme::Theme,
@@ -765,13 +765,11 @@ impl SplitRenderer {
         _line_wrap: bool,
         estimated_line_length: usize,
         highlight_context_bytes: usize,
-        mut split_view_states: Option<
-            &mut HashMap<crate::model::event::SplitId, crate::view::split::SplitViewState>,
-        >,
+        mut split_view_states: Option<&mut HashMap<LeafId, crate::view::split::SplitViewState>>,
         hide_cursor: bool,
-        hovered_tab: Option<(BufferId, crate::model::event::SplitId, bool)>, // (buffer_id, split_id, is_close_button)
-        hovered_close_split: Option<crate::model::event::SplitId>,
-        hovered_maximize_split: Option<crate::model::event::SplitId>,
+        hovered_tab: Option<(BufferId, LeafId, bool)>, // (buffer_id, split_id, is_close_button)
+        hovered_close_split: Option<LeafId>,
+        hovered_maximize_split: Option<LeafId>,
         is_maximized: bool,
         relative_line_numbers: bool,
         tab_bar_visible: bool,
@@ -780,26 +778,12 @@ impl SplitRenderer {
         show_vertical_scrollbar: bool,
         show_horizontal_scrollbar: bool,
     ) -> (
-        Vec<(
-            crate::model::event::SplitId,
-            BufferId,
-            Rect,
-            Rect,
-            usize,
-            usize,
-        )>,
-        HashMap<crate::model::event::SplitId, crate::view::ui::tabs::TabLayout>, // tab layouts per split
-        Vec<(crate::model::event::SplitId, u16, u16, u16)>, // close split button areas
-        Vec<(crate::model::event::SplitId, u16, u16, u16)>, // maximize split button areas
-        HashMap<crate::model::event::SplitId, Vec<ViewLineMapping>>, // view line mappings for mouse clicks
-        Vec<(
-            crate::model::event::SplitId,
-            BufferId,
-            Rect,
-            usize,
-            usize,
-            usize,
-        )>, // horizontal scrollbar areas (rect + max_content_width + thumb_start + thumb_end)
+        Vec<(LeafId, BufferId, Rect, Rect, usize, usize)>,
+        HashMap<LeafId, crate::view::ui::tabs::TabLayout>, // tab layouts per split
+        Vec<(LeafId, u16, u16, u16)>,                      // close split button areas
+        Vec<(LeafId, u16, u16, u16)>,                      // maximize split button areas
+        HashMap<LeafId, Vec<ViewLineMapping>>,             // view line mappings for mouse clicks
+        Vec<(LeafId, BufferId, Rect, usize, usize, usize)>, // horizontal scrollbar areas (rect + max_content_width + thumb_start + thumb_end)
     ) {
         let _span = tracing::trace_span!("render_content").entered();
 
@@ -810,22 +794,12 @@ impl SplitRenderer {
 
         // Collect areas for mouse handling
         let mut split_areas = Vec::new();
-        let mut horizontal_scrollbar_areas: Vec<(
-            crate::model::event::SplitId,
-            BufferId,
-            Rect,
-            usize,
-            usize,
-            usize,
-        )> = Vec::new();
-        let mut tab_layouts: HashMap<
-            crate::model::event::SplitId,
-            crate::view::ui::tabs::TabLayout,
-        > = HashMap::new();
+        let mut horizontal_scrollbar_areas: Vec<(LeafId, BufferId, Rect, usize, usize, usize)> =
+            Vec::new();
+        let mut tab_layouts: HashMap<LeafId, crate::view::ui::tabs::TabLayout> = HashMap::new();
         let mut close_split_areas = Vec::new();
         let mut maximize_split_areas = Vec::new();
-        let mut view_line_mappings: HashMap<crate::model::event::SplitId, Vec<ViewLineMapping>> =
-            HashMap::new();
+        let mut view_line_mappings: HashMap<LeafId, Vec<ViewLineMapping>> = HashMap::new();
 
         // Render each split
         for (split_id, buffer_id, split_area) in visible_buffers {
@@ -1179,10 +1153,7 @@ impl SplitRenderer {
         area: Rect,
         split_manager: &SplitManager,
         buffers: &mut HashMap<BufferId, EditorState>,
-        split_view_states: &mut HashMap<
-            crate::model::event::SplitId,
-            crate::view::split::SplitViewState,
-        >,
+        split_view_states: &mut HashMap<LeafId, crate::view::split::SplitViewState>,
         theme: &crate::view::theme::Theme,
         lsp_waiting: bool,
         estimated_line_length: usize,
@@ -1193,11 +1164,10 @@ impl SplitRenderer {
         tab_bar_visible: bool,
         show_vertical_scrollbar: bool,
         show_horizontal_scrollbar: bool,
-    ) -> HashMap<crate::model::event::SplitId, Vec<ViewLineMapping>> {
+    ) -> HashMap<LeafId, Vec<ViewLineMapping>> {
         let visible_buffers = split_manager.get_visible_buffers(area);
         let active_split_id = split_manager.active_split();
-        let mut view_line_mappings: HashMap<crate::model::event::SplitId, Vec<ViewLineMapping>> =
-            HashMap::new();
+        let mut view_line_mappings: HashMap<LeafId, Vec<ViewLineMapping>> = HashMap::new();
 
         for (split_id, buffer_id, split_area) in visible_buffers {
             let is_active = split_id == active_split_id;
@@ -1996,10 +1966,8 @@ impl SplitRenderer {
     }
 
     fn split_buffers_for_tabs(
-        split_view_states: Option<
-            &HashMap<crate::model::event::SplitId, crate::view::split::SplitViewState>,
-        >,
-        split_id: crate::model::event::SplitId,
+        split_view_states: Option<&HashMap<LeafId, crate::view::split::SplitViewState>>,
+        split_id: LeafId,
         buffer_id: BufferId,
     ) -> (Vec<BufferId>, usize) {
         if let Some(view_states) = split_view_states {
@@ -2036,10 +2004,8 @@ impl SplitRenderer {
 
     fn resolve_view_preferences(
         _state: &EditorState,
-        split_view_states: Option<
-            &HashMap<crate::model::event::SplitId, crate::view::split::SplitViewState>,
-        >,
-        split_id: crate::model::event::SplitId,
+        split_view_states: Option<&HashMap<LeafId, crate::view::split::SplitViewState>>,
+        split_id: LeafId,
     ) -> ViewPreferences {
         if let Some(view_states) = split_view_states {
             if let Some(view_state) = view_states.get(&split_id) {
@@ -2421,6 +2387,7 @@ impl SplitRenderer {
         );
 
         // Use plugin transform if available, otherwise use base tokens
+        let has_view_transform = view_transform.is_some();
         let mut tokens = view_transform.map(|vt| vt.tokens).unwrap_or(base_tokens);
 
         // Apply soft breaks — marker-based line wrapping that survives edits without flicker.
@@ -2478,11 +2445,24 @@ impl SplitRenderer {
         // Enable ANSI awareness for non-binary content to handle escape sequences correctly
         let is_binary = state.buffer.is_binary();
         let ansi_aware = !is_binary; // ANSI parsing for normal text files
+        let at_buffer_end = if has_view_transform {
+            // View transforms supply their own token streams; the trailing
+            // empty line logic doesn't apply to them.
+            false
+        } else {
+            let max_source_offset = tokens
+                .iter()
+                .filter_map(|t| t.source_offset)
+                .max()
+                .unwrap_or(0);
+            max_source_offset + 2 >= state.buffer.len()
+        };
         let source_lines: Vec<ViewLine> = ViewLineIterator::new(
             &tokens,
             is_binary,
             ansi_aware,
             state.buffer_settings.tab_size,
+            at_buffer_end,
         )
         .collect();
 
@@ -2536,14 +2516,17 @@ impl SplitRenderer {
     fn inject_virtual_lines(source_lines: Vec<ViewLine>, state: &EditorState) -> Vec<ViewLine> {
         use crate::view::virtual_text::VirtualTextPosition;
 
-        // Get viewport byte range from source lines
+        // Get viewport byte range from source lines.
+        // Use the last line that has source bytes (not a trailing empty line
+        // which the iterator may emit at the buffer end).
         let viewport_start = source_lines
             .first()
             .and_then(|l| l.char_source_bytes.iter().find_map(|m| *m))
             .unwrap_or(0);
         let viewport_end = source_lines
-            .last()
-            .and_then(|l| l.char_source_bytes.iter().rev().find_map(|m| *m))
+            .iter()
+            .rev()
+            .find_map(|l| l.char_source_bytes.iter().rev().find_map(|m| *m))
             .map(|b| b + 1)
             .unwrap_or(viewport_start);
 
@@ -3713,6 +3696,7 @@ impl SplitRenderer {
         let mut cursor_screen_y = 0u16;
         let mut have_cursor = false;
         let mut last_line_end: Option<LastLineEnd> = None;
+        let mut trailing_empty_line_rendered = false;
 
         let is_empty_buffer = state.buffer.is_empty();
 
@@ -3754,7 +3738,7 @@ impl SplitRenderer {
             let line_char_styles = &current_view_line.char_styles;
             let line_visual_to_char = &current_view_line.visual_to_char;
             let line_tab_starts = &current_view_line.tab_starts;
-            let _line_start_type = current_view_line.line_start; // Available for future use
+            let _line_start_type = current_view_line.line_start;
 
             // Helper to get source byte at a visual column using the new O(1) lookup
             let _source_byte_at_col = |vis_col: usize| -> Option<usize> {
@@ -4178,8 +4162,12 @@ impl SplitRenderer {
                     // A cursor ON the last character should render on that character (handled in main loop).
                     let matches_after = after_last_char_buf_pos.is_some_and(|bp| pos == bp);
                     // Fallback: when there's no mapping after last char (EOF), check if cursor is after last char
-                    // The fallback should match the position that would be "after" if there was a mapping
-                    let expected_after_pos = last_char_buf_pos.map(|p| p + 1).unwrap_or(0);
+                    // The fallback should match the position that would be "after" if there was a mapping.
+                    // For empty lines with no source mappings (e.g. trailing empty line after final '\n'),
+                    // the expected position is buffer.len() (EOF), not 0.
+                    let expected_after_pos = last_char_buf_pos
+                        .map(|p| p + 1)
+                        .unwrap_or(state.buffer.len());
                     let matches_fallback =
                         after_last_char_buf_pos.is_none() && pos == expected_after_pos;
 
@@ -4373,6 +4361,12 @@ impl SplitRenderer {
                     } else {
                         last_byte_start
                     }
+                } else if matches!(current_view_line.line_start, LineStart::AfterSourceNewline)
+                    && prev_line_end_byte + 2 >= state.buffer.len()
+                {
+                    // Trailing empty line after the final source newline.
+                    // The cursor on this line lives at buffer_len.
+                    state.buffer.len()
                 } else {
                     // Virtual row with no source bytes (e.g. table border from conceals).
                     // Inherit line_end_byte from the previous row so cursor movement
@@ -4398,6 +4392,18 @@ impl SplitRenderer {
             let line_was_empty = line_spans.is_empty();
             lines.push(Line::from(line_spans));
 
+            // Detect the trailing empty ViewLine produced by ViewLineIterator
+            // when at_buffer_end is true: empty content, no newline,
+            // line_start == AfterSourceNewline.  This is a visual display aid,
+            // not an actual content line — don't update last_line_end for it
+            // (same policy as the implicit empty line rendered below).
+            let is_iterator_trailing_empty = line_content.is_empty()
+                && !line_has_newline
+                && _line_start_type == LineStart::AfterSourceNewline;
+            if is_iterator_trailing_empty {
+                trailing_empty_line_rendered = true;
+            }
+
             // Update last_line_end and check for cursor on newline BEFORE the break check
             // This ensures the last visible line's metadata is captured
             if let Some(y) = last_seg_y {
@@ -4411,10 +4417,14 @@ impl SplitRenderer {
                 };
                 let line_len_chars = line_content.chars().count();
 
-                last_line_end = Some(LastLineEnd {
-                    pos: (end_x, y),
-                    terminated_with_newline: line_has_newline,
-                });
+                // Don't update last_line_end for the iterator's trailing empty
+                // line — it's a display aid, not actual content.
+                if !is_iterator_trailing_empty {
+                    last_line_end = Some(LastLineEnd {
+                        pos: (end_x, y),
+                        terminated_with_newline: line_has_newline,
+                    });
+                }
 
                 if line_has_newline && line_len_chars > 0 {
                     let newline_idx = line_len_chars.saturating_sub(1);
@@ -4446,8 +4456,12 @@ impl SplitRenderer {
 
         // If the last line ended with a newline, render an implicit empty line after it.
         // This shows the line number for the cursor position after the final newline.
+        // Skip this if the ViewLineIterator already produced the trailing empty line.
         if let Some(ref end) = last_line_end {
-            if end.terminated_with_newline && lines_rendered < visible_line_count {
+            if end.terminated_with_newline
+                && lines_rendered < visible_line_count
+                && !trailing_empty_line_rendered
+            {
                 // Render the implicit line after the newline
                 let mut implicit_line_spans = Vec::new();
                 let implicit_line_num = current_source_line_num + 1;
@@ -4513,6 +4527,32 @@ impl SplitRenderer {
             }
         }
 
+        // Even when there was no screen room to render the implicit trailing
+        // empty line, we must still add a ViewLineMapping for it.  Without
+        // the mapping, move_visual_line (Down key) thinks the last rendered
+        // row is the boundary and returns None — preventing the cursor from
+        // reaching the trailing empty line (which would trigger a viewport
+        // scroll on the next render).
+        if let Some(ref end) = last_line_end {
+            if end.terminated_with_newline {
+                let last_mapped_byte = view_line_mappings
+                    .last()
+                    .map(|m| m.line_end_byte)
+                    .unwrap_or(0);
+                let near_buffer_end = last_mapped_byte + 2 >= state.buffer.len();
+                let already_mapped = view_line_mappings.last().map_or(false, |m| {
+                    m.char_source_bytes.is_empty() && m.line_end_byte == state.buffer.len()
+                });
+                if near_buffer_end && !already_mapped {
+                    view_line_mappings.push(ViewLineMapping {
+                        char_source_bytes: Vec::new(),
+                        visual_to_char: Vec::new(),
+                        line_end_byte: state.buffer.len(),
+                    });
+                }
+            }
+        }
+
         // Fill remaining rows with tilde characters to indicate EOF (like vim/neovim).
         // This also ensures proper clearing in differential rendering because tildes
         // are guaranteed to differ from previous content, forcing ratatui to update.
@@ -4557,9 +4597,17 @@ impl SplitRenderer {
 
         if buffer_ends_with_newline {
             if let Some(end) = last_line_end {
-                // Cursor should appear on the implicit empty line after the newline
-                // Include gutter width in x coordinate
-                return Some((gutter_width as u16, end.pos.1.saturating_add(1)));
+                // When the last rendered line was the newline-terminated content
+                // line, the cursor belongs on the implicit empty line one row
+                // below.  But when the trailing empty line was already emitted
+                // by the ViewLineIterator (terminated_with_newline == false),
+                // the cursor belongs on that rendered row itself.
+                let y = if end.terminated_with_newline {
+                    end.pos.1.saturating_add(1)
+                } else {
+                    end.pos.1
+                };
+                return Some((gutter_width as u16, y));
             }
             return Some((gutter_width as u16, lines_rendered as u16));
         }
@@ -6255,7 +6303,7 @@ mod tests {
         eprintln!("Tokens: {:?}", offsets);
 
         // Step 2: Convert tokens to ViewLines
-        let view_lines: Vec<_> = ViewLineIterator::new(&tokens, false, false, 4).collect();
+        let view_lines: Vec<_> = ViewLineIterator::new(&tokens, false, false, 4, false).collect();
         assert_eq!(view_lines.len(), 2, "Should have 2 view lines");
 
         // Step 3: Verify char_source_bytes mapping for each line
@@ -6489,7 +6537,7 @@ mod tests {
         let wrapped = SplitRenderer::apply_wrapping_transform(tokens, MAX_SAFE_LINE_WIDTH, 0);
 
         // Convert to ViewLines
-        let view_lines: Vec<_> = ViewLineIterator::new(&wrapped, false, false, 4).collect();
+        let view_lines: Vec<_> = ViewLineIterator::new(&wrapped, false, false, 4, false).collect();
 
         // Reconstruct content from ViewLines
         let mut reconstructed = String::new();

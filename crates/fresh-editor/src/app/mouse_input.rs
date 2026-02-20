@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::input::keybindings::Action;
-use crate::model::event::{CursorId, SplitDirection, SplitId};
+use crate::model::event::{ContainerId, CursorId, LeafId, SplitDirection};
 use crate::services::plugins::hooks::HookArgs;
 use crate::view::popup_mouse::{popup_areas_to_layout_info, PopupHitTester};
 use crate::view::prompt::PromptType;
@@ -981,7 +981,7 @@ impl Editor {
         &mut self,
         col: u16,
         row: u16,
-        split_id: crate::model::event::SplitId,
+        split_id: LeafId,
         buffer_id: BufferId,
         content_rect: ratatui::layout::Rect,
     ) -> AnyhowResult<()> {
@@ -998,16 +998,17 @@ impl Editor {
             .cloned();
 
         // Get fallback from SplitViewState viewport
+        let leaf_id = split_id;
         let fallback = self
             .split_view_states
-            .get(&split_id)
+            .get(&leaf_id)
             .map(|vs| vs.viewport.top_byte)
             .unwrap_or(0);
 
         // Get compose width for this split
         let compose_width = self
             .split_view_states
-            .get(&split_id)
+            .get(&leaf_id)
             .and_then(|vs| vs.compose_width);
 
         // Calculate clicked position in buffer
@@ -1030,7 +1031,7 @@ impl Editor {
             // Move cursor to clicked position first
             let primary_cursor_id = self
                 .split_view_states
-                .get(&split_id)
+                .get(&leaf_id)
                 .map(|vs| vs.cursors.primary_id())
                 .unwrap_or(CursorId(0));
             let event = Event::MoveCursor {
@@ -1048,7 +1049,7 @@ impl Editor {
             }
             if let Some(cursors) = self
                 .split_view_states
-                .get_mut(&split_id)
+                .get_mut(&leaf_id)
                 .map(|vs| &mut vs.cursors)
             {
                 state.apply(cursors, &event);
@@ -1103,7 +1104,7 @@ impl Editor {
         &mut self,
         col: u16,
         row: u16,
-        split_id: crate::model::event::SplitId,
+        split_id: LeafId,
         buffer_id: BufferId,
         content_rect: ratatui::layout::Rect,
     ) -> AnyhowResult<()> {
@@ -1119,16 +1120,17 @@ impl Editor {
             .get(&split_id)
             .cloned();
 
+        let leaf_id = split_id;
         let fallback = self
             .split_view_states
-            .get(&split_id)
+            .get(&leaf_id)
             .map(|vs| vs.viewport.top_byte)
             .unwrap_or(0);
 
         // Get compose width for this split
         let compose_width = self
             .split_view_states
-            .get(&split_id)
+            .get(&leaf_id)
             .and_then(|vs| vs.compose_width);
 
         // Calculate clicked position in buffer
@@ -1151,7 +1153,7 @@ impl Editor {
             // Move cursor to clicked position first
             let primary_cursor_id = self
                 .split_view_states
-                .get(&split_id)
+                .get(&leaf_id)
                 .map(|vs| vs.cursors.primary_id())
                 .unwrap_or(CursorId(0));
             let event = Event::MoveCursor {
@@ -1169,7 +1171,7 @@ impl Editor {
             }
             if let Some(cursors) = self
                 .split_view_states
-                .get_mut(&split_id)
+                .get_mut(&leaf_id)
                 .map(|vs| &mut vs.cursors)
             {
                 state.apply(cursors, &event);
@@ -1454,8 +1456,15 @@ impl Editor {
                 // Click on thumb - start drag from current position (don't jump)
                 self.mouse_state.dragging_scrollbar = Some(split_id);
                 self.mouse_state.drag_start_row = Some(row);
-                // Record the current viewport position from SplitViewState
-                if let Some(view_state) = self.split_view_states.get(&split_id) {
+                // Record the current viewport position
+                if self.is_composite_buffer(buffer_id) {
+                    // For composite buffers, store scroll_row
+                    if let Some(view_state) = self.composite_view_states.get(&(split_id, buffer_id))
+                    {
+                        self.mouse_state.drag_start_composite_scroll_row =
+                            Some(view_state.scroll_row);
+                    }
+                } else if let Some(view_state) = self.split_view_states.get(&split_id) {
                     self.mouse_state.drag_start_top_byte = Some(view_state.viewport.top_byte);
                     self.mouse_state.drag_start_view_line_offset =
                         Some(view_state.viewport.top_view_line_offset);
@@ -1652,7 +1661,7 @@ impl Editor {
                 self.mouse_state.dragging_separator = Some((*split_id, *direction));
                 self.mouse_state.drag_start_position = Some((col, row));
                 // Store the initial ratio
-                if let Some(ratio) = self.split_manager.get_ratio(*split_id) {
+                if let Some(ratio) = self.split_manager.get_ratio((*split_id).into()) {
                     self.mouse_state.drag_start_ratio = Some(ratio);
                 }
                 return Ok(());
@@ -2040,17 +2049,19 @@ impl Editor {
             .get(&split_id)
             .cloned();
 
+        let leaf_id = split_id;
+
         // Get fallback from SplitViewState viewport
         let fallback = self
             .split_view_states
-            .get(&split_id)
+            .get(&leaf_id)
             .map(|vs| vs.viewport.top_byte)
             .unwrap_or(0);
 
         // Get compose width for this split
         let compose_width = self
             .split_view_states
-            .get(&split_id)
+            .get(&leaf_id)
             .and_then(|vs| vs.compose_width);
 
         // Calculate the target position from screen coordinates
@@ -2073,7 +2084,7 @@ impl Editor {
             // Move cursor to target position while keeping anchor to create selection
             let primary_cursor_id = self
                 .split_view_states
-                .get(&split_id)
+                .get(&leaf_id)
                 .map(|vs| vs.cursors.primary_id())
                 .unwrap_or(CursorId(0));
             let event = Event::MoveCursor {
@@ -2091,7 +2102,7 @@ impl Editor {
             }
             if let Some(cursors) = self
                 .split_view_states
-                .get_mut(&split_id)
+                .get_mut(&leaf_id)
                 .map(|vs| &mut vs.cursors)
             {
                 state.apply(cursors, &event);
@@ -2130,7 +2141,7 @@ impl Editor {
         &mut self,
         col: u16,
         row: u16,
-        split_id: SplitId,
+        split_id: ContainerId,
         direction: SplitDirection,
     ) -> AnyhowResult<()> {
         let Some((start_col, start_row)) = self.mouse_state.drag_start_position else {
@@ -2166,7 +2177,7 @@ impl Editor {
             let new_ratio = (start_ratio + ratio_delta).clamp(0.1, 0.9);
 
             // Update the split ratio
-            let _ = self.split_manager.set_ratio(split_id, new_ratio);
+            self.split_manager.set_ratio(split_id, new_ratio);
         }
 
         Ok(())
@@ -2263,25 +2274,24 @@ impl Editor {
         &mut self,
         item: super::types::TabContextMenuItem,
         buffer_id: BufferId,
-        split_id: SplitId,
+        leaf_id: LeafId,
     ) -> AnyhowResult<()> {
         use super::types::TabContextMenuItem;
-
         match item {
             TabContextMenuItem::Close => {
-                self.close_tab_in_split(buffer_id, split_id);
+                self.close_tab_in_split(buffer_id, leaf_id);
             }
             TabContextMenuItem::CloseOthers => {
-                self.close_other_tabs_in_split(buffer_id, split_id);
+                self.close_other_tabs_in_split(buffer_id, leaf_id);
             }
             TabContextMenuItem::CloseToRight => {
-                self.close_tabs_to_right_in_split(buffer_id, split_id);
+                self.close_tabs_to_right_in_split(buffer_id, leaf_id);
             }
             TabContextMenuItem::CloseToLeft => {
-                self.close_tabs_to_left_in_split(buffer_id, split_id);
+                self.close_tabs_to_left_in_split(buffer_id, leaf_id);
             }
             TabContextMenuItem::CloseAll => {
-                self.close_all_tabs_in_split(split_id);
+                self.close_all_tabs_in_split(leaf_id);
             }
         }
 
