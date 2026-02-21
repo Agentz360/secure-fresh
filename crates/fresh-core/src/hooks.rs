@@ -343,8 +343,8 @@ impl Default for HookRegistry {
     }
 }
 
-/// Convert HookArgs to JSON string for plugin communication
-pub fn hook_args_to_json(args: &HookArgs) -> Result<String> {
+/// Convert HookArgs to a serde_json::Value for plugin communication
+pub fn hook_args_to_json(args: &HookArgs) -> Result<serde_json::Value> {
     let json_value = match args {
         HookArgs::RenderStart { buffer_id } => {
             serde_json::json!({
@@ -689,6 +689,5 @@ pub fn hook_args_to_json(args: &HookArgs) -> Result<String> {
         }
     };
 
-    serde_json::to_string(&json_value)
-        .map_err(|e| anyhow::anyhow!("Failed to serialize hook args: {}", e))
+    Ok(json_value)
 }

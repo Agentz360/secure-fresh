@@ -200,6 +200,54 @@ fn json_to_js_value<'js>(
     }
 }
 
+/// Call a JS handler function directly with structured data, bypassing JSON
+/// string serialization and JS-side `JSON.parse()` + source re-parsing.
+fn call_handler(ctx: &rquickjs::Ctx<'_>, handler_name: &str, event_data: &serde_json::Value) {
+    let js_data = match json_to_js_value(ctx, event_data) {
+        Ok(v) => v,
+        Err(e) => {
+            log_js_error(ctx, e, &format!("handler {} data conversion", handler_name));
+            return;
+        }
+    };
+
+    let globals = ctx.globals();
+    let Ok(func) = globals.get::<_, rquickjs::Function>(handler_name) else {
+        return;
+    };
+
+    match func.call::<_, rquickjs::Value>((js_data,)) {
+        Ok(result) => attach_promise_catch(ctx, &globals, handler_name, result),
+        Err(e) => log_js_error(ctx, e, &format!("handler {}", handler_name)),
+    }
+
+    run_pending_jobs_checked(ctx, &format!("emit handler {}", handler_name));
+}
+
+/// If `result` is a thenable (Promise), attach `.catch()` to surface async rejections.
+fn attach_promise_catch<'js>(
+    ctx: &rquickjs::Ctx<'js>,
+    globals: &rquickjs::Object<'js>,
+    handler_name: &str,
+    result: rquickjs::Value<'js>,
+) {
+    let Some(obj) = result.as_object() else {
+        return;
+    };
+    if obj.get::<_, rquickjs::Function>("then").is_err() {
+        return;
+    }
+    let _ = globals.set("__pendingPromise", result);
+    let catch_code = format!(
+        r#"globalThis.__pendingPromise.catch(function(e) {{
+            console.error('Handler {} async error:', e);
+            throw e;
+        }}); delete globalThis.__pendingPromise;"#,
+        handler_name
+    );
+    let _ = ctx.eval::<(), _>(catch_code.as_bytes());
+}
+
 /// Get text properties at cursor position
 fn get_text_properties_at_cursor_typed(
     snapshot: &Arc<RwLock<EditorStateSnapshot>>,
@@ -3637,66 +3685,21 @@ impl QuickJsBackend {
 
     /// Emit an event to all registered handlers
     pub async fn emit(&mut self, event_name: &str, event_data: &serde_json::Value) -> Result<bool> {
-        let _event_data_str = event_data.to_string();
         tracing::trace!("emit: event '{}' with data: {:?}", event_name, event_data);
 
-        // Track execution state for signal handler debugging
         self.services
             .set_js_execution_state(format!("hook '{}'", event_name));
 
         let handlers = self.event_handlers.borrow().get(event_name).cloned();
-
         if let Some(handler_pairs) = handlers {
-            if handler_pairs.is_empty() {
-                self.services.clear_js_execution_state();
-                return Ok(true);
-            }
-
             let plugin_contexts = self.plugin_contexts.borrow();
-            for handler in handler_pairs {
-                let context_opt = plugin_contexts.get(&handler.plugin_name);
-                if let Some(context) = context_opt {
-                    let handler_name = &handler.handler_name;
-                    // Call the handler and properly handle both sync and async errors
-                    // Async handlers return Promises - we attach .catch() to surface rejections
-                    // Double-encode the JSON to produce a valid JavaScript string literal:
-                    // event_data = {"path": "/test"} -> first to_string = {"path": "/test"}
-                    // -> second to_string = "{\"path\": \"/test\"}" (properly quoted for JS)
-                    let json_string = serde_json::to_string(event_data)?;
-                    let js_string_literal = serde_json::to_string(&json_string)?;
-                    let code = format!(
-                        r#"
-                        (function() {{
-                            try {{
-                                const data = JSON.parse({});
-                                if (typeof globalThis["{}"] === 'function') {{
-                                    const result = globalThis["{}"](data);
-                                    // If handler returns a Promise, catch rejections
-                                    if (result && typeof result.then === 'function') {{
-                                        result.catch(function(e) {{
-                                            console.error('Handler {} async error:', e);
-                                            // Re-throw to make it an unhandled rejection for the runtime to catch
-                                            throw e;
-                                        }});
-                                    }}
-                                }}
-                            }} catch (e) {{
-                                console.error('Handler {} sync error:', e);
-                                throw e;
-                            }}
-                        }})();
-                        "#,
-                        js_string_literal, handler_name, handler_name, handler_name, handler_name
-                    );
-
-                    context.with(|ctx| {
-                        if let Err(e) = ctx.eval::<(), _>(code.as_bytes()) {
-                            log_js_error(&ctx, e, &format!("handler {}", handler_name));
-                        }
-                        // Run pending jobs to process any Promise continuations and catch errors
-                        run_pending_jobs_checked(&ctx, &format!("emit handler {}", handler_name));
-                    });
-                }
+            for handler in &handler_pairs {
+                let Some(context) = plugin_contexts.get(&handler.plugin_name) else {
+                    continue;
+                };
+                context.with(|ctx| {
+                    call_handler(&ctx, &handler.handler_name, event_data);
+                });
             }
         }
 
