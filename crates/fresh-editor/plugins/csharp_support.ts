@@ -186,7 +186,7 @@ globalThis.on_csharp_file_open = async function (data: AfterFileOpenData): Promi
       configuredProjectRoots.add(projectRoot);
 
       // Convert path to file:// URI
-      const rootUri = `file://${projectRoot}`;
+      const rootUri = editor.pathToFileUri(projectRoot);
       editor.debug(`csharp_support: Setting LSP root URI to ${rootUri}`);
       editor.setLspRootUri("csharp", rootUri);
     }

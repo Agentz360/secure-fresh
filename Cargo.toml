@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/fresh-editor",
+    "crates/fresh-gui",
     "crates/fresh-core",
     "crates/fresh-parser-js",
     "crates/fresh-languages",
@@ -21,6 +22,7 @@ documentation = "https://docs.rs/fresh-editor"
 [workspace.dependencies]
 # Local crates
 fresh-core = { version = "0.2.5", path = "crates/fresh-core" }
+fresh-gui = { version = "0.2.5", path = "crates/fresh-gui" }
 fresh-parser-js = { version = "0.2.5", path = "crates/fresh-parser-js" }
 fresh-languages = { version = "0.2.5", path = "crates/fresh-languages" }
 fresh-plugin-runtime = { version = "0.2.5", path = "crates/fresh-plugin-runtime" }
@@ -48,6 +50,8 @@ oxc_diagnostics = "0.112.0"
 tree-sitter = "0.26.5"
 tree-sitter-highlight = "0.26.3"
 crossterm = "0.29"
+winit = "0.30"
+wgpu = "28.0"
 lsp-types = "0.97"
 ts-rs = { version = "11.1", features = ["serde_json"] }
 # Add more as needed during refactor

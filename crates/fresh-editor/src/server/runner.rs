@@ -49,6 +49,7 @@ pub struct ConnectedClient {
     /// Client's terminal size
     term_size: TermSize,
     /// Client's environment
+    #[allow(dead_code)]
     env: std::collections::HashMap<String, Option<String>>,
     /// Client ID for logging
     id: u64,
@@ -148,7 +149,7 @@ impl Server {
     /// Handle a new client connection (perform handshake)
     fn handle_new_connection(
         &self,
-        mut conn: ServerConnection,
+        conn: ServerConnection,
         client_id: u64,
     ) -> io::Result<ConnectedClient> {
         // Read client hello
@@ -376,13 +377,13 @@ impl Server {
         let teardown = terminal_teardown_sequences();
         for client in &mut self.clients {
             // Send terminal teardown sequences to restore client's terminal
-            let _ = client.conn.write_data(&teardown);
+            drop(client.conn.write_data(&teardown));
             // Send quit control message
             let quit_msg = serde_json::to_string(&ServerControl::Quit {
                 reason: reason.to_string(),
             })
             .unwrap_or_default();
-            let _ = client.conn.write_control(&quit_msg);
+            drop(client.conn.write_control(&quit_msg));
         }
         self.clients.clear();
         Ok(())
@@ -410,6 +411,7 @@ impl Server {
     }
 }
 
+#[allow(dead_code)]
 impl ConnectedClient {
     /// Get the client's terminal size
     pub fn term_size(&self) -> TermSize {

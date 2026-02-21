@@ -13,7 +13,7 @@
  * - syncWithEditor for bidirectional cursor sync
  */
 
-import { Finder, createLiveProvider, getRelativePath, type FinderProvider } from "./lib/finder.ts";
+import { Finder, createLiveProvider, type FinderProvider } from "./lib/finder.ts";
 
 const editor = getEditor();
 
@@ -49,41 +49,42 @@ function severityToString(severity: number): "error" | "warning" | "info" | "hin
   }
 }
 
-// Convert URI to file path
+// Convert file URI to file path using the editor's built-in URI handling
 function uriToPath(uri: string): string {
-  if (uri.startsWith("file://")) {
-    return uri.slice(7);
+  if (!uri.startsWith("file://")) {
+    return uri;
   }
-  return uri;
+  return editor.fileUriToPath(uri) || uri;
 }
 
 // Get diagnostics based on current filter
 function getDiagnostics(): DiagnosticItem[] {
   const diagnostics = editor.getAllDiagnostics();
 
-  // Get active file URI for filtering
-  let activeUri: string | null = null;
+  // Get active file path for filtering
+  let activePath: string | null = null;
   if (sourceBufferId !== null) {
     const path = editor.getBufferPath(sourceBufferId);
     if (path) {
-      activeUri = "file://" + path;
+      activePath = path.replace(/\\/g, "/");
     }
   }
 
-  // Filter diagnostics
-  const filterUri = showAllFiles ? null : activeUri;
-  const filtered = filterUri
-    ? diagnostics.filter((d) => d.uri === filterUri)
-    : diagnostics;
+  // Filter diagnostics by comparing decoded paths (avoids URI encoding mismatches)
+  const filtered = showAllFiles || !activePath
+    ? diagnostics
+    : diagnostics.filter((d) => uriToPath(d.uri).replace(/\\/g, "/") === activePath);
 
   // Sort by file, then line, then severity
   filtered.sort((a, b) => {
     // File comparison
     if (a.uri !== b.uri) {
       // Active file first
-      if (activeUri) {
-        if (a.uri === activeUri) return -1;
-        if (b.uri === activeUri) return 1;
+      if (activePath) {
+        const aPath = uriToPath(a.uri).replace(/\\/g, "/");
+        const bPath = uriToPath(b.uri).replace(/\\/g, "/");
+        if (aPath === activePath) return -1;
+        if (bPath === activePath) return 1;
       }
       return a.uri < b.uri ? -1 : 1;
     }
@@ -124,15 +125,7 @@ const finder = new Finder<DiagnosticItem>(editor, {
   }),
   groupBy: "file",
   syncWithEditor: true,
-  onSelect: (d) => {
-    const displayPath = getRelativePath(editor, d.file);
-    editor.setStatus(
-      editor.t("status.jumped_to", {
-        file: displayPath,
-        line: String(d.line),
-      })
-    );
-  },
+  navigateOnCursorMove: true,
 });
 
 // Get title based on current filter state
@@ -224,6 +217,11 @@ globalThis.on_diagnostics_buffer_activated = function (data: {
   buffer_id: number;
 }): void {
   if (!isOpen) return;
+
+  // Skip virtual buffers (e.g. the diagnostics panel itself) — they have no
+  // file path and would clear the filtered diagnostics list.
+  const path = editor.getBufferPath(data.buffer_id);
+  if (!path) return;
 
   // Update source buffer
   sourceBufferId = data.buffer_id;

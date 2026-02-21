@@ -36,22 +36,14 @@ function detectLanguage(path: string): string | null {
 }
 
 function pathToFileUri(path: string): string {
-  let normalized = path.replace(/\\/g, "/");
-  if (!normalized.startsWith("/")) {
-    normalized = "/" + normalized;
-  }
-  return "file://" + encodeURI(normalized);
+  return editor.pathToFileUri(path);
 }
 
 function fileUriToPath(uri: string): string {
   if (!uri.startsWith("file://")) {
     return uri;
   }
-  let path = decodeURI(uri.substring("file://".length));
-  if (path.startsWith("/") && path.length > 2 && path[2] === ":") {
-    path = path.substring(1);
-  }
-  return path;
+  return editor.fileUriToPath(uri) || uri;
 }
 
 function setClangdStatus(message: string): void {

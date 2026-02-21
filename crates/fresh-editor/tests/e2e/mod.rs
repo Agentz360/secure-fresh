@@ -21,6 +21,8 @@ pub mod explorer_menu;
 pub mod file_browser;
 pub mod file_explorer;
 pub mod file_permissions;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod horizontal_scrollbar;
 pub mod indent_dedent;
 pub mod keybinding_editor;
@@ -37,6 +39,8 @@ pub mod lsp_completion_french_locale;
 pub mod lsp_completion_popup_behavior;
 pub mod lsp_config;
 pub mod lsp_order;
+pub mod lsp_publish_diagnostics_capability;
+pub mod lsp_toggle_desync;
 pub mod macros;
 pub mod margin;
 pub mod markdown_compose;

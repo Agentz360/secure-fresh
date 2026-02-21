@@ -260,7 +260,7 @@ type BufferInfo = {
 	view_mode: string;
 	/**
 	* True if any split showing this buffer has compose mode enabled.
-	* Plugins should use this (not view_mode) to decide whether to maintain
+	* Plugins should use this (not `view_mode`) to decide whether to maintain
 	* decorations, since decorations live on the buffer and are filtered
 	* per-split at render time.
 	*/
@@ -835,6 +835,18 @@ interface EditorAPI {
 	* Check if path is absolute
 	*/
 	pathIsAbsolute(path: string): boolean;
+	/**
+	* Convert a file:// URI to a local file path.
+	* Handles percent-decoding and Windows drive letters.
+	* Returns an empty string if the URI is not a valid file URI.
+	*/
+	fileUriToPath(uri: string): string;
+	/**
+	* Convert a local file path to a file:// URI.
+	* Handles Windows drive letters and special characters.
+	* Returns an empty string if the path cannot be converted.
+	*/
+	pathToFileUri(path: string): string;
 	/**
 	* Get the UTF-8 byte length of a JavaScript string.
 	* 

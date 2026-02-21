@@ -76,6 +76,12 @@ runtime = [
     "dep:open",
 
 ]
+# GUI mode - native window with GPU-accelerated rendering via wgpu
+# All windowing/GPU dependencies live in the fresh-gui crate.
+gui = [
+    "runtime",
+    "dep:fresh-gui",
+]
 # Schema-only feature for minimal builds (just schema generation)
 schema-only = []
 # WASM browser build - shared editor core without native dependencies
@@ -174,6 +180,9 @@ include_dir = { version = "0.7", optional = true }
 tempfile = { version = "3.24", optional = true }
 trash = { version = "5.2.5", optional = true }
 open = { version = "5.3", optional = true }
+
+# GUI mode — all windowing/GPU deps are encapsulated in fresh-gui
+fresh-gui = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = "1.9"

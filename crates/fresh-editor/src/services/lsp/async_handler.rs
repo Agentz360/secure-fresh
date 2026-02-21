@@ -18,13 +18,13 @@ use crate::services::async_bridge::{
 use crate::services::process_limits::ProcessLimits;
 use lsp_types::{
     notification::{
-        DidChangeTextDocument, DidOpenTextDocument, DidSaveTextDocument, Initialized, Notification,
-        PublishDiagnostics,
+        DidChangeTextDocument, DidCloseTextDocument, DidOpenTextDocument, DidSaveTextDocument,
+        Initialized, Notification, PublishDiagnostics,
     },
     request::{Initialize, Request},
-    ClientCapabilities, DidChangeTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, InitializeParams, InitializeResult, InitializedParams,
-    PublishDiagnosticsParams, SemanticTokenModifier, SemanticTokenType,
+    ClientCapabilities, DidChangeTextDocumentParams, DidCloseTextDocumentParams,
+    DidOpenTextDocumentParams, DidSaveTextDocumentParams, InitializeParams, InitializeResult,
+    InitializedParams, PublishDiagnosticsParams, SemanticTokenModifier, SemanticTokenType,
     SemanticTokensClientCapabilities, SemanticTokensClientCapabilitiesRequests,
     SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, TextDocumentContentChangeEvent,
@@ -200,8 +200,13 @@ impl LspClientState {
 /// Create common LSP client capabilities with workDoneProgress support
 fn create_client_capabilities() -> ClientCapabilities {
     use lsp_types::{
-        GeneralClientCapabilities, RenameClientCapabilities, TextDocumentClientCapabilities,
-        WorkspaceClientCapabilities, WorkspaceEditClientCapabilities,
+        CodeActionClientCapabilities, CompletionClientCapabilities, DiagnosticClientCapabilities,
+        DiagnosticTag, DynamicRegistrationClientCapabilities, GeneralClientCapabilities,
+        GotoCapability, HoverClientCapabilities, InlayHintClientCapabilities, MarkupKind,
+        PublishDiagnosticsClientCapabilities, RenameClientCapabilities,
+        SignatureHelpClientCapabilities, TagSupport, TextDocumentClientCapabilities,
+        TextDocumentSyncClientCapabilities, WorkspaceClientCapabilities,
+        WorkspaceEditClientCapabilities,
     };
 
     ClientCapabilities {
@@ -218,10 +223,47 @@ fn create_client_capabilities() -> ClientCapabilities {
             ..Default::default()
         }),
         text_document: Some(TextDocumentClientCapabilities {
+            synchronization: Some(TextDocumentSyncClientCapabilities {
+                did_save: Some(true),
+                ..Default::default()
+            }),
+            completion: Some(CompletionClientCapabilities {
+                ..Default::default()
+            }),
+            hover: Some(HoverClientCapabilities {
+                content_format: Some(vec![MarkupKind::Markdown, MarkupKind::PlainText]),
+                ..Default::default()
+            }),
+            signature_help: Some(SignatureHelpClientCapabilities {
+                ..Default::default()
+            }),
+            definition: Some(GotoCapability {
+                link_support: Some(true),
+                ..Default::default()
+            }),
+            references: Some(DynamicRegistrationClientCapabilities::default()),
+            code_action: Some(CodeActionClientCapabilities {
+                ..Default::default()
+            }),
             rename: Some(RenameClientCapabilities {
                 dynamic_registration: Some(true),
                 prepare_support: Some(true),
                 honors_change_annotations: Some(true),
+                ..Default::default()
+            }),
+            publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
+                related_information: Some(true),
+                tag_support: Some(TagSupport {
+                    value_set: vec![DiagnosticTag::UNNECESSARY, DiagnosticTag::DEPRECATED],
+                }),
+                version_support: Some(true),
+                code_description_support: Some(true),
+                data_support: Some(true),
+            }),
+            inlay_hint: Some(InlayHintClientCapabilities {
+                ..Default::default()
+            }),
+            diagnostic: Some(DiagnosticClientCapabilities {
                 ..Default::default()
             }),
             semantic_tokens: Some(SemanticTokensClientCapabilities {
@@ -348,6 +390,9 @@ enum LspCommand {
         uri: Uri,
         content_changes: Vec<TextDocumentContentChangeEvent>,
     },
+
+    /// Notify document closed
+    DidClose { uri: Uri },
 
     /// Notify document saved
     DidSave { uri: Uri, text: Option<String> },
@@ -538,6 +583,10 @@ impl LspState {
                     let _ = self
                         .handle_did_change_sequential(uri, content_changes, pending)
                         .await;
+                }
+                LspCommand::DidClose { uri } => {
+                    tracing::info!("Replaying DidClose for {}", uri.as_str());
+                    let _ = self.handle_did_close(uri).await;
                 }
                 LspCommand::DidSave { uri, text } => {
                     tracing::info!("Replaying DidSave for {}", uri.as_str());
@@ -879,6 +928,31 @@ impl LspState {
         };
 
         self.send_notification::<DidSaveTextDocument>(params).await
+    }
+
+    /// Handle did_close command
+    async fn handle_did_close(&mut self, uri: Uri) -> Result<(), String> {
+        let path = PathBuf::from(uri.path().as_str());
+
+        // Remove from document_versions so that a subsequent didOpen will be accepted
+        if self.document_versions.remove(&path).is_some() {
+            tracing::info!("LSP ({}): didClose for {}", self.language, uri.as_str());
+        } else {
+            tracing::debug!(
+                "LSP ({}): didClose for {} but document was not tracked",
+                self.language,
+                uri.as_str()
+            );
+        }
+
+        // Also remove from pending_opens
+        self.pending_opens.remove(&path);
+
+        let params = DidCloseTextDocumentParams {
+            text_document: TextDocumentIdentifier { uri },
+        };
+
+        self.send_notification::<DidCloseTextDocument>(params).await
     }
 
     /// Handle completion request
@@ -2241,6 +2315,18 @@ impl LspTask {
                                 });
                             }
                         }
+                        LspCommand::DidClose { uri } => {
+                            if state.initialized {
+                                tracing::info!("Processing DidClose for {}", uri.as_str());
+                                let _ = state.handle_did_close(uri).await;
+                            } else {
+                                tracing::trace!(
+                                    "Queueing DidClose for {} until initialization completes",
+                                    uri.as_str()
+                                );
+                                pending_commands.push(LspCommand::DidClose { uri });
+                            }
+                        }
                         LspCommand::DidSave { uri, text } => {
                             if state.initialized {
                                 tracing::info!("Processing DidSave for {}", uri.as_str());
@@ -3276,6 +3362,13 @@ impl LspHandle {
                 content_changes,
             })
             .map_err(|_| "Failed to send did_change command".to_string())
+    }
+
+    /// Send didClose notification
+    pub fn did_close(&self, uri: Uri) -> Result<(), String> {
+        self.command_tx
+            .try_send(LspCommand::DidClose { uri })
+            .map_err(|_| "Failed to send did_close command".to_string())
     }
 
     /// Send didSave notification

@@ -295,10 +295,6 @@ impl ShadowModel {
         }
     }
 
-    fn to_string(&self) -> String {
-        String::from_utf8_lossy(&self.content).to_string()
-    }
-
     fn len(&self) -> usize {
         self.content.len()
     }
@@ -309,6 +305,12 @@ impl ShadowModel {
         } else {
             self.content.iter().filter(|&&b| b == b'\n').count() + 1
         }
+    }
+}
+
+impl std::fmt::Display for ShadowModel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", String::from_utf8_lossy(&self.content))
     }
 }
 
@@ -336,6 +338,7 @@ impl TextBufferSUT {
         }
     }
 
+    #[allow(dead_code)]
     fn load_from_file(
         path: &std::path::Path,
         fs: Arc<ConfigurableFileSystem>,
@@ -369,7 +372,7 @@ impl TextBufferSUT {
         self.buffer.save_to_file(path)
     }
 
-    fn to_string(&self) -> String {
+    fn content_string(&self) -> String {
         self.buffer
             .to_string()
             .expect("Buffer content should be available")
@@ -454,6 +457,7 @@ impl TestContext {
         Self::with_full_config(content, true, 0)
     }
 
+    #[allow(dead_code)]
     fn with_config(content: Vec<u8>, simulate_owner: bool) -> Self {
         Self::with_full_config(content, simulate_owner, 0)
     }
@@ -608,7 +612,7 @@ impl TestContext {
                 .get_all_text()
                 .map_err(|e| format!("Step {}: Failed to get SUT content: {}", self.step, e))?
         } else {
-            self.sut.to_string().into_bytes()
+            self.sut.content_string().into_bytes()
         };
 
         if model_content != sut_content {
@@ -918,7 +922,7 @@ fn test_replace_content() {
     .unwrap();
 
     assert_eq!(ctx.model.to_string(), "completely new");
-    assert_eq!(ctx.sut.to_string(), "completely new");
+    assert_eq!(ctx.sut.content_string(), "completely new");
 }
 
 #[test]

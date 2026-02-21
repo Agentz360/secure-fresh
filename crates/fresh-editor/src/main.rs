@@ -130,6 +130,11 @@ struct Cli {
     /// [deprecated: use `fresh init`]
     #[arg(long, hide = true, value_name = "TYPE")]
     init: Option<Option<String>>,
+
+    /// Launch in GUI mode (native window with GPU rendering)
+    #[cfg(feature = "gui")]
+    #[arg(long)]
+    gui: bool,
 }
 
 // Internal Args struct - maps from new Cli to format used by rest of codebase
@@ -157,6 +162,9 @@ struct Args {
     kill: Option<Option<String>>,
     /// Open files in a session without attaching (session_name, files)
     open_files_in_session: Option<(Option<String>, Vec<String>)>,
+    /// Launch in GUI mode
+    #[cfg(feature = "gui")]
+    gui: bool,
 }
 
 impl From<Cli> for Args {
@@ -368,6 +376,8 @@ impl From<Cli> for Args {
             session_name,
             kill,
             open_files_in_session,
+            #[cfg(feature = "gui")]
+            gui: cli.gui,
         }
     }
 }
@@ -1904,10 +1914,7 @@ fn list_sessions_command() -> AnyhowResult<()> {
         let filename = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
 
         // Look for control sockets (*.ctrl.sock)
-        if filename.ends_with(".ctrl.sock") {
-            // Extract session name by removing ".ctrl.sock" suffix
-            let name = &filename[..filename.len() - ".ctrl.sock".len()];
-
+        if let Some(name) = filename.strip_suffix(".ctrl.sock") {
             // Get socket paths for this session to check if server is alive
             let socket_paths = SocketPaths::for_session_name(name)?;
 
@@ -2408,20 +2415,6 @@ fn print_deprecation_warnings(cli: &Cli) {
 }
 
 fn main() -> AnyhowResult<()> {
-    // On Windows, run on a thread with larger stack size to handle rust-i18n's generated code
-    // (1100+ translation keys cause stack overflow with default 1-2 MB stack on Windows)
-    #[cfg(target_os = "windows")]
-    {
-        const STACK_SIZE: usize = 8 * 1024 * 1024; // 8 MB
-        std::thread::Builder::new()
-            .stack_size(STACK_SIZE)
-            .spawn(real_main)
-            .expect("Failed to spawn main thread")
-            .join()
-            .expect("Main thread panicked")
-    }
-
-    #[cfg(not(target_os = "windows"))]
     real_main()
 }
 
@@ -2512,6 +2505,19 @@ fn real_main() -> AnyhowResult<()> {
     // Handle --attach: connect to existing session
     if args.attach {
         return run_attach_command(&args);
+    }
+
+    // Handle --gui: launch in native window mode (no terminal setup needed)
+    #[cfg(feature = "gui")]
+    if args.gui {
+        return fresh::gui::run_gui(
+            &args.files,
+            args.no_plugins,
+            args.config.as_ref(),
+            args.locale.as_deref(),
+            args.no_session,
+            args.log_file.as_ref(),
+        );
     }
 
     let SetupState {
@@ -2733,54 +2739,11 @@ where
     let mut pending_event: Option<CrosstermEvent> = None;
 
     loop {
-        // Process async messages and poll for file changes (auto-revert, file tree)
-        if editor.process_async_messages() {
-            needs_render = true;
-        }
-
-        // Process pending file opens from CLI arguments
-        // This runs after the first render, ensuring files go through the same
-        // code path as interactive file opens (with proper UI prompts for errors)
-        if editor.process_pending_file_opens() {
-            needs_render = true;
-        }
-
-        // Check mouse hover timer for LSP hover requests
-        if editor.check_mouse_hover_timer() {
-            needs_render = true;
-        }
-
-        // Check semantic highlight debounce timer
-        if editor.check_semantic_highlight_timer() {
-            needs_render = true;
-        }
-
-        // Check completion trigger timer (debounced quick suggestions)
-        if editor.check_completion_trigger_timer() {
-            needs_render = true;
-        }
-
-        // Check for warnings and open warning log if any occurred
-        if editor.check_warning_log() {
-            needs_render = true;
-        }
-
-        // Poll stdin streaming progress (if active)
-        if editor.poll_stdin_streaming() {
-            needs_render = true;
-        }
-
-        if let Err(e) = editor.auto_recovery_save_dirty_buffers() {
-            tracing::debug!("Auto-recovery-save error: {}", e);
-        }
-
-        if let Err(e) = editor.auto_save_persistent_buffers() {
-            tracing::debug!("Auto-save (disk) error: {}", e);
-        }
-
-        // Handle hard redraw requests (e.g. after returning from sudo)
-        if editor.take_full_redraw_request() {
+        // Run shared per-tick housekeeping (async messages, timers, auto-save, etc.)
+        if fresh::app::editor_tick(editor, || {
             terminal.clear()?;
+            Ok(())
+        })? {
             needs_render = true;
         }
 

@@ -1173,6 +1173,26 @@ impl JsEditorApi {
         Path::new(&path).is_absolute()
     }
 
+    /// Convert a file:// URI to a local file path.
+    /// Handles percent-decoding and Windows drive letters.
+    /// Returns an empty string if the URI is not a valid file URI.
+    pub fn file_uri_to_path(&self, uri: String) -> String {
+        url::Url::parse(&uri)
+            .ok()
+            .and_then(|u| u.to_file_path().ok())
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Convert a local file path to a file:// URI.
+    /// Handles Windows drive letters and special characters.
+    /// Returns an empty string if the path cannot be converted.
+    pub fn path_to_file_uri(&self, path: String) -> String {
+        url::Url::from_file_path(&path)
+            .map(|u| u.to_string())
+            .unwrap_or_default()
+    }
+
     /// Get the UTF-8 byte length of a JavaScript string.
     ///
     /// JS strings are UTF-16 internally, so `str.length` returns the number of
@@ -4691,6 +4711,101 @@ mod tests {
                 assert!(global.get::<_, bool>("_isAbsolute").unwrap());
                 assert!(!global.get::<_, bool>("_isRelative").unwrap());
                 assert_eq!(global.get::<_, String>("_joined").unwrap(), "/foo/bar/baz");
+            });
+    }
+
+    #[test]
+    fn test_file_uri_to_path_and_back() {
+        let (mut backend, _rx) = create_test_backend();
+
+        // Test Unix-style paths
+        #[cfg(not(windows))]
+        let js_code = r#"
+            const editor = getEditor();
+            // Basic file URI to path
+            globalThis._path1 = editor.fileUriToPath("file:///home/user/file.txt");
+            // Percent-encoded characters
+            globalThis._path2 = editor.fileUriToPath("file:///home/user/my%20file.txt");
+            // Invalid URI returns empty string
+            globalThis._path3 = editor.fileUriToPath("not-a-uri");
+            // Path to file URI
+            globalThis._uri1 = editor.pathToFileUri("/home/user/file.txt");
+            // Round-trip
+            globalThis._roundtrip = editor.fileUriToPath(
+                editor.pathToFileUri("/home/user/file.txt")
+            );
+        "#;
+
+        #[cfg(windows)]
+        let js_code = r#"
+            const editor = getEditor();
+            // Windows URI with encoded colon (the bug from issue #1071)
+            globalThis._path1 = editor.fileUriToPath("file:///C%3A/Users/admin/Repos/file.cs");
+            // Windows URI with normal colon
+            globalThis._path2 = editor.fileUriToPath("file:///C:/Users/admin/Repos/file.cs");
+            // Invalid URI returns empty string
+            globalThis._path3 = editor.fileUriToPath("not-a-uri");
+            // Path to file URI
+            globalThis._uri1 = editor.pathToFileUri("C:\\Users\\admin\\Repos\\file.cs");
+            // Round-trip
+            globalThis._roundtrip = editor.fileUriToPath(
+                editor.pathToFileUri("C:\\Users\\admin\\Repos\\file.cs")
+            );
+        "#;
+
+        backend.execute_js(js_code, "test.js").unwrap();
+
+        backend
+            .plugin_contexts
+            .borrow()
+            .get("test")
+            .unwrap()
+            .clone()
+            .with(|ctx| {
+                let global = ctx.globals();
+
+                #[cfg(not(windows))]
+                {
+                    assert_eq!(
+                        global.get::<_, String>("_path1").unwrap(),
+                        "/home/user/file.txt"
+                    );
+                    assert_eq!(
+                        global.get::<_, String>("_path2").unwrap(),
+                        "/home/user/my file.txt"
+                    );
+                    assert_eq!(global.get::<_, String>("_path3").unwrap(), "");
+                    assert_eq!(
+                        global.get::<_, String>("_uri1").unwrap(),
+                        "file:///home/user/file.txt"
+                    );
+                    assert_eq!(
+                        global.get::<_, String>("_roundtrip").unwrap(),
+                        "/home/user/file.txt"
+                    );
+                }
+
+                #[cfg(windows)]
+                {
+                    // Issue #1071: encoded colon must be decoded to proper Windows path
+                    assert_eq!(
+                        global.get::<_, String>("_path1").unwrap(),
+                        "C:\\Users\\admin\\Repos\\file.cs"
+                    );
+                    assert_eq!(
+                        global.get::<_, String>("_path2").unwrap(),
+                        "C:\\Users\\admin\\Repos\\file.cs"
+                    );
+                    assert_eq!(global.get::<_, String>("_path3").unwrap(), "");
+                    assert_eq!(
+                        global.get::<_, String>("_uri1").unwrap(),
+                        "file:///C:/Users/admin/Repos/file.cs"
+                    );
+                    assert_eq!(
+                        global.get::<_, String>("_roundtrip").unwrap(),
+                        "C:\\Users\\admin\\Repos\\file.cs"
+                    );
+                }
             });
     }
 
