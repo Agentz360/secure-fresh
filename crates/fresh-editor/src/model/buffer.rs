@@ -2546,6 +2546,23 @@ impl TextBuffer {
             insert_delta += bytes;
         }
 
+        // Path-copy insert/delete may split Stored leaves whose data is
+        // Unloaded, producing fragments with line_feed_cnt = None
+        // (compute_line_feeds_static can't read unloaded data). Fix them up
+        // by scanning any remaining None leaves.
+        let leaves = tree.get_leaves();
+        let mut fixups: Vec<(usize, usize)> = Vec::new();
+        for (idx, leaf) in leaves.iter().enumerate() {
+            if leaf.line_feed_cnt.is_none() {
+                if let Ok(count) = self.scan_leaf(leaf) {
+                    fixups.push((idx, count));
+                }
+            }
+        }
+        if !fixups.is_empty() {
+            tree.update_leaf_line_feeds(&fixups);
+        }
+
         self.piece_tree = tree;
         self.line_feeds_scanned = true;
     }
@@ -5451,9 +5468,17 @@ mod tests {
         #[test]
         fn test_no_edits_arc_ptr_eq() {
             let content = make_content(2 * 1024 * 1024);
+            let expected_lf = content.iter().filter(|&&b| b == b'\n').count();
             let mut buf = large_file_buffer(&content);
+
+            // Before scan, line_count should be None (large file, no indexing).
+            assert!(buf.line_count().is_none());
+
             let updates = scan_line_feeds(&mut buf);
             buf.rebuild_with_pristine_saved_root(&updates);
+
+            // After rebuild, line_count must be Some (exact).
+            assert_eq!(buf.line_count(), Some(expected_lf + 1));
 
             // After rebuild with no edits, roots should be identical (Arc::ptr_eq).
             assert!(Arc::ptr_eq(&buf.saved_root, &buf.piece_tree.root()));
@@ -5480,6 +5505,10 @@ mod tests {
             let mut expected = content.clone();
             expected.splice(insert_offset..insert_offset, insert_text.iter().copied());
             assert_eq!(buf.get_all_text().unwrap(), expected);
+
+            // line_count must be Some (exact) after rebuild, even with edits.
+            let expected_lf = expected.iter().filter(|&&b| b == b'\n').count();
+            assert_eq!(buf.line_count(), Some(expected_lf + 1));
 
             // Diff should NOT be equal.
             let diff = buf.diff_since_saved();
@@ -5582,6 +5611,94 @@ mod tests {
             let text_after = buf.get_all_text().unwrap();
 
             assert_eq!(text_before, text_after);
+        }
+
+        /// Create a large-file-mode TextBuffer backed by an actual file on disk
+        /// (Unloaded buffer), matching the real `load_from_file` code path.
+        fn large_file_buffer_unloaded(path: &std::path::Path, file_size: usize) -> TextBuffer {
+            let fs: Arc<dyn crate::model::filesystem::FileSystem + Send + Sync> =
+                Arc::new(crate::model::filesystem::StdFileSystem);
+            let buffer = crate::model::piece_tree::StringBuffer::new_unloaded(
+                0,
+                path.to_path_buf(),
+                0,
+                file_size,
+            );
+            let piece_tree = if file_size > 0 {
+                crate::model::piece_tree::PieceTree::new(BufferLocation::Stored(0), 0, file_size, None)
+            } else {
+                crate::model::piece_tree::PieceTree::empty()
+            };
+            let saved_root = piece_tree.root();
+            TextBuffer {
+                fs,
+                piece_tree,
+                saved_root,
+                buffers: vec![buffer],
+                next_buffer_id: 1,
+                file_path: Some(path.to_path_buf()),
+                modified: false,
+                recovery_pending: false,
+                large_file: true,
+                line_feeds_scanned: false,
+                is_binary: false,
+                line_ending: LineEnding::LF,
+                original_line_ending: LineEnding::LF,
+                encoding: Encoding::Utf8,
+                original_encoding: Encoding::Utf8,
+                saved_file_size: Some(file_size),
+                version: 0,
+            }
+        }
+
+        #[test]
+        fn test_unloaded_buffer_no_edits_line_count() {
+            let content = make_content(2 * 1024 * 1024);
+            let expected_lf = content.iter().filter(|&&b| b == b'\n').count();
+
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(tmp.path(), &content).unwrap();
+            let mut buf = large_file_buffer_unloaded(tmp.path(), content.len());
+
+            assert!(buf.line_count().is_none(), "before scan, line_count should be None");
+
+            let updates = scan_line_feeds(&mut buf);
+            buf.rebuild_with_pristine_saved_root(&updates);
+
+            assert_eq!(
+                buf.line_count(),
+                Some(expected_lf + 1),
+                "after rebuild, line_count must be exact"
+            );
+            assert!(buf.line_feeds_scanned);
+        }
+
+        #[test]
+        fn test_unloaded_buffer_with_edits_line_count() {
+            let content = make_content(2 * 1024 * 1024);
+
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(tmp.path(), &content).unwrap();
+            let mut buf = large_file_buffer_unloaded(tmp.path(), content.len());
+
+            let updates = scan_line_feeds(&mut buf);
+
+            // Insert text in the middle (creates an Added piece).
+            let insert_text = b"INSERTED\n";
+            buf.insert_bytes(1_000_000, insert_text.to_vec());
+
+            buf.rebuild_with_pristine_saved_root(&updates);
+
+            let mut expected = content.clone();
+            expected.splice(1_000_000..1_000_000, insert_text.iter().copied());
+            let expected_lf = expected.iter().filter(|&&b| b == b'\n').count();
+
+            assert_eq!(
+                buf.line_count(),
+                Some(expected_lf + 1),
+                "after rebuild with edits, line_count must be exact"
+            );
+            assert!(buf.line_feeds_scanned);
         }
     }
 }
