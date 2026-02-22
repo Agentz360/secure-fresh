@@ -808,13 +808,11 @@ pub struct PendingFileOpen {
 /// State for an incremental line-feed scan (non-blocking Go to Line)
 struct LineScanState {
     buffer_id: BufferId,
-    /// Original leaves from the piece tree (needed for `scan_chunk`).
+    /// Snapshot of the (pre-split) leaves, needed for `scan_leaf`.
     leaves: Vec<crate::model::piece_tree::LeafData>,
-    /// Chunk-sized work items (each ≤ LOAD_CHUNK_SIZE bytes).
+    /// One work item per leaf (each ≤ LOAD_CHUNK_SIZE bytes).
     chunks: Vec<crate::model::buffer::LineScanChunk>,
     next_chunk: usize,
-    /// Running line-feed count for the current leaf (accumulated across chunks).
-    leaf_lf_count: usize,
     total_bytes: usize,
     scanned_bytes: usize,
     /// Completed per-leaf updates: (leaf_index, lf_count).

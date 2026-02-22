@@ -2255,8 +2255,8 @@ impl Editor {
         true
     }
 
-    /// Process chunks until 50ms have elapsed, then yield for a render.
-    /// Each chunk is at most LOAD_CHUNK_SIZE (1 MB), so individual I/O calls are fast.
+    /// Process leaves until 50ms have elapsed, then yield for a render.
+    /// Each leaf is at most LOAD_CHUNK_SIZE (1 MB), so individual I/O calls are fast.
     fn process_line_scan_batch(&mut self, buffer_id: BufferId) -> std::io::Result<()> {
         let budget = std::time::Duration::from_millis(50);
         let deadline = self.time_source.now() + budget;
@@ -2271,15 +2271,9 @@ impl Editor {
             if !chunk.already_known {
                 if let Some(state) = state {
                     let leaf = &scan.leaves[chunk.leaf_index];
-                    let count = state.buffer.scan_chunk(leaf, &chunk)?;
-                    scan.leaf_lf_count += count;
+                    let count = state.buffer.scan_leaf(leaf)?;
+                    scan.updates.push((chunk.leaf_index, count));
                 }
-            }
-
-            // When we finish the last chunk of a leaf, record the total
-            if chunk.is_last_chunk && !chunk.already_known {
-                scan.updates.push((chunk.leaf_index, scan.leaf_lf_count));
-                scan.leaf_lf_count = 0;
             }
 
             if self.time_source.now() >= deadline {

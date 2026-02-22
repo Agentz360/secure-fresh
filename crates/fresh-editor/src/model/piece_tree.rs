@@ -1428,6 +1428,40 @@ impl PieceTree {
         leaves
     }
 
+    /// Split any leaves larger than `max_bytes` into smaller pieces.
+    ///
+    /// This is a bulk operation that collects all leaves, subdivides oversized
+    /// ones, and rebuilds the tree once.  Line-feed counts on the new sub-leaves
+    /// are set to `None` (the caller is expected to fill them in via scanning).
+    pub fn split_leaves_to_chunk_size(&mut self, max_bytes: usize) {
+        let old_leaves = self.get_leaves();
+        let mut new_leaves = Vec::with_capacity(old_leaves.len());
+        let mut changed = false;
+
+        for leaf in &old_leaves {
+            if leaf.bytes <= max_bytes {
+                new_leaves.push(*leaf);
+            } else {
+                changed = true;
+                let mut off = 0;
+                while off < leaf.bytes {
+                    let len = max_bytes.min(leaf.bytes - off);
+                    new_leaves.push(LeafData::new(
+                        leaf.location,
+                        leaf.offset + off,
+                        len,
+                        None,
+                    ));
+                    off += len;
+                }
+            }
+        }
+
+        if changed {
+            self.root = Self::build_balanced(&new_leaves);
+        }
+    }
+
     /// Convert byte offset to line/column position using tree's line metadata
     pub fn offset_to_position(
         &self,
