@@ -23,8 +23,11 @@
 /// └────────────────────┘      └──────────┴─────────┘
 ///  (horizontal split)          (mixed splits)
 /// ```
+use crate::model::buffer::Buffer;
 use crate::model::cursor::Cursors;
 use crate::model::event::{BufferId, ContainerId, LeafId, SplitDirection, SplitId};
+use crate::model::marker::MarkerList;
+use crate::view::folding::FoldManager;
 use crate::view::ui::view_pipeline::Layout;
 use crate::view::viewport::Viewport;
 use crate::{services::plugins::api::ViewTransformPayload, state::ViewMode};
@@ -64,7 +67,7 @@ pub enum SplitNode {
 /// split's `keyed_states` map. This ensures that switching buffers within a split
 /// preserves cursor position, scroll state, view mode, and compose settings
 /// independently for each buffer.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct BufferViewState {
     /// Independent cursor set (supports multi-cursor)
     pub cursors: Cursors,
@@ -102,9 +105,28 @@ pub struct BufferViewState {
     /// Plugins can store per-buffer-per-split state here via the `setViewState`/`getViewState` API.
     /// Persisted across sessions via workspace serialization.
     pub plugin_state: std::collections::HashMap<String, serde_json::Value>,
+
+    /// Collapsed folding ranges for this buffer/view.
+    pub folds: FoldManager,
 }
 
 impl BufferViewState {
+    /// Resolve fold ranges and ensure the primary cursor is visible.
+    ///
+    /// This is the preferred entry point for all non-rendering callers — it
+    /// resolves hidden fold byte ranges from the marker list and passes them
+    /// to `viewport.ensure_visible` so that line counting skips folded lines.
+    pub fn ensure_cursor_visible(&mut self, buffer: &mut Buffer, marker_list: &MarkerList) {
+        let hidden: Vec<(usize, usize)> = self
+            .folds
+            .resolved_ranges(buffer, marker_list)
+            .into_iter()
+            .map(|r| (r.start_byte, r.end_byte))
+            .collect();
+        let cursor = *self.cursors.primary();
+        self.viewport.ensure_visible(buffer, &cursor, &hidden);
+    }
+
     /// Create a new buffer view state with defaults
     pub fn new(width: u16, height: u16) -> Self {
         Self {
@@ -118,6 +140,26 @@ impl BufferViewState {
             view_transform: None,
             view_transform_stale: false,
             plugin_state: std::collections::HashMap::new(),
+            folds: FoldManager::new(),
+        }
+    }
+}
+
+impl Clone for BufferViewState {
+    fn clone(&self) -> Self {
+        Self {
+            cursors: self.cursors.clone(),
+            viewport: self.viewport.clone(),
+            view_mode: self.view_mode.clone(),
+            compose_width: self.compose_width,
+            compose_column_guides: self.compose_column_guides.clone(),
+            rulers: self.rulers.clone(),
+            show_line_numbers: self.show_line_numbers,
+            view_transform: self.view_transform.clone(),
+            view_transform_stale: self.view_transform_stale,
+            plugin_state: self.plugin_state.clone(),
+            // Fold markers are per-view; clones start with no folded ranges.
+            folds: FoldManager::new(),
         }
     }
 }

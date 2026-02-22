@@ -554,6 +554,13 @@ static COMMAND_DEFS: &[CommandDef] = &[
         custom_contexts: &[],
     },
     CommandDef {
+        name_key: "cmd.toggle_fold",
+        desc_key: "cmd.toggle_fold_desc",
+        action: || Action::ToggleFold,
+        contexts: &[Normal],
+        custom_contexts: &[],
+    },
+    CommandDef {
         name_key: "cmd.debug_toggle_highlight",
         desc_key: "cmd.debug_toggle_highlight_desc",
         action: || Action::ToggleDebugHighlights,

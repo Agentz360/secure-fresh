@@ -468,6 +468,7 @@ impl OverlayColorSpec {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 #[ts(export, rename_all = "camelCase")]
+#[derive(Default)]
 pub struct OverlayOptions {
     /// Foreground color - RGB array or theme key string
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -502,21 +503,6 @@ pub struct OverlayOptions {
     /// that support OSC 8 escape sequences.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-}
-
-impl Default for OverlayOptions {
-    fn default() -> Self {
-        Self {
-            fg: None,
-            bg: None,
-            underline: false,
-            bold: false,
-            italic: false,
-            strikethrough: false,
-            extend_to_line_end: false,
-            url: None,
-        }
-    }
 }
 
 // ============================================================================
@@ -737,6 +723,10 @@ pub struct EditorStateSnapshot {
     /// Maps file URI string to Vec of diagnostics for that file
     #[ts(type = "any")]
     pub diagnostics: HashMap<String, Vec<lsp_types::Diagnostic>>,
+    /// LSP folding ranges per file URI
+    /// Maps file URI string to Vec of folding ranges for that file
+    #[ts(type = "any")]
+    pub folding_ranges: HashMap<String, Vec<lsp_types::FoldingRange>>,
     /// Runtime config as serde_json::Value (merged user config + defaults)
     /// This is the runtime config, not just the user's config file
     #[ts(type = "any")]
@@ -778,6 +768,7 @@ impl EditorStateSnapshot {
             clipboard: String::new(),
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             diagnostics: HashMap::new(),
+            folding_ranges: HashMap::new(),
             config: serde_json::Value::Null,
             user_config: serde_json::Value::Null,
             editor_mode: None,
@@ -1653,10 +1644,7 @@ impl PluginCommand {
     /// Extract the enum variant name from the Debug representation.
     pub fn debug_variant_name(&self) -> String {
         let dbg = format!("{:?}", self);
-        dbg.split(|ch: char| ch == ' ' || ch == '{' || ch == '(')
-            .next()
-            .unwrap_or("?")
-            .to_string()
+        dbg.split([' ', '{', '(']).next().unwrap_or("?").to_string()
     }
 }
 

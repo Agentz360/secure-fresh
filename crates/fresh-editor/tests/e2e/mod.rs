@@ -21,6 +21,7 @@ pub mod explorer_menu;
 pub mod file_browser;
 pub mod file_explorer;
 pub mod file_permissions;
+pub mod folding;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod horizontal_scrollbar;

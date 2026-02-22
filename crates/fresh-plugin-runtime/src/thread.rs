@@ -880,14 +880,13 @@ async fn run_hook_internal_rc(
     hook_name: &str,
     args: &HookArgs,
 ) -> Result<()> {
-    // Convert HookArgs to JSON using hook_args_to_json which produces flat JSON
+    // Convert HookArgs to serde_json::Value using hook_args_to_json which produces flat JSON
     // (not enum-tagged JSON from serde's default Serialize)
     let json_start = std::time::Instant::now();
-    let json_string = fresh_core::hooks::hook_args_to_json(args)?;
-    let json_data: serde_json::Value = serde_json::from_str(&json_string)?;
+    let json_data = fresh_core::hooks::hook_args_to_json(args)?;
     tracing::trace!(
         hook = hook_name,
-        json_ms = json_start.elapsed().as_micros(),
+        json_us = json_start.elapsed().as_micros(),
         "hook args serialized"
     );
 
@@ -1328,7 +1327,7 @@ mod tests {
     fn test_hook_args_to_json_editor_initialized() {
         let args = HookArgs::EditorInitialized;
         let json = hook_args_to_json(&args).unwrap();
-        assert_eq!(json, "{}");
+        assert_eq!(json, serde_json::json!({}));
     }
 
     #[test]
@@ -1338,8 +1337,7 @@ mod tests {
             input: "test".to_string(),
         };
         let json = hook_args_to_json(&args).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed["prompt_type"], "search");
-        assert_eq!(parsed["input"], "test");
+        assert_eq!(json["prompt_type"], "search");
+        assert_eq!(json["input"], "test");
     }
 }

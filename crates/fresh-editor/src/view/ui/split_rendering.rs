@@ -11,13 +11,15 @@ use crate::primitives::ansi::AnsiParser;
 use crate::primitives::ansi_background::AnsiBackground;
 use crate::primitives::display_width::char_width;
 use crate::state::{EditorState, ViewMode};
+use crate::view::folding::FoldManager;
 use crate::view::split::SplitManager;
+use crate::view::theme::color_to_rgb;
 use crate::view::ui::tabs::TabsRenderer;
 use crate::view::ui::view_pipeline::{
     should_show_line_number, LineStart, ViewLine, ViewLineIterator,
 };
 use crate::view::virtual_text::VirtualTextPosition;
-use fresh_core::api::ViewTransformPayload;
+use fresh_core::api::{ViewTokenStyle, ViewTransformPayload};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -104,6 +106,16 @@ fn debug_tag_style() -> Style {
     Style::default()
         .fg(Color::DarkGray)
         .add_modifier(Modifier::DIM)
+}
+
+fn fold_placeholder_style(theme: &crate::view::theme::Theme) -> ViewTokenStyle {
+    let fg = color_to_rgb(theme.line_number_fg).or_else(|| color_to_rgb(theme.editor_fg));
+    ViewTokenStyle {
+        fg,
+        bg: None,
+        bold: false,
+        italic: true,
+    }
 }
 
 /// Compute a dimmed version of a color for EOF tilde lines.
@@ -327,6 +339,15 @@ struct DecorationContext {
     diagnostic_lines: HashSet<usize>,
     /// Line indicators indexed by line number (highest priority indicator per line)
     line_indicators: BTreeMap<usize, crate::view::margin::LineIndicator>,
+    /// Fold indicators indexed by line number
+    fold_indicators: BTreeMap<usize, FoldIndicator>,
+    /// Collapsed fold header -> hidden line count
+    collapsed_header_hidden_lines: BTreeMap<usize, usize>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FoldIndicator {
+    collapsed: bool,
 }
 
 struct LineRenderOutput {
@@ -411,8 +432,10 @@ struct CharStyleContext<'a> {
     is_cursor: bool,
     is_selected: bool,
     theme: &'a crate::view::theme::Theme,
-    highlight_spans: &'a [crate::primitives::highlighter::HighlightSpan],
-    semantic_token_spans: &'a [crate::primitives::highlighter::HighlightSpan],
+    /// Pre-resolved syntax highlight color for this byte position (from cursor-based lookup)
+    highlight_color: Option<Color>,
+    /// Pre-resolved semantic token color for this byte position (from cursor-based lookup)
+    semantic_token_color: Option<Color>,
     viewport_overlays: &'a [(crate::view::overlay::Overlay, Range<usize>)],
     primary_cursor_position: usize,
     is_active: bool,
@@ -436,6 +459,8 @@ struct LeftMarginContext<'a> {
     diagnostic_lines: &'a HashSet<usize>,
     /// Pre-computed line indicators (line_num -> indicator)
     line_indicators: &'a BTreeMap<usize, crate::view::margin::LineIndicator>,
+    /// Fold indicators (line_num -> indicator)
+    fold_indicators: &'a BTreeMap<usize, FoldIndicator>,
     /// Line number where the primary cursor is located (for relative line numbers)
     cursor_line: usize,
     /// Whether to show relative line numbers
@@ -470,6 +495,26 @@ fn render_left_margin(
             line_view_map,
             "●".to_string(),
             Style::default().fg(ratatui::style::Color::Red),
+            None,
+        );
+    } else if ctx
+        .fold_indicators
+        .contains_key(&ctx.current_source_line_num)
+        && !ctx
+            .line_indicators
+            .contains_key(&ctx.current_source_line_num)
+    {
+        // Show fold indicator when no other indicator is present
+        let fold = ctx
+            .fold_indicators
+            .get(&ctx.current_source_line_num)
+            .unwrap();
+        let symbol = if fold.collapsed { "▸" } else { "▾" };
+        push_span_with_map(
+            line_spans,
+            line_view_map,
+            symbol.to_string(),
+            Style::default().fg(ctx.theme.line_number_fg),
             None,
         );
     } else if let Some(indicator) = ctx.line_indicators.get(&ctx.current_source_line_num) {
@@ -553,17 +598,33 @@ fn render_left_margin(
     }
 }
 
+/// Advance a cursor through sorted, non-overlapping spans to find the color at `byte_pos`.
+/// Returns the color if `byte_pos` falls inside a span, and advances `cursor` past any
+/// spans that end before `byte_pos` so subsequent calls are O(1) amortized.
+#[inline]
+fn span_color_at(
+    spans: &[crate::primitives::highlighter::HighlightSpan],
+    cursor: &mut usize,
+    byte_pos: usize,
+) -> Option<Color> {
+    while *cursor < spans.len() {
+        let span = &spans[*cursor];
+        if span.range.end <= byte_pos {
+            *cursor += 1;
+        } else if span.range.start > byte_pos {
+            return None;
+        } else {
+            return Some(span.color);
+        }
+    }
+    None
+}
+
 /// Compute the style for a character by layering: token -> ANSI -> syntax -> semantic -> overlays -> selection -> cursor
 fn compute_char_style(ctx: &CharStyleContext) -> CharStyleOutput {
     use crate::view::overlay::OverlayFace;
 
-    // Find highlight color for this byte position
-    let highlight_color = ctx.byte_pos.and_then(|bp| {
-        ctx.highlight_spans
-            .iter()
-            .find(|span| span.range.contains(&bp))
-            .map(|span| span.color)
-    });
+    let highlight_color = ctx.highlight_color;
 
     // Find overlays for this byte position
     let overlays: Vec<&crate::view::overlay::Overlay> = if let Some(bp) = ctx.byte_pos {
@@ -634,14 +695,8 @@ fn compute_char_style(ctx: &CharStyleContext) -> CharStyleOutput {
 
     // Apply LSP semantic token foreground color when no custom token style is set.
     if ctx.token_style.is_none() {
-        if let Some(bp) = ctx.byte_pos {
-            if let Some(token_span) = ctx
-                .semantic_token_spans
-                .iter()
-                .find(|span| span.range.contains(&bp))
-            {
-                style = style.fg(token_span.color);
-            }
+        if let Some(color) = ctx.semantic_token_color {
+            style = style.fg(color);
         }
     }
 
@@ -995,26 +1050,48 @@ impl SplitRenderer {
                 let mut viewport = viewport_clone;
 
                 // Get cursors from the split's view state
-                let default_cursors = crate::model::cursor::Cursors::new();
                 let split_cursors = split_view_states
                     .as_deref()
                     .and_then(|vs| vs.get(&split_id))
-                    .map(|vs| &vs.cursors)
-                    .unwrap_or(&default_cursors);
+                    .map(|vs| vs.cursors.clone())
+                    .unwrap_or_else(crate::model::cursor::Cursors::new);
+                // Resolve hidden fold byte ranges so ensure_visible can skip
+                // folded lines when counting distance to the cursor.
+                let hidden_ranges: Vec<(usize, usize)> = split_view_states
+                    .as_deref()
+                    .and_then(|vs| vs.get(&split_id))
+                    .map(|vs| {
+                        vs.folds
+                            .resolved_ranges(&state.buffer, &state.marker_list)
+                            .into_iter()
+                            .map(|r| (r.start_byte, r.end_byte))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
                 Self::sync_viewport_to_content(
                     &mut viewport,
                     &mut state.buffer,
-                    split_cursors,
+                    &split_cursors,
                     layout.content_rect,
+                    &hidden_ranges,
                 );
                 let view_prefs =
                     Self::resolve_view_preferences(state, split_view_states.as_deref(), split_id);
 
+                let mut empty_folds = FoldManager::new();
+                let folds = split_view_states
+                    .as_deref_mut()
+                    .and_then(|vs| vs.get_mut(&split_id))
+                    .map(|vs| &mut vs.folds)
+                    .unwrap_or(&mut empty_folds);
+
                 let split_view_mappings = Self::render_buffer_in_split(
                     frame,
                     state,
-                    split_cursors,
+                    &split_cursors,
                     &mut viewport,
+                    folds,
                     event_log_opt,
                     layout.content_rect,
                     is_active,
@@ -1208,24 +1285,44 @@ impl SplitRenderer {
             let mut viewport = viewport_clone;
 
             // Get cursors from the split's view state
-            let default_cursors = crate::model::cursor::Cursors::new();
             let split_cursors = split_view_states
                 .get(&split_id)
-                .map(|vs| &vs.cursors)
-                .unwrap_or(&default_cursors);
+                .map(|vs| vs.cursors.clone())
+                .unwrap_or_else(crate::model::cursor::Cursors::new);
+            // Resolve hidden fold byte ranges so ensure_visible can skip
+            // folded lines when counting distance to the cursor.
+            let hidden_ranges: Vec<(usize, usize)> = split_view_states
+                .get(&split_id)
+                .map(|vs| {
+                    vs.folds
+                        .resolved_ranges(&state.buffer, &state.marker_list)
+                        .into_iter()
+                        .map(|r| (r.start_byte, r.end_byte))
+                        .collect()
+                })
+                .unwrap_or_default();
+
             Self::sync_viewport_to_content(
                 &mut viewport,
                 &mut state.buffer,
-                split_cursors,
+                &split_cursors,
                 layout.content_rect,
+                &hidden_ranges,
             );
             let view_prefs =
                 Self::resolve_view_preferences(state, Some(&*split_view_states), split_id);
 
+            let mut empty_folds = FoldManager::new();
+            let folds = split_view_states
+                .get_mut(&split_id)
+                .map(|vs| &mut vs.folds)
+                .unwrap_or(&mut empty_folds);
+
             let layout_output = Self::compute_buffer_layout(
                 state,
-                split_cursors,
+                &split_cursors,
                 &mut viewport,
+                folds,
                 layout.content_rect,
                 is_active,
                 theme,
@@ -1439,6 +1536,7 @@ impl SplitRenderer {
                     // Build ViewData for this pane
                     // Need enough lines to cover from first_line to last_line
                     let lines_needed = last_line - first_line + 10;
+                    let empty_folds = FoldManager::new();
                     let view_data = Self::build_view_data(
                         source_state,
                         &viewport,
@@ -1449,6 +1547,8 @@ impl SplitRenderer {
                         content_width,
                         gutter_width,
                         &ViewMode::Source, // Composite view uses source mode
+                        &empty_folds,
+                        theme,
                     );
 
                     // Build source_line -> ViewLine index mapping
@@ -1738,6 +1838,7 @@ impl SplitRenderer {
         let mut rendered = 0usize;
         let mut current_span_text = String::new();
         let mut current_style: Option<Style> = None;
+        let mut hl_cursor = 0usize;
 
         for (char_idx, ch) in chars.iter().enumerate() {
             let char_width = char_width(*ch);
@@ -1756,13 +1857,9 @@ impl SplitRenderer {
             // Get source byte position for this character
             let byte_pos = char_source_bytes.get(char_idx).and_then(|b| *b);
 
-            // Get syntax highlight color from highlight_spans
-            let highlight_color = byte_pos.and_then(|bp| {
-                highlight_spans
-                    .iter()
-                    .find(|span| span.range.contains(&bp))
-                    .map(|span| span.color)
-            });
+            // Get syntax highlight color via cursor-based O(1) lookup
+            let highlight_color =
+                byte_pos.and_then(|bp| span_color_at(highlight_spans, &mut hl_cursor, bp));
 
             // Check if this character is in an inline diff range
             let in_inline_range = inline_ranges.iter().any(|r| r.contains(&char_idx));
@@ -1992,6 +2089,7 @@ impl SplitRenderer {
         buffer: &mut crate::model::buffer::Buffer,
         cursors: &crate::model::cursor::Cursors,
         content_rect: Rect,
+        hidden_ranges: &[(usize, usize)],
     ) {
         let size_changed =
             viewport.width != content_rect.width || viewport.height != content_rect.height;
@@ -2005,7 +2103,7 @@ impl SplitRenderer {
         // so this is safe to call unconditionally. Previously needs_sync was set by
         // EditorState.apply() but now viewport is owned by SplitViewState.
         let primary = *cursors.primary();
-        viewport.ensure_visible(buffer, &primary);
+        viewport.ensure_visible(buffer, &primary, hidden_ranges);
     }
 
     fn resolve_view_preferences(
@@ -2377,7 +2475,17 @@ impl SplitRenderer {
         content_width: usize,
         gutter_width: usize,
         view_mode: &ViewMode,
+        folds: &FoldManager,
+        theme: &crate::view::theme::Theme,
     ) -> ViewData {
+        let adjusted_visible_count = Self::fold_adjusted_visible_count(
+            &state.buffer,
+            &state.marker_list,
+            folds,
+            viewport.top_byte,
+            visible_count,
+        );
+
         // Check if buffer is binary before building tokens
         let is_binary = state.buffer.is_binary();
         let line_ending = state.buffer.line_ending();
@@ -2387,7 +2495,7 @@ impl SplitRenderer {
             &mut state.buffer,
             viewport.top_byte,
             estimated_line_length,
-            visible_count,
+            adjusted_visible_count,
             is_binary,
             line_ending,
         );
@@ -2474,8 +2582,197 @@ impl SplitRenderer {
 
         // Inject virtual lines (LineAbove/LineBelow) from VirtualTextManager
         let lines = Self::inject_virtual_lines(source_lines, state);
+        let placeholder_style = fold_placeholder_style(theme);
+        let lines = Self::apply_folding(
+            lines,
+            &state.buffer,
+            &state.marker_list,
+            folds,
+            &placeholder_style,
+        );
 
         ViewData { lines }
+    }
+
+    fn fold_adjusted_visible_count(
+        buffer: &Buffer,
+        marker_list: &crate::model::marker::MarkerList,
+        folds: &FoldManager,
+        top_byte: usize,
+        visible_count: usize,
+    ) -> usize {
+        if folds.is_empty() {
+            return visible_count;
+        }
+
+        let start_line = buffer.get_line_number(top_byte);
+        let mut total = visible_count;
+
+        let mut ranges = folds.resolved_ranges(buffer, marker_list);
+        if ranges.is_empty() {
+            return visible_count;
+        }
+        ranges.sort_by_key(|range| range.header_line);
+
+        let mut min_header_line = start_line;
+        if let Some(containing_end) = ranges
+            .iter()
+            .filter(|range| start_line >= range.start_line && start_line <= range.end_line)
+            .map(|range| range.end_line)
+            .max()
+        {
+            let hidden_remaining = containing_end.saturating_sub(start_line).saturating_add(1);
+            total = total.saturating_add(hidden_remaining);
+            min_header_line = containing_end.saturating_add(1);
+        }
+
+        let mut end_line = start_line.saturating_add(total);
+
+        for range in ranges {
+            if range.header_line < min_header_line {
+                continue;
+            }
+            if range.header_line > end_line {
+                break;
+            }
+            let hidden = range
+                .end_line
+                .saturating_sub(range.start_line)
+                .saturating_add(1);
+            total = total.saturating_add(hidden);
+            end_line = start_line.saturating_add(total);
+        }
+
+        total
+    }
+
+    fn apply_folding(
+        lines: Vec<ViewLine>,
+        buffer: &Buffer,
+        marker_list: &crate::model::marker::MarkerList,
+        folds: &FoldManager,
+        placeholder_style: &ViewTokenStyle,
+    ) -> Vec<ViewLine> {
+        if folds.is_empty() {
+            return lines;
+        }
+
+        let collapsed_ranges = folds.resolved_ranges(buffer, marker_list);
+        if collapsed_ranges.is_empty() {
+            return lines;
+        }
+
+        let collapsed_headers = folds.collapsed_headers(buffer, marker_list);
+
+        let mut next_source_line: Vec<Option<usize>> = vec![None; lines.len()];
+        let mut next_line: Option<usize> = None;
+        for (idx, line) in lines.iter().enumerate().rev() {
+            next_source_line[idx] = next_line;
+            if let Some(line_num) = Self::view_line_source_line(line, buffer) {
+                next_line = Some(line_num);
+            }
+        }
+
+        let mut filtered = Vec::with_capacity(lines.len());
+        for (idx, mut line) in lines.into_iter().enumerate() {
+            let source_line = Self::view_line_source_line(&line, buffer);
+
+            if let Some(line_num) = source_line {
+                if Self::is_hidden_line(line_num, &collapsed_ranges) {
+                    continue;
+                }
+
+                if let Some(placeholder) = collapsed_headers.get(&line_num) {
+                    // Only append placeholder on the last visual segment of the line
+                    if next_source_line[idx] != Some(line_num) {
+                        let raw_text = placeholder
+                            .as_deref()
+                            .filter(|s| !s.trim().is_empty())
+                            .unwrap_or("...");
+                        let text = if raw_text.starts_with(' ') {
+                            raw_text.to_string()
+                        } else {
+                            format!(" {}", raw_text)
+                        };
+                        Self::append_fold_placeholder(&mut line, &text, placeholder_style);
+                    }
+                }
+            } else if let Some(next_line_num) = next_source_line[idx] {
+                if Self::is_hidden_line(next_line_num, &collapsed_ranges) {
+                    continue;
+                }
+            }
+
+            filtered.push(line);
+        }
+
+        filtered
+    }
+
+    fn view_line_source_line(line: &ViewLine, buffer: &Buffer) -> Option<usize> {
+        line.char_source_bytes
+            .iter()
+            .find_map(|m| *m)
+            .map(|b| buffer.get_line_number(b))
+    }
+
+    fn is_hidden_line(line_num: usize, ranges: &[crate::view::folding::ResolvedFoldRange]) -> bool {
+        ranges
+            .iter()
+            .any(|range| line_num >= range.start_line && line_num <= range.end_line)
+    }
+
+    fn append_fold_placeholder(line: &mut ViewLine, text: &str, style: &ViewTokenStyle) {
+        if text.is_empty() {
+            return;
+        }
+
+        // If this line ends with a newline, temporarily remove it so we can insert
+        // the placeholder before the newline.
+        let mut removed_newline: Option<(char, Option<usize>, Option<ViewTokenStyle>)> = None;
+        if line.ends_with_newline {
+            if let Some(last_char) = line.text.chars().last() {
+                if last_char == '\n' {
+                    let removed = line.text.pop();
+                    if removed.is_some() {
+                        let removed_source = line.char_source_bytes.pop().unwrap_or(None);
+                        let removed_style = line.char_styles.pop().unwrap_or(None);
+                        line.char_visual_cols.pop();
+                        let width = char_width(last_char);
+                        for _ in 0..width {
+                            line.visual_to_char.pop();
+                        }
+                        removed_newline = Some((last_char, removed_source, removed_style));
+                    }
+                }
+            }
+        }
+
+        let mut col = line.visual_to_char.len();
+        for ch in text.chars() {
+            let char_idx = line.char_source_bytes.len();
+            let width = char_width(ch);
+            line.text.push(ch);
+            line.char_source_bytes.push(None);
+            line.char_styles.push(Some(style.clone()));
+            line.char_visual_cols.push(col);
+            for _ in 0..width {
+                line.visual_to_char.push(char_idx);
+            }
+            col += width;
+        }
+
+        if let Some((ch, source, style)) = removed_newline {
+            let char_idx = line.char_source_bytes.len();
+            let width = char_width(ch);
+            line.text.push(ch);
+            line.char_source_bytes.push(source);
+            line.char_styles.push(style);
+            line.char_visual_cols.push(col);
+            for _ in 0..width {
+                line.visual_to_char.push(char_idx);
+            }
+        }
     }
 
     /// Create a ViewLine from virtual text content (for LineAbove/LineBelow)
@@ -3524,6 +3821,7 @@ impl SplitRenderer {
         viewport_start: usize,
         viewport_end: usize,
         primary_cursor_position: usize,
+        folds: &FoldManager,
         theme: &crate::view::theme::Theme,
         highlight_context_bytes: usize,
         view_mode: &ViewMode,
@@ -3625,6 +3923,15 @@ impl SplitRenderer {
             |byte_offset| state.buffer.get_line_number(byte_offset),
         );
 
+        let fold_indicators =
+            Self::fold_indicators_for_viewport(state, folds, viewport_start, viewport_end);
+        let collapsed_header_hidden_lines = Self::collapsed_header_hidden_lines_for_viewport(
+            state,
+            folds,
+            viewport_start,
+            viewport_end,
+        );
+
         DecorationContext {
             highlight_spans,
             semantic_token_spans,
@@ -3632,7 +3939,80 @@ impl SplitRenderer {
             virtual_text_lookup,
             diagnostic_lines,
             line_indicators,
+            fold_indicators,
+            collapsed_header_hidden_lines,
         }
+    }
+
+    fn fold_indicators_for_viewport(
+        state: &EditorState,
+        folds: &FoldManager,
+        viewport_start: usize,
+        viewport_end: usize,
+    ) -> BTreeMap<usize, FoldIndicator> {
+        let mut indicators = BTreeMap::new();
+
+        if state.folding_ranges.is_empty() && folds.is_empty() {
+            return indicators;
+        }
+
+        let viewport_start_line = state.buffer.get_line_number(viewport_start);
+        let viewport_end_line = state.buffer.get_line_number(viewport_end);
+
+        // Collapsed headers from marker-based folds
+        let collapsed_headers = folds.collapsed_headers(&state.buffer, &state.marker_list);
+
+        for (line, _) in &collapsed_headers {
+            if *line >= viewport_start_line && *line <= viewport_end_line {
+                indicators.insert(*line, FoldIndicator { collapsed: true });
+            }
+        }
+
+        for range in &state.folding_ranges {
+            let start_line = range.start_line as usize;
+            let end_line = range.end_line as usize;
+            if end_line <= start_line {
+                continue;
+            }
+            if start_line < viewport_start_line || start_line > viewport_end_line {
+                continue;
+            }
+            indicators
+                .entry(start_line)
+                .or_insert(FoldIndicator { collapsed: false });
+        }
+
+        indicators
+    }
+
+    fn collapsed_header_hidden_lines_for_viewport(
+        state: &EditorState,
+        folds: &FoldManager,
+        viewport_start: usize,
+        viewport_end: usize,
+    ) -> BTreeMap<usize, usize> {
+        let mut map = BTreeMap::new();
+        if folds.is_empty() {
+            return map;
+        }
+
+        let viewport_start_line = state.buffer.get_line_number(viewport_start);
+        let viewport_end_line = state.buffer.get_line_number(viewport_end);
+
+        for range in folds.resolved_ranges(&state.buffer, &state.marker_list) {
+            if range.header_line < viewport_start_line || range.header_line > viewport_end_line {
+                continue;
+            }
+            let hidden = range
+                .end_line
+                .saturating_sub(range.start_line)
+                .saturating_add(1);
+            if hidden > 0 {
+                map.insert(range.header_line, hidden);
+            }
+        }
+
+        map
     }
 
     // semantic token colors are mapped when overlays are created
@@ -3695,6 +4075,10 @@ impl SplitRenderer {
         let diagnostic_lines = &decorations.diagnostic_lines;
         let line_indicators = &decorations.line_indicators;
 
+        // Cursors for O(1) amortized span lookups (spans are sorted by byte range)
+        let mut hl_cursor = 0usize;
+        let mut sem_cursor = 0usize;
+
         let mut lines = Vec::new();
         let mut view_line_mappings = Vec::new();
         let mut lines_rendered = 0usize;
@@ -3713,9 +4097,8 @@ impl SplitRenderer {
 
         // Track the current source line number separately from display lines
         let mut current_source_line_num = starting_line_num;
-        // Track whether the previous line was a source line (showed a line number)
-        // Used to determine when to increment the line counter
-        let mut prev_was_source_line = false;
+        let mut seen_source_line = false;
+        let mut pending_line_skip = 0usize;
 
         loop {
             // Get the current ViewLine from the pipeline
@@ -3763,17 +4146,21 @@ impl SplitRenderer {
             // This correctly handles: injected content, wrapped continuations, and source lines
             let show_line_number = should_show_line_number(current_view_line);
 
-            // Only increment source line number when BOTH:
-            // 1. We've already rendered at least one source line (prev_was_source_line)
-            // 2. The CURRENT line is also a source line
-            // This ensures virtual/injected lines don't cause line numbers to skip
-            if show_line_number && prev_was_source_line {
-                current_source_line_num += 1;
-            }
-            // Only update the flag when we see a source line - virtual lines
-            // between source lines shouldn't reset the tracking
             if show_line_number {
-                prev_was_source_line = true;
+                if !seen_source_line {
+                    current_source_line_num = starting_line_num;
+                    seen_source_line = true;
+                } else {
+                    current_source_line_num = current_source_line_num
+                        .saturating_add(1)
+                        .saturating_add(pending_line_skip);
+                }
+
+                pending_line_skip = decorations
+                    .collapsed_header_hidden_lines
+                    .get(&current_source_line_num)
+                    .copied()
+                    .unwrap_or(0);
             }
 
             // is_continuation means "don't show line number" for rendering purposes
@@ -3804,6 +4191,7 @@ impl SplitRenderer {
                     estimated_lines,
                     diagnostic_lines,
                     line_indicators,
+                    fold_indicators: &decorations.fold_indicators,
                     cursor_line,
                     relative_line_numbers,
                     show_line_numbers,
@@ -3962,6 +4350,16 @@ impl SplitRenderer {
                     let token_style = line_char_styles
                         .get(display_char_idx)
                         .and_then(|s| s.as_ref());
+
+                    // Resolve highlight/semantic colors via cursor-based O(1) lookup
+                    let (highlight_color, semantic_token_color) = match byte_pos {
+                        Some(bp) => (
+                            span_color_at(highlight_spans, &mut hl_cursor, bp),
+                            span_color_at(semantic_token_spans, &mut sem_cursor, bp),
+                        ),
+                        None => (None, None),
+                    };
+
                     let CharStyleOutput {
                         style,
                         is_secondary_cursor,
@@ -3972,8 +4370,8 @@ impl SplitRenderer {
                         is_cursor,
                         is_selected,
                         theme,
-                        highlight_spans,
-                        semantic_token_spans,
+                        highlight_color,
+                        semantic_token_color,
                         viewport_overlays,
                         primary_cursor_position,
                         is_active,
@@ -4637,6 +5035,7 @@ impl SplitRenderer {
         state: &mut EditorState,
         cursors: &crate::model::cursor::Cursors,
         viewport: &mut crate::view::viewport::Viewport,
+        folds: &mut FoldManager,
         area: Rect,
         is_active: bool,
         theme: &crate::view::theme::Theme,
@@ -4696,6 +5095,8 @@ impl SplitRenderer {
             render_area.width as usize,
             gutter_width,
             &view_mode,
+            folds,
+            theme,
         );
 
         // Same-buffer scroll sync: if the sync code flagged this viewport to
@@ -4721,6 +5122,8 @@ impl SplitRenderer {
                 render_area.width as usize,
                 gutter_width,
                 &view_mode,
+                folds,
+                theme,
             );
             viewport.scroll_to_end_of_view(&rebuilt.lines);
             (rebuilt, None)
@@ -4747,8 +5150,10 @@ impl SplitRenderer {
                     render_area.width as usize,
                     gutter_width,
                     &view_mode,
+                    folds,
+                    theme,
                 );
-                viewport.ensure_visible_in_layout(&rebuilt.lines, &primary, gutter_width);
+                let _ = viewport.ensure_visible_in_layout(&rebuilt.lines, &primary, gutter_width);
                 rebuilt
             } else {
                 view_data
@@ -4782,16 +5187,34 @@ impl SplitRenderer {
             );
         }
 
-        let starting_line_num = state
+        let adjusted_visible_count = Self::fold_adjusted_visible_count(
+            &state.buffer,
+            &state.marker_list,
+            folds,
+            viewport.top_byte,
+            visible_count,
+        );
+
+        let mut starting_line_num = state
             .buffer
-            .populate_line_cache(viewport.top_byte, visible_count);
+            .populate_line_cache(viewport.top_byte, adjusted_visible_count);
+        if !folds.is_empty() {
+            let top_line = state.buffer.get_line_number(viewport.top_byte);
+            if let Some(range) = folds
+                .resolved_ranges(&state.buffer, &state.marker_list)
+                .iter()
+                .find(|range| top_line >= range.start_line && top_line <= range.end_line)
+            {
+                starting_line_num = range.end_line.saturating_add(1);
+            }
+        }
 
         let viewport_start = viewport.top_byte;
         let viewport_end = Self::calculate_viewport_end(
             state,
             viewport_start,
             estimated_line_length,
-            visible_count,
+            adjusted_visible_count,
         );
 
         let decorations = Self::decoration_context(
@@ -4799,6 +5222,7 @@ impl SplitRenderer {
             viewport_start,
             viewport_end,
             selection.primary_cursor_position,
+            folds,
             theme,
             highlight_context_bytes,
             &view_mode,
@@ -5023,6 +5447,7 @@ impl SplitRenderer {
         state: &mut EditorState,
         cursors: &crate::model::cursor::Cursors,
         viewport: &mut crate::view::viewport::Viewport,
+        folds: &mut FoldManager,
         event_log: Option<&mut EventLog>,
         area: Rect,
         is_active: bool,
@@ -5049,6 +5474,7 @@ impl SplitRenderer {
             state,
             cursors,
             viewport,
+            folds,
             area,
             is_active,
             theme,
@@ -5370,6 +5796,7 @@ mod tests {
     use crate::view::theme;
     use crate::view::theme::Theme;
     use crate::view::viewport::Viewport;
+    use lsp_types::FoldingRange;
 
     fn render_output_for(
         content: &str,
@@ -5395,6 +5822,8 @@ mod tests {
         let render_area = Rect::new(0, 0, 20, 4);
         let visible_count = viewport.visible_line_count();
         let gutter_width = state.margins.left_total_width();
+        let theme = Theme::load_builtin(theme::THEME_DARK).unwrap();
+        let empty_folds = FoldManager::new();
 
         let view_data = SplitRenderer::build_view_data(
             &mut state,
@@ -5406,6 +5835,8 @@ mod tests {
             render_area.width as usize,
             gutter_width,
             &ViewMode::Source, // Tests use source mode
+            &empty_folds,
+            &theme,
         );
         let view_anchor = SplitRenderer::calculate_view_anchor(&view_data.lines, 0);
 
@@ -5424,12 +5855,12 @@ mod tests {
             content.len().max(1),
             visible_count,
         );
-        let theme = Theme::load_builtin(theme::THEME_DARK).unwrap();
         let decorations = SplitRenderer::decoration_context(
             &mut state,
             viewport_start,
             viewport_end,
             selection.primary_cursor_position,
+            &empty_folds,
             &theme,
             100_000,           // default highlight context bytes
             &ViewMode::Source, // Tests use source mode
@@ -5463,6 +5894,81 @@ mod tests {
             content.ends_with('\n'),
             selection.primary_cursor_position,
         )
+    }
+
+    #[test]
+    fn test_folding_hides_lines_and_adds_placeholder() {
+        let content = "header\nline1\nline2\ntail\n";
+        let mut state = EditorState::new(40, 6, 1024, test_fs());
+        state.buffer = Buffer::from_str(content, 1024, test_fs());
+
+        let start = state.buffer.line_start_offset(1).unwrap();
+        let end = state.buffer.line_start_offset(3).unwrap();
+        let mut folds = FoldManager::new();
+        folds.add(&mut state.marker_list, start, end, Some("...".to_string()));
+
+        let viewport = Viewport::new(40, 6);
+        let gutter_width = state.margins.left_total_width();
+        let theme = Theme::load_builtin(theme::THEME_DARK).unwrap();
+        let view_data = SplitRenderer::build_view_data(
+            &mut state,
+            &viewport,
+            None,
+            content.len().max(1),
+            viewport.visible_line_count(),
+            false,
+            40,
+            gutter_width,
+            &ViewMode::Source,
+            &folds,
+            &theme,
+        );
+
+        let lines: Vec<String> = view_data.lines.iter().map(|l| l.text.clone()).collect();
+        assert!(lines.iter().any(|l| l.contains("header")));
+        assert!(lines.iter().any(|l| l.contains("tail")));
+        assert!(!lines.iter().any(|l| l.contains("line1")));
+        assert!(!lines.iter().any(|l| l.contains("line2")));
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("header") && l.contains("...")));
+    }
+
+    #[test]
+    fn test_fold_indicators_collapsed_and_expanded() {
+        let content = "a\nb\nc\nd\n";
+        let mut state = EditorState::new(40, 6, 1024, test_fs());
+        state.buffer = Buffer::from_str(content, 1024, test_fs());
+
+        state.folding_ranges = vec![
+            FoldingRange {
+                start_line: 0,
+                end_line: 1,
+                start_character: None,
+                end_character: None,
+                kind: None,
+                collapsed_text: None,
+            },
+            FoldingRange {
+                start_line: 1,
+                end_line: 2,
+                start_character: None,
+                end_character: None,
+                kind: None,
+                collapsed_text: None,
+            },
+        ];
+
+        let start = state.buffer.line_start_offset(1).unwrap();
+        let end = state.buffer.line_start_offset(2).unwrap();
+        let mut folds = FoldManager::new();
+        folds.add(&mut state.marker_list, start, end, None);
+
+        let indicators =
+            SplitRenderer::fold_indicators_for_viewport(&state, &folds, 0, state.buffer.len());
+
+        assert_eq!(indicators.get(&0).map(|i| i.collapsed), Some(true));
+        assert_eq!(indicators.get(&1).map(|i| i.collapsed), Some(false));
     }
 
     #[test]

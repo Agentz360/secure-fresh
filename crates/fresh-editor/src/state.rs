@@ -26,6 +26,7 @@ use crate::view::reference_highlight_overlay::ReferenceHighlightOverlay;
 use crate::view::soft_break::SoftBreakManager;
 use crate::view::virtual_text::VirtualTextManager;
 use anyhow::Result;
+use lsp_types::FoldingRange;
 use ratatui::style::{Color, Style};
 use std::cell::RefCell;
 use std::ops::Range;
@@ -154,6 +155,9 @@ pub struct EditorState {
     /// Cached LSP semantic tokens (converted to buffer byte ranges)
     pub semantic_tokens: Option<SemanticTokenStore>,
 
+    /// Last-known LSP folding ranges for this buffer
+    pub folding_ranges: Vec<FoldingRange>,
+
     /// The detected language for this buffer (e.g., "rust", "python", "text")
     pub language: String,
 }
@@ -192,6 +196,7 @@ impl EditorState {
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
+            folding_ranges: Vec::new(),
             language: "text".to_string(), // Default to plain text
         }
     }
@@ -279,6 +284,7 @@ impl EditorState {
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
+            folding_ranges: Vec::new(),
             language: language_name,
         })
     }
@@ -341,6 +347,7 @@ impl EditorState {
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
+            folding_ranges: Vec::new(),
             language: language_name,
         })
     }
@@ -388,6 +395,7 @@ impl EditorState {
             reference_highlight_overlay: ReferenceHighlightOverlay::new(),
             bracket_highlight_overlay: BracketHighlightOverlay::new(),
             semantic_tokens: None,
+            folding_ranges: Vec::new(),
             language: language_name,
         }
     }

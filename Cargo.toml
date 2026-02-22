@@ -60,6 +60,7 @@ ts-rs = { version = "11.1", features = ["serde_json"] }
 debug = 0
 codegen-units = 4
 lto = "off" # speed up the binary final build
+force-frame-pointers = true
 
 # The profile that 'dist' will build with
 [profile.dist]

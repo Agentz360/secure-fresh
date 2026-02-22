@@ -5,6 +5,7 @@
 
 use super::Editor;
 use crate::input::commands::Suggestion;
+use crate::model::event::BufferId;
 use crate::view::prompt::{Prompt, PromptType};
 use rust_i18n::t;
 
@@ -198,6 +199,119 @@ impl Editor {
         }
     }
 
+    /// Toggle folding at the current cursor line, if a foldable range exists.
+    pub fn toggle_fold_at_cursor(&mut self) {
+        let buffer_id = self.active_buffer();
+        let line = self
+            .active_state()
+            .buffer
+            .get_line_number(self.active_cursors().primary().position);
+        self.toggle_fold_at_line(buffer_id, line);
+    }
+
+    /// Toggle folding for the given line in the specified buffer.
+    pub fn toggle_fold_at_line(&mut self, buffer_id: BufferId, line: usize) {
+        let split_id = self.split_manager.active_split();
+        let (buffers, split_view_states) = (&mut self.buffers, &mut self.split_view_states);
+
+        let Some(state) = buffers.get_mut(&buffer_id) else {
+            return;
+        };
+
+        let Some(view_state) = split_view_states.get_mut(&split_id) else {
+            return;
+        };
+        let buf_state = view_state.ensure_buffer_state(buffer_id);
+
+        // Try to unfold first — this only needs the marker-based FoldManager,
+        // not the LSP folding_ranges, so it works even after LSP disconnect.
+        if buf_state
+            .folds
+            .remove_by_header_line(&state.buffer, &mut state.marker_list, line)
+        {
+            return;
+        }
+
+        if state.folding_ranges.is_empty() {
+            return;
+        }
+
+        let mut selected_range: Option<&lsp_types::FoldingRange> = None;
+        let mut selected_span = usize::MAX;
+
+        for range in &state.folding_ranges {
+            let start_line = range.start_line as usize;
+            let end_line = range.end_line as usize;
+            if end_line <= start_line {
+                continue;
+            }
+            if start_line != line {
+                continue;
+            }
+            let span = end_line.saturating_sub(start_line);
+            if span < selected_span {
+                selected_span = span;
+                selected_range = Some(range);
+            }
+        }
+
+        let Some(range) = selected_range else {
+            return;
+        };
+
+        let start_line = line.saturating_add(1);
+        let end_line = range.end_line as usize;
+        if start_line > end_line {
+            return;
+        }
+
+        let Some(start_byte) = state.buffer.line_start_offset(start_line) else {
+            return;
+        };
+
+        let end_byte = state
+            .buffer
+            .line_start_offset(end_line.saturating_add(1))
+            .unwrap_or_else(|| state.buffer.len());
+
+        // Move any cursors inside the soon-to-be-hidden range to the header line.
+        if let Some(header_byte) = state.buffer.line_start_offset(line) {
+            buf_state.cursors.map(|cursor| {
+                let in_hidden_range = cursor.position >= start_byte && cursor.position < end_byte;
+                let anchor_in_hidden = cursor
+                    .anchor
+                    .is_some_and(|anchor| anchor >= start_byte && anchor < end_byte);
+                if in_hidden_range || anchor_in_hidden {
+                    cursor.position = header_byte;
+                    cursor.anchor = None;
+                    cursor.sticky_column = 0;
+                    cursor.selection_mode = crate::model::cursor::SelectionMode::Normal;
+                    cursor.block_anchor = None;
+                    cursor.deselect_on_move = true;
+                }
+            });
+        }
+
+        let placeholder = range
+            .collapsed_text
+            .as_ref()
+            .filter(|text| !text.trim().is_empty())
+            .cloned();
+
+        buf_state
+            .folds
+            .add(&mut state.marker_list, start_byte, end_byte, placeholder);
+
+        // If the viewport top is now inside the folded range, move it to the header.
+        let top_line = state.buffer.get_line_number(buf_state.viewport.top_byte);
+        if top_line >= start_line && top_line <= end_line {
+            if let Some(header_byte) = state.buffer.line_start_offset(line) {
+                buf_state.viewport.top_byte = header_byte;
+                buf_state.viewport.top_view_line_offset = 0;
+            }
+        }
+    }
+
     /// Disable LSP for a specific buffer and clear all LSP-related data
     fn disable_lsp_for_buffer(&mut self, buffer_id: crate::model::event::BufferId) {
         // Send didClose to the LSP server so it removes the document from its
@@ -257,11 +371,24 @@ impl Editor {
         if let Some(uri_str) = uri {
             self.stored_diagnostics.remove(&uri_str);
             self.diagnostic_result_ids.remove(&uri_str);
+            self.stored_folding_ranges.remove(&uri_str);
         }
 
+        self.folding_ranges_in_flight.remove(&buffer_id);
+        self.folding_ranges_debounce.remove(&buffer_id);
+        self.pending_folding_range_requests
+            .retain(|_, req| req.buffer_id != buffer_id);
+
         // Clear LSP-related overlays (inlay hints) for this buffer
-        if let Some(state) = self.buffers.get_mut(&buffer_id) {
+        let (buffers, split_view_states) = (&mut self.buffers, &mut self.split_view_states);
+        if let Some(state) = buffers.get_mut(&buffer_id) {
             state.virtual_texts.clear(&mut state.marker_list);
+            state.folding_ranges.clear();
+            for view_state in split_view_states.values_mut() {
+                if let Some(buf_state) = view_state.keyed_states.get_mut(&buffer_id) {
+                    buf_state.folds.clear(&mut state.marker_list);
+                }
+            }
         }
     }
 
@@ -355,5 +482,8 @@ impl Editor {
                 tracing::warn!("LSP inlay_hints request failed: {}", e);
             }
         }
+
+        // Schedule folding range refresh
+        self.schedule_folding_ranges_refresh(buffer_id);
     }
 }
