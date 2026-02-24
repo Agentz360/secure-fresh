@@ -2009,6 +2009,11 @@ impl Editor {
         // Note: We don't sync file explorer here to avoid flicker during tab switches.
         // File explorer syncs when explicitly focused via focus_file_explorer().
 
+        // Update plugin state snapshot BEFORE firing the hook so that
+        // the handler sees the new active buffer, not the old one.
+        #[cfg(feature = "plugins")]
+        self.update_plugin_state_snapshot();
+
         // Emit buffer_activated hook for plugins
         self.plugin_manager.run_hook(
             "buffer_activated",

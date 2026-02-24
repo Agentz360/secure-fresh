@@ -61,6 +61,19 @@ impl Editor {
 
         self.set_active_buffer(buffer_id);
 
+        // If the buffer was already active (e.g., replacing the initial empty buffer
+        // in-place), set_active_buffer is a no-op. Fire buffer_activated explicitly
+        // so plugins see the newly loaded file.
+        if !is_new_buffer {
+            #[cfg(feature = "plugins")]
+            self.update_plugin_state_snapshot();
+
+            self.plugin_manager.run_hook(
+                "buffer_activated",
+                crate::services::plugins::hooks::HookArgs::BufferActivated { buffer_id },
+            );
+        }
+
         // Use display_name from metadata for relative path display
         let display_name = self
             .buffer_metadata

@@ -36,17 +36,16 @@ globalThis.md_src_enter = async function (): Promise<void> {
     return;
   }
 
-  const cursorLine = editor.getCursorLine();
-  const lineStart = await editor.getLineStartPosition(cursorLine);
-  const lineEnd = await editor.getLineEndPosition(cursorLine);
+  const cursorPos = editor.getCursorPosition();
 
-  if (lineStart == null || lineEnd == null) {
-    editor.executeAction("insert_newline");
-    return;
-  }
+  // Read a window of text before the cursor to find the current line.
+  // 1024 bytes is plenty for any realistic line length.
+  const windowStart = Math.max(0, cursorPos - 1024);
+  const textWindow = await editor.getBufferText(bufferId, windowStart, cursorPos);
 
-  // Get the text of the current line
-  const lineText = await editor.getBufferText(bufferId, lineStart, lineEnd);
+  // Find the last newline in the window to locate the start of the current line
+  const lastNl = textWindow.lastIndexOf("\n");
+  const lineText = lastNl >= 0 ? textWindow.substring(lastNl + 1) : textWindow;
 
   // Extract leading whitespace
   let indent = "";
