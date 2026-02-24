@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import threading
 import select
+from concurrent.futures import ThreadPoolExecutor
 
 CHUNK = 65536
 VERSION = 1
@@ -17,15 +18,19 @@ VERSION = 1
 procs = {}
 # Request IDs marked for cancellation
 cancelled = set()
-# Lock for thread-safe access
+# Lock for thread-safe access to procs/cancelled
 lock = threading.Lock()
+# Lock for serializing stdout writes (prevents interleaved JSON lines)
+write_lock = threading.Lock()
 
 
 def send(id, **kw):
-    """Send a JSON message to stdout."""
+    """Send a JSON message to stdout (thread-safe)."""
     msg = {"id": id, **kw}
-    sys.stdout.write(json.dumps(msg, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    line = json.dumps(msg, separators=(",", ":")) + "\n"
+    with write_lock:
+        sys.stdout.write(line)
+        sys.stdout.flush()
 
 
 def b64(data):
@@ -323,6 +328,27 @@ def cmd_patch(id, p):
     send(id, r={})
 
 
+def cmd_count_lf(id, p):
+    """Count newline (0x0A) bytes in a file range without returning the data."""
+    path = validate_path(p["path"])
+    off = p.get("off", 0)
+    length = p["len"]
+
+    count = 0
+    with open(path, "rb") as f:
+        if off:
+            f.seek(off)
+        remaining = length
+        while remaining > 0:
+            to_read = min(CHUNK, remaining)
+            chunk = f.read(to_read)
+            if not chunk:
+                break
+            count += chunk.count(b"\n")
+            remaining -= len(chunk)
+    send(id, r={"count": count})
+
+
 def cmd_exists(id, p):
     """Check if path exists."""
     try:
@@ -456,6 +482,7 @@ METHODS = {
     "append": cmd_append,
     "truncate": cmd_truncate,
     "patch": cmd_patch,
+    "count_lf": cmd_count_lf,
     "exists": cmd_exists,
     "info": cmd_info,
     "exec": cmd_exec,
@@ -501,12 +528,20 @@ def main():
     # Send ready message
     send(0, ok=True, v=VERSION)
 
+    # Thread pool for concurrent request handling.
+    # File I/O requests (read, count_lf, stat, etc.) can execute in parallel,
+    # which is important when the editor pipelines many count_lf requests
+    # during line-feed scanning of large files.
+    pool = ThreadPoolExecutor(max_workers=64)
+
     # Process requests from stdin
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
-        handle_request(line)
+        pool.submit(handle_request, line)
+
+    pool.shutdown(wait=True)
 
 
 if __name__ == "__main__":

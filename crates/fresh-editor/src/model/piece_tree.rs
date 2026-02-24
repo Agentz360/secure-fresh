@@ -33,6 +33,10 @@ pub struct StringBuffer {
     pub id: usize,
     /// The buffer data - either loaded or unloaded
     pub data: BufferData,
+    /// For buffers created by loading a chunk from a stored (on-disk) buffer:
+    /// the original file offset. This allows `rebuild_with_pristine_saved_root`
+    /// to recognize loaded chunks as saved content rather than user edits.
+    pub stored_file_offset: Option<usize>,
 }
 
 impl StringBuffer {
@@ -46,6 +50,7 @@ impl StringBuffer {
                 data,
                 line_starts: Some(line_starts),
             },
+            stored_file_offset: None,
         }
     }
 
@@ -59,6 +64,7 @@ impl StringBuffer {
         StringBuffer {
             id,
             data: BufferData::Loaded { data, line_starts },
+            stored_file_offset: None,
         }
     }
 
@@ -71,6 +77,7 @@ impl StringBuffer {
                 file_offset,
                 bytes,
             },
+            stored_file_offset: None,
         }
     }
 
@@ -188,12 +195,15 @@ impl StringBuffer {
                     return None;
                 }
 
-                Some(StringBuffer::new_unloaded(
+                let absolute_file_offset = file_offset + chunk_offset;
+                let mut buf = StringBuffer::new_unloaded(
                     new_id,
                     file_path.clone(),
-                    file_offset + chunk_offset,
+                    absolute_file_offset,
                     chunk_bytes,
-                ))
+                );
+                buf.stored_file_offset = Some(absolute_file_offset);
+                Some(buf)
             }
             BufferData::Loaded { .. } => None, // Can't create chunk from loaded buffer
         }
@@ -293,6 +303,7 @@ pub struct PieceInfo {
     pub offset: usize,                  // Starting offset of this piece within that buffer
     pub bytes: usize,                   // Length of this piece in bytes
     pub offset_in_piece: Option<usize>, // For queries: how far into this piece the query point is
+    pub line_feeds: Option<usize>,      // Number of line feeds in this piece (None if unknown)
 }
 
 /// Result from finding a piece by byte offset
@@ -377,7 +388,7 @@ impl PieceTreeNode {
                 location,
                 offset: piece_offset,
                 bytes,
-                ..
+                line_feed_cnt,
             } => {
                 if offset < *bytes {
                     Some(OffsetFindResult {
@@ -386,6 +397,7 @@ impl PieceTreeNode {
                             offset: *piece_offset,
                             bytes: *bytes,
                             offset_in_piece: Some(offset),
+                            line_feeds: *line_feed_cnt,
                         },
                         bytes_before: 0,
                     })
@@ -431,6 +443,81 @@ impl PieceTreeNode {
         match self {
             Self::Internal { left, right, .. } => left.count_leaves() + right.count_leaves(),
             Self::Leaf { .. } => 1,
+        }
+    }
+
+    /// Path-copy update of a single leaf's line_feed_cnt by leaf index.
+    /// Returns (new_node, true) if the leaf was found and updated, or
+    /// (clone of self, false) if leaf_index was out of range.
+    /// Only clones nodes along the root-to-leaf path; sibling subtrees
+    /// are shared via Arc, preserving Arc::ptr_eq for unmodified regions.
+    fn update_leaf_lf_by_index(
+        self: &Arc<Self>,
+        leaf_index: usize,
+        lf_count: usize,
+    ) -> (Arc<Self>, bool) {
+        match self.as_ref() {
+            Self::Leaf {
+                location,
+                offset,
+                bytes,
+                ..
+            } => {
+                if leaf_index == 0 {
+                    (
+                        Arc::new(Self::Leaf {
+                            location: *location,
+                            offset: *offset,
+                            bytes: *bytes,
+                            line_feed_cnt: Some(lf_count),
+                        }),
+                        true,
+                    )
+                } else {
+                    (Arc::clone(self), false)
+                }
+            }
+            Self::Internal {
+                left_bytes,
+                lf_left,
+                left,
+                right,
+            } => {
+                let left_leaf_count = left.count_leaves();
+                if leaf_index < left_leaf_count {
+                    let (new_left, found) = left.update_leaf_lf_by_index(leaf_index, lf_count);
+                    if found {
+                        let new_lf_left = new_left.total_line_feeds();
+                        (
+                            Arc::new(Self::Internal {
+                                left_bytes: *left_bytes,
+                                lf_left: new_lf_left,
+                                left: new_left,
+                                right: Arc::clone(right),
+                            }),
+                            true,
+                        )
+                    } else {
+                        (Arc::clone(self), false)
+                    }
+                } else {
+                    let (new_right, found) =
+                        right.update_leaf_lf_by_index(leaf_index - left_leaf_count, lf_count);
+                    if found {
+                        (
+                            Arc::new(Self::Internal {
+                                left_bytes: *left_bytes,
+                                lf_left: *lf_left,
+                                left: Arc::clone(left),
+                                right: new_right,
+                            }),
+                            true,
+                        )
+                    } else {
+                        (Arc::clone(self), false)
+                    }
+                }
+            }
         }
     }
 
@@ -618,6 +705,67 @@ impl PieceTreeNode {
             }
         }
     }
+
+    /// Find the piece (leaf) containing a target line using only tree metadata.
+    /// Returns `(doc_byte_offset, buffer_id, piece_offset, piece_bytes, lines_before)`
+    fn find_piece_for_line(
+        &self,
+        current_offset: usize,
+        lines_before: usize,
+        target_line: usize,
+    ) -> Option<(usize, usize, usize, usize, usize)> {
+        match self {
+            Self::Internal {
+                left_bytes,
+                lf_left,
+                left,
+                right,
+            } => {
+                let lf_left = lf_left.as_ref()?;
+                let lines_after_left = lines_before + lf_left;
+
+                if target_line <= lines_after_left {
+                    let result =
+                        left.find_piece_for_line(current_offset, lines_before, target_line);
+                    // Fall back to right if left doesn't contain it
+                    result.or_else(|| {
+                        right.find_piece_for_line(
+                            current_offset + left_bytes,
+                            lines_after_left,
+                            target_line,
+                        )
+                    })
+                } else {
+                    right.find_piece_for_line(
+                        current_offset + left_bytes,
+                        lines_after_left,
+                        target_line,
+                    )
+                }
+            }
+            Self::Leaf {
+                location,
+                offset,
+                bytes,
+                line_feed_cnt,
+            } => {
+                let line_feed_cnt = line_feed_cnt.as_ref()?;
+                let lines_in_piece = lines_before + line_feed_cnt;
+
+                if target_line >= lines_before && target_line <= lines_in_piece {
+                    Some((
+                        current_offset,
+                        location.buffer_id(),
+                        *offset,
+                        *bytes,
+                        lines_before,
+                    ))
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
 
 /// The main piece table structure with integrated line tracking
@@ -659,6 +807,15 @@ impl PieceTree {
         }
     }
 
+    /// Build a `PieceTree` from an explicit list of leaves.
+    pub fn from_leaves(leaves: &[LeafData]) -> Self {
+        let total_bytes: usize = leaves.iter().map(|l| l.bytes).sum();
+        PieceTree {
+            root: Self::build_balanced(leaves),
+            total_bytes,
+        }
+    }
+
     /// Build a balanced tree from a list of leaves
     fn build_balanced(leaves: &[LeafData]) -> Arc<PieceTreeNode> {
         if leaves.is_empty() {
@@ -696,8 +853,317 @@ impl PieceTree {
         })
     }
 
+    /// Path-copying insert: walk from root to the target leaf, split only that leaf,
+    /// and Arc::clone all unmodified siblings. Returns the new root.
+    fn path_copy_insert(
+        node: &Arc<PieceTreeNode>,
+        current_offset: usize,
+        insert_offset: usize,
+        insert_leaf: LeafData,
+        buffers: &[StringBuffer],
+    ) -> Arc<PieceTreeNode> {
+        match node.as_ref() {
+            PieceTreeNode::Internal {
+                left_bytes,
+                lf_left,
+                left,
+                right,
+                ..
+            } => {
+                let left_end = current_offset + left_bytes;
+                if insert_offset < left_end {
+                    // Insert is in left subtree - recurse left, clone right
+                    let new_left = Self::path_copy_insert(
+                        left,
+                        current_offset,
+                        insert_offset,
+                        insert_leaf,
+                        buffers,
+                    );
+                    let new_left_bytes = new_left.total_bytes();
+                    let new_lf_left = new_left.total_line_feeds();
+                    Arc::new(PieceTreeNode::Internal {
+                        left_bytes: new_left_bytes,
+                        lf_left: new_lf_left,
+                        left: new_left,
+                        right: Arc::clone(right),
+                    })
+                } else if insert_offset > left_end {
+                    // Insert is in right subtree - clone left, recurse right
+                    let new_right = Self::path_copy_insert(
+                        right,
+                        left_end,
+                        insert_offset,
+                        insert_leaf,
+                        buffers,
+                    );
+                    Arc::new(PieceTreeNode::Internal {
+                        left_bytes: *left_bytes,
+                        lf_left: *lf_left,
+                        left: Arc::clone(left),
+                        right: new_right,
+                    })
+                } else {
+                    // insert_offset == left_end: boundary between left and right.
+                    // Check if right subtree starts at insert_offset - if so,
+                    // insert at the beginning of the right subtree.
+                    // We need to recurse into right to prepend.
+                    let new_right = Self::path_copy_insert(
+                        right,
+                        left_end,
+                        insert_offset,
+                        insert_leaf,
+                        buffers,
+                    );
+                    Arc::new(PieceTreeNode::Internal {
+                        left_bytes: *left_bytes,
+                        lf_left: *lf_left,
+                        left: Arc::clone(left),
+                        right: new_right,
+                    })
+                }
+            }
+            PieceTreeNode::Leaf {
+                location,
+                offset,
+                bytes,
+                line_feed_cnt,
+            } => {
+                let piece_end = current_offset + bytes;
+                let offset_in_piece = insert_offset.saturating_sub(current_offset);
+
+                if offset_in_piece > 0 && insert_offset < piece_end {
+                    // Split this leaf at insert_offset
+                    let before_bytes = offset_in_piece;
+                    let after_bytes = bytes - offset_in_piece;
+
+                    let lf_before =
+                        Self::compute_line_feeds_static(buffers, *location, *offset, before_bytes);
+                    let lf_after = Self::compute_line_feeds_static(
+                        buffers,
+                        *location,
+                        offset + before_bytes,
+                        after_bytes,
+                    );
+
+                    let leaf_before = LeafData::new(*location, *offset, before_bytes, lf_before);
+                    let leaf_after =
+                        LeafData::new(*location, offset + before_bytes, after_bytes, lf_after);
+
+                    // Build a small subtree: [before, insert, after]
+                    Self::build_balanced(&[leaf_before, insert_leaf, leaf_after])
+                } else if insert_offset <= current_offset {
+                    // Insert before this leaf
+                    if *bytes == 0 {
+                        // Replace empty leaf with the insert
+                        Arc::new(PieceTreeNode::Leaf {
+                            location: insert_leaf.location,
+                            offset: insert_leaf.offset,
+                            bytes: insert_leaf.bytes,
+                            line_feed_cnt: insert_leaf.line_feed_cnt,
+                        })
+                    } else {
+                        let existing = LeafData::new(*location, *offset, *bytes, *line_feed_cnt);
+                        Self::build_balanced(&[insert_leaf, existing])
+                    }
+                } else {
+                    // Insert after this leaf (insert_offset >= piece_end)
+                    let existing = LeafData::new(*location, *offset, *bytes, *line_feed_cnt);
+                    Self::build_balanced(&[existing, insert_leaf])
+                }
+            }
+        }
+    }
+
+    /// Path-copying delete: walk from root, only rebuilding nodes along
+    /// the path to the deleted range, Arc::clone-ing unaffected siblings.
+    /// Returns the new root. The delete range is [delete_start, delete_end) in document offsets.
+    fn path_copy_delete(
+        node: &Arc<PieceTreeNode>,
+        current_offset: usize,
+        delete_start: usize,
+        delete_end: usize,
+        buffers: &[StringBuffer],
+    ) -> Arc<PieceTreeNode> {
+        match node.as_ref() {
+            PieceTreeNode::Internal {
+                left_bytes,
+                lf_left,
+                left,
+                right,
+                ..
+            } => {
+                let left_end = current_offset + left_bytes;
+
+                // Delete range entirely in left subtree
+                if delete_end <= left_end {
+                    let new_left = Self::path_copy_delete(
+                        left,
+                        current_offset,
+                        delete_start,
+                        delete_end,
+                        buffers,
+                    );
+                    let new_left_bytes = new_left.total_bytes();
+                    if new_left_bytes == 0 {
+                        // Left is empty after delete, promote right
+                        return Arc::clone(right);
+                    }
+                    let new_lf_left = new_left.total_line_feeds();
+                    return Arc::new(PieceTreeNode::Internal {
+                        left_bytes: new_left_bytes,
+                        lf_left: new_lf_left,
+                        left: new_left,
+                        right: Arc::clone(right),
+                    });
+                }
+
+                // Delete range entirely in right subtree
+                if delete_start >= left_end {
+                    let new_right =
+                        Self::path_copy_delete(right, left_end, delete_start, delete_end, buffers);
+                    let new_right_bytes = new_right.total_bytes();
+                    if new_right_bytes == 0 {
+                        // Right is empty after delete, promote left
+                        return Arc::clone(left);
+                    }
+                    return Arc::new(PieceTreeNode::Internal {
+                        left_bytes: *left_bytes,
+                        lf_left: *lf_left,
+                        left: Arc::clone(left),
+                        right: new_right,
+                    });
+                }
+
+                // Delete range spans both children
+                let new_left = Self::path_copy_delete(
+                    left,
+                    current_offset,
+                    delete_start,
+                    left_end.min(delete_end),
+                    buffers,
+                );
+                let new_right = Self::path_copy_delete(
+                    right,
+                    left_end,
+                    left_end.max(delete_start),
+                    delete_end,
+                    buffers,
+                );
+
+                let new_left_bytes = new_left.total_bytes();
+                let new_right_bytes = new_right.total_bytes();
+
+                if new_left_bytes == 0 && new_right_bytes == 0 {
+                    // Both empty - return empty leaf
+                    return Arc::new(PieceTreeNode::Leaf {
+                        location: BufferLocation::Stored(0),
+                        offset: 0,
+                        bytes: 0,
+                        line_feed_cnt: Some(0),
+                    });
+                }
+                if new_left_bytes == 0 {
+                    return new_right;
+                }
+                if new_right_bytes == 0 {
+                    return new_left;
+                }
+
+                let new_lf_left = new_left.total_line_feeds();
+                Arc::new(PieceTreeNode::Internal {
+                    left_bytes: new_left_bytes,
+                    lf_left: new_lf_left,
+                    left: new_left,
+                    right: new_right,
+                })
+            }
+            PieceTreeNode::Leaf {
+                location,
+                offset,
+                bytes,
+                line_feed_cnt: _,
+            } => {
+                let piece_start = current_offset;
+                let piece_end = current_offset + bytes;
+
+                // No overlap - keep as is
+                if piece_end <= delete_start || piece_start >= delete_end {
+                    return Arc::clone(node);
+                }
+
+                // Completely deleted
+                if delete_start <= piece_start && delete_end >= piece_end {
+                    return Arc::new(PieceTreeNode::Leaf {
+                        location: BufferLocation::Stored(0),
+                        offset: 0,
+                        bytes: 0,
+                        line_feed_cnt: Some(0),
+                    });
+                }
+
+                // Partial overlap - keep parts outside delete range
+                let before_bytes = if delete_start > piece_start {
+                    delete_start - piece_start
+                } else {
+                    0
+                };
+                let after_bytes = if delete_end < piece_end {
+                    piece_end - delete_end
+                } else {
+                    0
+                };
+
+                if before_bytes > 0 && after_bytes > 0 {
+                    // Delete in the middle of this leaf - split into two
+                    let lf_before =
+                        Self::compute_line_feeds_static(buffers, *location, *offset, before_bytes);
+                    let lf_after = Self::compute_line_feeds_static(
+                        buffers,
+                        *location,
+                        offset + bytes - after_bytes,
+                        after_bytes,
+                    );
+                    let leaf_before = LeafData::new(*location, *offset, before_bytes, lf_before);
+                    let leaf_after = LeafData::new(
+                        *location,
+                        offset + bytes - after_bytes,
+                        after_bytes,
+                        lf_after,
+                    );
+                    Self::build_balanced(&[leaf_before, leaf_after])
+                } else if before_bytes > 0 {
+                    // Keep only the part before the delete
+                    let lf_cnt =
+                        Self::compute_line_feeds_static(buffers, *location, *offset, before_bytes);
+                    Arc::new(PieceTreeNode::Leaf {
+                        location: *location,
+                        offset: *offset,
+                        bytes: before_bytes,
+                        line_feed_cnt: lf_cnt,
+                    })
+                } else {
+                    // Keep only the part after the delete
+                    let skip = delete_end - piece_start;
+                    let lf_cnt = Self::compute_line_feeds_static(
+                        buffers,
+                        *location,
+                        offset + skip,
+                        after_bytes,
+                    );
+                    Arc::new(PieceTreeNode::Leaf {
+                        location: *location,
+                        offset: offset + skip,
+                        bytes: after_bytes,
+                        line_feed_cnt: lf_cnt,
+                    })
+                }
+            }
+        }
+    }
+
     /// Rebuild the tree to be balanced
-    fn rebalance(&mut self) {
+    pub(crate) fn rebalance(&mut self) {
         let mut leaves = Vec::new();
         self.root.collect_leaves(&mut leaves);
         self.root = Self::build_balanced(&leaves);
@@ -753,35 +1219,10 @@ impl PieceTree {
             return self.cursor_at_offset(offset);
         }
 
-        // Find the piece to split
-        if let Some(_result) = self.root.find_by_offset(offset) {
-            // Split the piece at the insertion point
-            let mut leaves = Vec::new();
-            let insert_leaf = LeafData::new(location, buffer_offset, bytes, line_feed_cnt);
-            self.collect_leaves_with_split(
-                &self.root,
-                0,
-                offset,
-                Some(insert_leaf),
-                &mut leaves,
-                buffers,
-            );
-
-            self.root = Self::build_balanced(&leaves);
-            self.total_bytes += bytes;
-
-            self.check_and_rebalance();
-        } else if offset == self.total_bytes {
-            // Append at end
-            let mut leaves = Vec::new();
-            self.root.collect_leaves(&mut leaves);
-            leaves.push(LeafData::new(location, buffer_offset, bytes, line_feed_cnt));
-
-            self.root = Self::build_balanced(&leaves);
-            self.total_bytes += bytes;
-
-            self.check_and_rebalance();
-        }
+        let insert_leaf = LeafData::new(location, buffer_offset, bytes, line_feed_cnt);
+        self.root = Self::path_copy_insert(&self.root, 0, offset, insert_leaf, buffers);
+        self.total_bytes += bytes;
+        self.check_and_rebalance();
 
         self.cursor_at_offset(offset + bytes)
     }
@@ -793,7 +1234,7 @@ impl PieceTree {
 
     /// Insert text at the given position (line, column)
     /// Returns new cursor after the inserted text
-    /// This performs a SINGLE tree traversal (more efficient than position_to_offset + insert)
+    /// This converts position to offset, then uses path-copying insert
     #[allow(clippy::too_many_arguments)]
     pub fn insert_at_position(
         &mut self,
@@ -805,203 +1246,15 @@ impl PieceTree {
         line_feed_cnt: usize,
         buffers: &[StringBuffer],
     ) -> Cursor {
-        if bytes == 0 {
-            let offset = self.position_to_offset(line, column, buffers);
-            return self.cursor_at_offset(offset);
-        }
-
-        // Collect leaves while splitting at the position
-        let mut leaves = Vec::new();
-        let insert_leaf = LeafData::new(location, buffer_offset, bytes, Some(line_feed_cnt));
-
-        self.collect_leaves_with_split_at_position(
-            &self.root,
-            0,
-            0,
-            line,
-            column,
-            Some(insert_leaf),
-            &mut leaves,
+        let offset = self.position_to_offset(line, column, buffers);
+        self.insert(
+            offset,
+            location,
+            buffer_offset,
+            bytes,
+            Some(line_feed_cnt),
             buffers,
-        );
-
-        self.root = Self::build_balanced(&leaves);
-        self.total_bytes += bytes;
-        self.check_and_rebalance();
-
-        // Return cursor at position after insertion
-        let offset = self.position_to_offset(line, column, buffers) + bytes;
-        self.cursor_at_offset(offset)
-    }
-
-    /// Helper to collect leaves while splitting at a position (line, column)
-    /// Similar to collect_leaves_with_split but works with positions instead of offsets
-    #[allow(clippy::too_many_arguments)]
-    fn collect_leaves_with_split_at_position(
-        &self,
-        node: &Arc<PieceTreeNode>,
-        current_offset: usize,
-        lines_before: usize,
-        target_line: usize,
-        target_column: usize,
-        insert: Option<LeafData>,
-        leaves: &mut Vec<LeafData>,
-        buffers: &[StringBuffer],
-    ) {
-        match node.as_ref() {
-            PieceTreeNode::Internal {
-                left_bytes,
-                lf_left,
-                left,
-                right,
-            } => {
-                // If line counts are unknown, we can't do position-based navigation
-                let Some(lf_left) = lf_left else {
-                    return;
-                };
-                let lines_after_left = lines_before + lf_left;
-
-                // Determine if target position is in left or right subtree
-                let go_left = if target_column == 0 {
-                    target_line <= lines_after_left
-                } else {
-                    target_line < lines_after_left
-                };
-
-                if go_left {
-                    // Target is in left subtree
-                    self.collect_leaves_with_split_at_position(
-                        left,
-                        current_offset,
-                        lines_before,
-                        target_line,
-                        target_column,
-                        insert,
-                        leaves,
-                        buffers,
-                    );
-                    self.collect_leaves_with_split_at_position(
-                        right,
-                        current_offset + left_bytes,
-                        lines_after_left,
-                        target_line,
-                        target_column,
-                        None,
-                        leaves,
-                        buffers,
-                    );
-                } else {
-                    // Target is in right subtree
-                    self.collect_leaves_with_split_at_position(
-                        left,
-                        current_offset,
-                        lines_before,
-                        target_line,
-                        target_column,
-                        None,
-                        leaves,
-                        buffers,
-                    );
-                    self.collect_leaves_with_split_at_position(
-                        right,
-                        current_offset + left_bytes,
-                        lines_after_left,
-                        target_line,
-                        target_column,
-                        insert,
-                        leaves,
-                        buffers,
-                    );
-                }
-            }
-            PieceTreeNode::Leaf {
-                location,
-                offset,
-                bytes,
-                line_feed_cnt,
-            } => {
-                // If line counts are unknown, we can't do position-based navigation
-                let Some(line_feed_cnt) = line_feed_cnt else {
-                    return;
-                };
-                let lines_in_piece = lines_before + line_feed_cnt;
-
-                // Check if this piece contains the target line
-                if target_line >= lines_before && target_line <= lines_in_piece {
-                    // Target line is in this piece
-                    let buffer_id = location.buffer_id();
-                    if let Some(buffer) = buffers.get(buffer_id) {
-                        let line_in_piece = target_line - lines_before;
-
-                        // Find the line start within the piece
-                        let line_start_in_buffer = buffer
-                            .nth_line_start_in_piece(*offset, *offset + *bytes, line_in_piece)
-                            .unwrap_or(*offset);
-
-                        // Calculate split offset within the piece
-                        let column_offset = target_column.min(*bytes);
-                        let split_in_buffer = line_start_in_buffer + column_offset;
-                        let split_offset_in_piece =
-                            split_in_buffer.saturating_sub(*offset).min(*bytes);
-
-                        // Split the piece at this position
-                        if split_offset_in_piece > 0 {
-                            // First part (before split)
-                            let lf_cnt = Self::compute_line_feeds_static(
-                                buffers,
-                                *location,
-                                *offset,
-                                split_offset_in_piece,
-                            );
-                            leaves.push(LeafData::new(
-                                *location,
-                                *offset,
-                                split_offset_in_piece,
-                                lf_cnt,
-                            ));
-                        }
-
-                        // Inserted piece
-                        if let Some(insert_leaf) = insert {
-                            leaves.push(insert_leaf);
-                        }
-
-                        // Second part (after split)
-                        let remaining = bytes.saturating_sub(split_offset_in_piece);
-                        if remaining > 0 {
-                            let lf_cnt = Self::compute_line_feeds_static(
-                                buffers,
-                                *location,
-                                offset + split_offset_in_piece,
-                                remaining,
-                            );
-                            leaves.push(LeafData::new(
-                                *location,
-                                offset + split_offset_in_piece,
-                                remaining,
-                                lf_cnt,
-                            ));
-                        }
-                    } else {
-                        // Buffer not found, just keep the piece as-is
-                        leaves.push(LeafData::new(
-                            *location,
-                            *offset,
-                            *bytes,
-                            Some(*line_feed_cnt),
-                        ));
-                    }
-                } else {
-                    // Target line not in this piece, just keep it
-                    leaves.push(LeafData::new(
-                        *location,
-                        *offset,
-                        *bytes,
-                        Some(*line_feed_cnt),
-                    ));
-                }
-            }
-        }
+        )
     }
 
     /// Helper to collect leaves while splitting at insertion point
@@ -1206,17 +1459,14 @@ impl PieceTree {
         let delete_bytes = delete_bytes.min(self.total_bytes - offset);
         let end_offset = offset + delete_bytes;
 
-        let mut leaves = Vec::new();
-        self.collect_leaves_with_delete(&self.root, 0, offset, end_offset, &mut leaves, buffers);
-
-        self.root = Self::build_balanced(&leaves);
+        self.root = Self::path_copy_delete(&self.root, 0, offset, end_offset, buffers);
         self.total_bytes -= delete_bytes;
 
         self.check_and_rebalance();
     }
 
     /// Delete text in a range specified by positions (start_line, start_col) to (end_line, end_col)
-    /// This performs a more efficient traversal than converting positions to offsets separately
+    /// Converts positions to offsets, then uses path-copying delete
     pub fn delete_position_range(
         &mut self,
         start_line: usize,
@@ -1230,308 +1480,11 @@ impl PieceTree {
             return;
         }
 
-        // Find both positions in a single traversal and collect leaves
-        let mut leaves = Vec::new();
-        let mut delete_start_offset = None;
-        let mut delete_end_offset = None;
+        let start_offset = self.position_to_offset(start_line, start_column, buffers);
+        let end_offset = self.position_to_offset(end_line, end_column, buffers);
 
-        self.collect_leaves_with_position_delete(
-            &self.root,
-            0,
-            0,
-            start_line,
-            start_column,
-            end_line,
-            end_column,
-            &mut delete_start_offset,
-            &mut delete_end_offset,
-            &mut leaves,
-            buffers,
-        );
-
-        // Calculate how many bytes were deleted
-        if let (Some(start), Some(end)) = (delete_start_offset, delete_end_offset) {
-            let deleted_bytes = end.saturating_sub(start);
-            if deleted_bytes > 0 {
-                self.root = Self::build_balanced(&leaves);
-                self.total_bytes = self.total_bytes.saturating_sub(deleted_bytes);
-                self.check_and_rebalance();
-            }
-        }
-    }
-
-    /// Helper to collect leaves while deleting a range specified by positions
-    /// This finds both positions and performs the deletion in a single tree traversal
-    #[allow(clippy::too_many_arguments)]
-    fn collect_leaves_with_position_delete(
-        &self,
-        node: &Arc<PieceTreeNode>,
-        current_offset: usize,
-        lines_before: usize,
-        start_line: usize,
-        start_column: usize,
-        end_line: usize,
-        end_column: usize,
-        delete_start_offset: &mut Option<usize>,
-        delete_end_offset: &mut Option<usize>,
-        leaves: &mut Vec<LeafData>,
-        buffers: &[StringBuffer],
-    ) {
-        match node.as_ref() {
-            PieceTreeNode::Internal {
-                left_bytes,
-                lf_left,
-                left,
-                right,
-            } => {
-                // If line counts are unknown, we can't do position-based navigation
-                let Some(lf_left) = lf_left else {
-                    return;
-                };
-                let lines_after_left = lines_before + lf_left;
-
-                // Recursively process both subtrees
-                self.collect_leaves_with_position_delete(
-                    left,
-                    current_offset,
-                    lines_before,
-                    start_line,
-                    start_column,
-                    end_line,
-                    end_column,
-                    delete_start_offset,
-                    delete_end_offset,
-                    leaves,
-                    buffers,
-                );
-                self.collect_leaves_with_position_delete(
-                    right,
-                    current_offset + left_bytes,
-                    lines_after_left,
-                    start_line,
-                    start_column,
-                    end_line,
-                    end_column,
-                    delete_start_offset,
-                    delete_end_offset,
-                    leaves,
-                    buffers,
-                );
-            }
-            PieceTreeNode::Leaf {
-                location,
-                offset,
-                bytes,
-                line_feed_cnt,
-            } => {
-                // If line counts are unknown, we can't do position-based navigation
-                let Some(line_feed_cnt) = line_feed_cnt else {
-                    return;
-                };
-                let lines_in_piece = lines_before + line_feed_cnt;
-                let piece_start = current_offset;
-                let piece_end = current_offset + bytes;
-
-                // Check if this piece contains the start position
-                if start_line >= lines_before
-                    && start_line <= lines_in_piece
-                    && delete_start_offset.is_none()
-                {
-                    if let Some(buffer) = buffers.get(location.buffer_id()) {
-                        let offset_in_piece = self.find_position_in_leaf(
-                            lines_before,
-                            start_line,
-                            start_column,
-                            *offset,
-                            *bytes,
-                            buffer,
-                        );
-                        *delete_start_offset = Some(piece_start + offset_in_piece);
-                    }
-                }
-
-                // Check if this piece contains the end position
-                if end_line >= lines_before
-                    && end_line <= lines_in_piece
-                    && delete_end_offset.is_none()
-                {
-                    if let Some(buffer) = buffers.get(location.buffer_id()) {
-                        let offset_in_piece = self.find_position_in_leaf(
-                            lines_before,
-                            end_line,
-                            end_column,
-                            *offset,
-                            *bytes,
-                            buffer,
-                        );
-                        *delete_end_offset = Some(piece_start + offset_in_piece);
-                    }
-                }
-
-                // Now determine what to keep
-                let del_start = delete_start_offset.unwrap_or(usize::MAX);
-                let del_end = delete_end_offset.unwrap_or(0);
-
-                // Piece completely before delete range
-                if piece_end <= del_start {
-                    leaves.push(LeafData::new(
-                        *location,
-                        *offset,
-                        *bytes,
-                        Some(*line_feed_cnt),
-                    ));
-                    return;
-                }
-
-                // Piece completely after delete range (only if we've found end)
-                if delete_end_offset.is_some() && piece_start >= del_end {
-                    leaves.push(LeafData::new(
-                        *location,
-                        *offset,
-                        *bytes,
-                        Some(*line_feed_cnt),
-                    ));
-                    return;
-                }
-
-                // Piece overlaps with delete range
-                // Keep part before delete start
-                if piece_start < del_start && del_start < piece_end {
-                    let keep_bytes = del_start - piece_start;
-                    let lf_cnt =
-                        Self::compute_line_feeds_static(buffers, *location, *offset, keep_bytes);
-                    leaves.push(LeafData::new(*location, *offset, keep_bytes, lf_cnt));
-                }
-
-                // Keep part after delete end (if we know where end is)
-                if delete_end_offset.is_some() && del_end > piece_start && del_end < piece_end {
-                    let skip_bytes = del_end - piece_start;
-                    let keep_bytes = piece_end - del_end;
-                    let lf_cnt = Self::compute_line_feeds_static(
-                        buffers,
-                        *location,
-                        offset + skip_bytes,
-                        keep_bytes,
-                    );
-                    leaves.push(LeafData::new(
-                        *location,
-                        offset + skip_bytes,
-                        keep_bytes,
-                        lf_cnt,
-                    ));
-                }
-            }
-        }
-    }
-
-    /// Helper to find a position within a leaf piece
-    /// Returns the offset within the piece (not the document offset)
-    fn find_position_in_leaf(
-        &self,
-        lines_before: usize,
-        target_line: usize,
-        target_column: usize,
-        piece_offset: usize,
-        piece_bytes: usize,
-        buffer: &StringBuffer,
-    ) -> usize {
-        let line_in_piece = target_line - lines_before;
-
-        // Find the line start within the piece
-        let line_start_in_buffer = buffer
-            .nth_line_start_in_piece(piece_offset, piece_offset + piece_bytes, line_in_piece)
-            .unwrap_or(piece_offset);
-
-        // Calculate offset within the piece
-        let column_offset = target_column.min(piece_bytes);
-        let target_in_buffer = line_start_in_buffer + column_offset;
-        target_in_buffer
-            .saturating_sub(piece_offset)
-            .min(piece_bytes)
-    }
-
-    /// Helper to collect leaves while deleting a range
-    fn collect_leaves_with_delete(
-        &self,
-        node: &Arc<PieceTreeNode>,
-        current_offset: usize,
-        delete_start: usize,
-        delete_end: usize,
-        leaves: &mut Vec<LeafData>,
-        buffers: &[StringBuffer],
-    ) {
-        match node.as_ref() {
-            PieceTreeNode::Internal {
-                left_bytes,
-                left,
-                right,
-                ..
-            } => {
-                self.collect_leaves_with_delete(
-                    left,
-                    current_offset,
-                    delete_start,
-                    delete_end,
-                    leaves,
-                    buffers,
-                );
-                self.collect_leaves_with_delete(
-                    right,
-                    current_offset + left_bytes,
-                    delete_start,
-                    delete_end,
-                    leaves,
-                    buffers,
-                );
-            }
-            PieceTreeNode::Leaf {
-                location,
-                offset,
-                bytes,
-                line_feed_cnt,
-            } => {
-                let piece_start = current_offset;
-                let piece_end = current_offset + bytes;
-
-                // Piece completely before delete range
-                if piece_end <= delete_start {
-                    leaves.push(LeafData::new(*location, *offset, *bytes, *line_feed_cnt));
-                    return;
-                }
-
-                // Piece completely after delete range
-                if piece_start >= delete_end {
-                    leaves.push(LeafData::new(*location, *offset, *bytes, *line_feed_cnt));
-                    return;
-                }
-
-                // Piece partially or fully overlaps delete range
-                // Keep part before delete range
-                if piece_start < delete_start {
-                    let keep_bytes = delete_start - piece_start;
-                    let lf_cnt =
-                        Self::compute_line_feeds_static(buffers, *location, *offset, keep_bytes);
-                    leaves.push(LeafData::new(*location, *offset, keep_bytes, lf_cnt));
-                }
-
-                // Keep part after delete range
-                if piece_end > delete_end {
-                    let skip_bytes = delete_end - piece_start;
-                    let keep_bytes = piece_end - delete_end;
-                    let lf_cnt = Self::compute_line_feeds_static(
-                        buffers,
-                        *location,
-                        offset + skip_bytes,
-                        keep_bytes,
-                    );
-                    leaves.push(LeafData::new(
-                        *location,
-                        offset + skip_bytes,
-                        keep_bytes,
-                        lf_cnt,
-                    ));
-                }
-            }
+        if end_offset > start_offset {
+            self.delete(start_offset, end_offset - start_offset, buffers);
         }
     }
 
@@ -1545,6 +1498,54 @@ impl PieceTree {
     /// Returns None if any piece has unknown line count
     pub fn line_count(&self) -> Option<usize> {
         self.root.total_line_feeds().map(|lf| lf + 1)
+    }
+
+    /// Find the document byte offset and metadata for the piece containing a target line.
+    ///
+    /// Uses only the tree's `lf_left` / `line_feed_cnt` metadata (no buffer data needed).
+    /// Returns `(doc_byte_offset, buffer_id, piece_offset, piece_bytes, lines_before_piece)`
+    /// where `lines_before_piece` is the number of complete lines before this piece.
+    pub fn piece_info_for_line(
+        &self,
+        target_line: usize,
+    ) -> Option<(usize, usize, usize, usize, usize)> {
+        self.root.find_piece_for_line(0, 0, target_line)
+    }
+
+    /// Rebuild the tree with updated line feed counts from external data.
+    ///
+    /// Takes a slice of `(leaf_index, line_feed_count)` pairs. Each entry updates
+    /// the corresponding leaf (by order in the tree) with the given line feed count.
+    /// After updating, rebuilds the tree so that `lf_left` values on internal nodes
+    /// are correct.
+    ///
+    /// This keeps the piece tree free of I/O — the caller is responsible for
+    /// reading chunk data and counting line feeds externally.
+    pub fn update_leaf_line_feeds(&mut self, updates: &[(usize, usize)]) {
+        if updates.is_empty() {
+            return;
+        }
+
+        let mut leaves = Vec::new();
+        self.root.collect_leaves(&mut leaves);
+
+        for &(idx, lf_count) in updates {
+            if let Some(leaf) = leaves.get_mut(idx) {
+                leaf.line_feed_cnt = Some(lf_count);
+            }
+        }
+
+        self.root = Self::build_balanced(&leaves);
+    }
+
+    /// Update leaf line feed counts using path-copying.
+    /// Like `update_leaf_line_feeds` but only clones nodes along each updated
+    /// leaf's root-to-leaf path, preserving `Arc::ptr_eq` for unmodified subtrees.
+    pub fn update_leaf_line_feeds_path_copy(&mut self, updates: &[(usize, usize)]) {
+        for &(idx, lf_count) in updates {
+            let (new_root, _) = self.root.update_leaf_lf_by_index(idx, lf_count);
+            self.root = new_root;
+        }
     }
 
     /// Get tree statistics for debugging
@@ -1562,6 +1563,35 @@ impl PieceTree {
         let mut leaves = Vec::new();
         self.root.collect_leaves(&mut leaves);
         leaves
+    }
+
+    /// Split any leaves larger than `max_bytes` into smaller pieces.
+    ///
+    /// This is a bulk operation that collects all leaves, subdivides oversized
+    /// ones, and rebuilds the tree once.  Line-feed counts on the new sub-leaves
+    /// are set to `None` (the caller is expected to fill them in via scanning).
+    pub fn split_leaves_to_chunk_size(&mut self, max_bytes: usize) {
+        let old_leaves = self.get_leaves();
+        let mut new_leaves = Vec::with_capacity(old_leaves.len());
+        let mut changed = false;
+
+        for leaf in &old_leaves {
+            if leaf.bytes <= max_bytes {
+                new_leaves.push(*leaf);
+            } else {
+                changed = true;
+                let mut off = 0;
+                while off < leaf.bytes {
+                    let len = max_bytes.min(leaf.bytes - off);
+                    new_leaves.push(LeafData::new(leaf.location, leaf.offset + off, len, None));
+                    off += len;
+                }
+            }
+        }
+
+        if changed {
+            self.root = Self::build_balanced(&new_leaves);
+        }
     }
 
     /// Convert byte offset to line/column position using tree's line metadata
@@ -1594,10 +1624,10 @@ impl PieceTree {
             // Get the buffer for this piece
             let buffer_id = piece_info.location.buffer_id();
             if let Some(buffer) = buffers.get(buffer_id) {
+                let offset_in_piece = piece_info.offset_in_piece.unwrap_or(0);
+
                 // Check if we have line starts available
                 if let Some(line_starts) = buffer.get_line_starts() {
-                    // Find position within the piece
-                    let offset_in_piece = piece_info.offset_in_piece.unwrap_or(0);
                     let byte_offset_in_buffer = piece_info.offset + offset_in_piece;
 
                     // Find which line within the buffer
@@ -1640,24 +1670,79 @@ impl PieceTree {
 
                     return Some((doc_line, column));
                 }
-                // No line starts available - return None
+
+                // No line_starts index, but buffer data may be loaded (e.g. scanned
+                // large file with lazy-loaded chunks). Count newlines directly.
+                if let Some(data) = buffer.get_data() {
+                    let piece_start = piece_info.offset;
+                    let scan_end = (piece_start + offset_in_piece).min(data.len());
+                    let line_in_piece = data[piece_start..scan_end]
+                        .iter()
+                        .filter(|&&b| b == b'\n')
+                        .count();
+                    let doc_line = lines_before + line_in_piece;
+
+                    // Column: bytes since last newline (or piece start)
+                    let column = if line_in_piece == 0 {
+                        if bytes_before == 0 {
+                            offset_in_piece
+                        } else {
+                            // First line of piece may span from previous piece
+                            let line_start = self.position_to_offset(doc_line, 0, buffers);
+                            offset.saturating_sub(line_start)
+                        }
+                    } else {
+                        // Find last newline before our offset within the piece
+                        let last_nl = data[piece_start..scan_end]
+                            .iter()
+                            .rposition(|&b| b == b'\n')
+                            .unwrap_or(0);
+                        offset_in_piece - last_nl - 1
+                    };
+
+                    return Some((doc_line, column));
+                }
+                // Buffer unloaded and no line starts.
+                // If we have line feed counts (scanned), estimate proportionally
+                // within the piece: lines_before + (offset_in_piece / piece_bytes) * piece_line_feeds
+                if let Some(lf_count) = piece_info.line_feeds {
+                    let piece_bytes = piece_info.bytes;
+                    let lines_in_partial = if piece_bytes > 0 {
+                        (offset_in_piece as u64 * lf_count as u64 / piece_bytes as u64) as usize
+                    } else {
+                        0
+                    };
+                    let doc_line = lines_before + lines_in_partial;
+                    // Column estimate: offset_in_piece modulo average bytes per line
+                    let avg_bytes_per_line = if lf_count > 0 {
+                        piece_bytes / lf_count
+                    } else {
+                        80
+                    };
+                    let column = if avg_bytes_per_line > 0 {
+                        offset_in_piece % avg_bytes_per_line
+                    } else {
+                        0
+                    };
+                    return Some((doc_line, column));
+                }
             }
         }
 
-        // Fallback: end of document
-        // Only if we have line metadata
-        match self.line_count() {
-            Some(line_count) => {
-                let last_line = line_count.saturating_sub(1);
-                let line_start = self.position_to_offset(last_line, 0, buffers);
-                let column = self.total_bytes.saturating_sub(line_start);
-                Some((last_line, column))
-            }
-            None => {
-                // No line metadata - cannot compute position
-                None
+        // Fallback: end of document or no metadata
+        // Only if we have line metadata and the offset is actually at/near the end
+        if offset >= self.total_bytes {
+            match self.line_count() {
+                Some(line_count) => {
+                    let last_line = line_count.saturating_sub(1);
+                    let line_start = self.position_to_offset(last_line, 0, buffers);
+                    let column = self.total_bytes.saturating_sub(line_start);
+                    return Some((last_line, column));
+                }
+                None => return None,
             }
         }
+        None
     }
 
     /// Convert line/column position to byte offset using tree's line metadata

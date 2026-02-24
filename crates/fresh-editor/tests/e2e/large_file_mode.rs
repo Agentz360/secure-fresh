@@ -609,13 +609,19 @@ fn test_large_file_edits_beginning_middle_end() {
     // Edit lines
     let steps = 17;
     for i in 0..steps {
-        let target = i * (lines / steps);
+        let target_line = i * (lines / steps);
+        let target_byte = target_line * line_len;
         println!("{}", harness.screen_to_string());
         harness
             .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
             .unwrap();
-        println!("target line: {}", target);
-        let _ = harness.type_text(&format!("{}", target).to_string());
+        // Dismiss the scan confirmation prompt — opens byte offset prompt
+        let _ = harness.type_text("n");
+        harness
+            .send_key(KeyCode::Enter, KeyModifiers::NONE)
+            .unwrap();
+        println!("target byte: {}", target_byte);
+        let _ = harness.type_text(&format!("{}B", target_byte).to_string());
         println!("{}", harness.screen_to_string());
         harness
             .send_key(KeyCode::Enter, KeyModifiers::NONE)
@@ -670,4 +676,914 @@ fn test_large_file_edits_beginning_middle_end() {
             i, got, want_trimmed
         );
     }
+}
+
+/// Test that byte offsets show in the gutter for large files and that scanning
+/// switches to exact line numbers.
+/// Also tests the Go To Line scan confirmation prompt flow:
+/// - Before scan: Ctrl+G shows scan confirmation prompt, gutter shows byte offsets
+/// - After answering "n": byte offset prompt opens, user navigates by byte offset
+/// - After answering "y": file is scanned, gutter switches to line numbers
+/// - After scan: Ctrl+G goes directly to Go To Line prompt (no re-confirmation)
+#[test]
+fn test_byte_offset_gutter_and_scan() {
+    use std::fs;
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("byte_offset.txt");
+
+    // Create a file large enough to trigger large file mode (default 1MB threshold)
+    let lines = 100_000;
+    let mut content = String::new();
+    for i in 0..lines {
+        content.push_str(&format!("Line {:06} content\n", i));
+    }
+    let line_len = "Line 000000 content\n".len(); // 20 bytes per line
+    fs::write(&file_path, &content).unwrap();
+
+    // Use the temp_dir as working directory so the status bar shows a short
+    // relative filename instead of the full absolute path.
+    let mut harness =
+        EditorTestHarness::with_working_dir(80, 24, temp_dir.path().to_path_buf()).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // === Test 1: Gutter shows byte offsets (pure numeric, no ~ prefix) ===
+    let screen = harness.screen_to_string();
+    // The first line should show byte offset 0 in the gutter
+    let has_byte_offset = screen.lines().any(|line| {
+        if let Some(before_sep) = line.split('│').next() {
+            let trimmed = before_sep.trim();
+            trimmed == "0" || (trimmed.chars().all(|c| c.is_ascii_digit()) && !trimmed.is_empty())
+        } else {
+            false
+        }
+    });
+    assert!(
+        has_byte_offset,
+        "Gutter should show byte offsets for large files without line scan.\nScreen:\n{}",
+        screen
+    );
+    // Status bar should show "Byte 0" (not "Ln 1")
+    assert!(
+        screen.contains("Byte 0"),
+        "Status bar should show 'Byte 0' in byte offset mode.\nScreen:\n{}",
+        screen
+    );
+
+    // === Test 2: Ctrl+G shows scan confirmation prompt ===
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Scan file"),
+        "Ctrl+G should show scan confirmation prompt.\nScreen:\n{}",
+        screen
+    );
+
+    // === Test 3: Dismiss with "n" → byte offset prompt opens ===
+    let _ = harness.type_text("n");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("byte offset"),
+        "After dismissing scan, byte offset prompt should open.\nScreen:\n{}",
+        screen
+    );
+    // Navigate to byte offset of line 500 (= 500 * 20 = 10000)
+    let target_byte = 500 * line_len;
+    let _ = harness.type_text(&format!("{}B", target_byte));
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    // Status bar should show the byte position
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains(&format!("Byte {}", target_byte)),
+        "Should have jumped to byte offset {}.\nScreen:\n{}",
+        target_byte,
+        screen
+    );
+
+    // === Test 4: Answer "y" to scan, gutter switches to line numbers ===
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    let _ = harness.type_text("y");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    // Drive the incremental scan to completion.
+    while harness.editor_mut().process_line_scan() {}
+    // After scanning, the Go To Line prompt opens (with exact line numbers now)
+    // Cancel it
+    harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+
+    // Verify gutter now shows line numbers (not byte offsets)
+    harness.render().unwrap();
+    let screen = harness.screen_to_string();
+    // After scan, gutter should have normal line numbers (small values like 501, 502...)
+    // and status bar should show "Ln X" instead of "Byte X"
+    assert!(
+        screen.contains("Ln "),
+        "After scanning, status bar should show 'Ln' not 'Byte'.\nScreen:\n{}",
+        screen
+    );
+
+    // === Test 5: After scan, Ctrl+G goes directly to Go To Line (no scan prompt) ===
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Go to line"),
+        "After scan, Ctrl+G should open Go To Line directly (no scan confirmation).\nScreen:\n{}",
+        screen
+    );
+    // Navigate to a specific line
+    let _ = harness.type_text("500");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    // Verify we jumped (status bar should show the line)
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Ln 500"),
+        "Should have jumped to line 500.\nScreen:\n{}",
+        screen
+    );
+}
+
+/// Test that answering "y" to the scan confirmation shows "Scanning..." progress
+/// in the status bar and eventually opens the Go To Line prompt.
+#[test]
+fn test_line_scan_progress_updates() {
+    use std::fs;
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("scan_progress.txt");
+
+    // Create a multi-MB file to trigger large file mode.
+    let lines = 100_000;
+    let mut content = String::new();
+    for i in 0..lines {
+        content.push_str(&format!("Line {:06} content\n", i));
+    }
+    fs::write(&file_path, &content).unwrap();
+
+    let mut harness =
+        EditorTestHarness::with_working_dir(80, 24, temp_dir.path().to_path_buf()).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Open Ctrl+G scan confirmation and answer "y"
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    let _ = harness.type_text("y");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // After answering "y" but before any tick, the status bar should show
+    // the initial "Scanning... 0%" progress message.
+    harness.render().unwrap();
+    let status = harness.get_status_bar();
+    assert!(
+        status.contains("Scanning"),
+        "Status bar should show 'Scanning...' after answering 'y'.\nStatus bar: '{}'",
+        status
+    );
+
+    // Drive the incremental scan to completion.
+    while harness.editor_mut().process_line_scan() {}
+
+    // After the scan completes, the Go To Line prompt should be open
+    harness.render().unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Go to line"),
+        "After scan completes, Go To Line prompt should open.\nScreen:\n{}",
+        screen
+    );
+
+    // Verify the status bar shows the completion message
+    let status = harness.get_status_bar();
+    assert!(
+        status.contains("Line ind"),
+        "Status bar should show scan complete message.\nStatus bar: '{}'",
+        status
+    );
+
+    // Verify the scan actually worked — press Esc and re-open Ctrl+G,
+    // it should go directly to Go To Line (no scan confirmation)
+    harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Go to line"),
+        "After scan, Ctrl+G should open Go To Line directly.\nScreen:\n{}",
+        screen
+    );
+
+    // Navigate to a specific line to verify exact line numbers work
+    let _ = harness.type_text("500");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    let status = harness.get_status_bar();
+    assert!(
+        status.contains("Ln 500"),
+        "Should have jumped to line 500.\nStatus bar: '{}'",
+        status
+    );
+}
+
+/// End-to-end test for the full large-file line-number lifecycle:
+///   1. Open large file (unloaded, byte offset gutter)
+///   2. Make edits BEFORE scanning
+///   3. Scan line numbers
+///   4. Verify exact line numbers (gutter shows line numbers), jump to line
+///   5. Make MORE edits in previously-untouched (unloaded) chunks
+///   6. Jump around, verify line numbers stay exact
+#[test]
+fn test_edit_scan_edit_line_numbers_stay_exact() {
+    use std::fs;
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("edit_scan_edit.txt");
+
+    // Create a multi-MB file to trigger large file mode.
+    let lines = 100_000;
+    let mut content = String::new();
+    for i in 0..lines {
+        content.push_str(&format!("Line {:06} content\n", i));
+    }
+    fs::write(&file_path, &content).unwrap();
+
+    let mut harness =
+        EditorTestHarness::with_working_dir(80, 24, temp_dir.path().to_path_buf()).unwrap();
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // === Step 1: Verify byte offset gutter (status bar shows "Byte 0") ===
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Byte 0"),
+        "Before scan, status bar should show 'Byte 0'.\nScreen:\n{}",
+        screen
+    );
+
+    // === Step 2: Make an edit BEFORE scanning ===
+    // Type some text at the very beginning of the file.
+    harness.type_text("PRE_SCAN_EDIT ").unwrap();
+    harness.render().unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("PRE_SCAN_EDIT"),
+        "Edit before scan should be visible.\nScreen:\n{}",
+        screen
+    );
+
+    // === Step 3: Trigger line scan via Ctrl+G → "y" ===
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    let _ = harness.type_text("y");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    // Drive the scan to completion.
+    while harness.editor_mut().process_line_scan() {}
+    // Cancel the Go To Line prompt that opens after scan.
+    harness.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+
+    // === Step 4: Verify exact line numbers (status bar shows "Ln") ===
+    harness.render().unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Ln "),
+        "After scan, status bar should show 'Ln' (not 'Byte').\nScreen:\n{}",
+        screen
+    );
+
+    // Jump to a specific line and verify.
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Go to line"),
+        "After scan, Ctrl+G should open Go To Line directly.\nScreen:\n{}",
+        screen
+    );
+    let _ = harness.type_text("500");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    let status = harness.get_status_bar();
+    assert!(
+        status.contains("Ln 500"),
+        "Should have jumped to line 500.\nStatus bar: '{}'",
+        status
+    );
+
+    // === Step 5: Edit in a previously-untouched (far away) chunk ===
+    // Jump to line 50000 — deep in the file, likely in an unloaded chunk.
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    let _ = harness.type_text("50000");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    let status = harness.get_status_bar();
+    assert!(
+        status.contains("Ln 50000"),
+        "Should have jumped to line 50000.\nStatus bar: '{}'",
+        status
+    );
+
+    // Type text on this line (forces loading the unloaded chunk).
+    harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+    harness.type_text("POST_SCAN_EDIT ").unwrap();
+    harness.render().unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("POST_SCAN_EDIT"),
+        "Post-scan edit should be visible.\nScreen:\n{}",
+        screen
+    );
+
+    // === Step 6: Verify line numbers are STILL exact after the edit ===
+    // Status bar should show "Ln" (not "Byte")
+    assert!(
+        screen.contains("Ln "),
+        "After post-scan edit, status bar should still show 'Ln'.\nScreen:\n{}",
+        screen
+    );
+
+    // Jump to another line to confirm navigation still works with exact numbers.
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    let _ = harness.type_text("99999");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    let status = harness.get_status_bar();
+    assert!(
+        status.contains("Ln 99999"),
+        "Should have jumped to line 99999.\nStatus bar: '{}'",
+        status
+    );
+
+    // Jump back to the beginning and verify our first edit is still there.
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    let _ = harness.type_text("1");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("PRE_SCAN_EDIT"),
+        "Pre-scan edit should still be visible after jumping around.\nScreen:\n{}",
+        screen
+    );
+}
+
+/// End-to-end test: large file mode gutter indicators appear after enabling line scan.
+///
+/// In large file mode, the buffer_modified plugin cannot always compute accurate
+/// line ranges for gutter indicators because line metadata is not available.
+/// After the user enables line scanning (via the "Go to Line" command), the line
+/// metadata becomes available, and all previously-edited lines should receive
+/// gutter indicators.
+///
+/// Flow:
+///   1. Open a large file (>11 MB threshold) – editor enters byte-offset mode
+///   2. Make edits on several lines – track which lines are edited
+///   3. Enable line scanning via Ctrl+G → "y" → line number → Enter
+///   4. Verify that the gutter now shows line numbers (not byte offsets)
+///   5. Verify that ALL previously-edited lines have gutter indicators
+#[test]
+#[cfg(feature = "plugins")]
+fn test_large_file_gutter_indicators_after_line_scan() {
+    use crate::common::harness::{copy_plugin, copy_plugin_lib};
+    use crossterm::event::KeyModifiers;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // ── Helpers (same logic as plugins/gutter.rs tests) ──
+
+    /// Get content lines from screen (skip menu bar, tab bar, and bottom UI)
+    fn get_content_lines(screen: &str) -> Vec<&str> {
+        let lines: Vec<&str> = screen.lines().collect();
+        let content_start = 2; // after menu bar + tab bar
+        let content_end = lines.len().saturating_sub(2); // before status bar + prompt
+        if content_end > content_start {
+            lines[content_start..content_end].to_vec()
+        } else {
+            vec![]
+        }
+    }
+
+    /// Count content lines whose first character is `symbol` (gutter indicator column)
+    fn count_gutter_indicators(screen: &str, symbol: &str) -> usize {
+        get_content_lines(screen)
+            .iter()
+            .filter(|line| {
+                line.chars()
+                    .next()
+                    .map(|c| c.to_string() == symbol)
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
+    /// Return 0-indexed content-line indices that have `symbol` as gutter indicator
+    fn get_indicator_lines(screen: &str, symbol: &str) -> Vec<usize> {
+        get_content_lines(screen)
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, line)| {
+                line.chars()
+                    .next()
+                    .filter(|c| c.to_string() == symbol)
+                    .map(|_| idx)
+            })
+            .collect()
+    }
+
+    // ── Setup ──
+
+    let temp_dir = TempDir::new().unwrap();
+
+    // Install buffer_modified plugin so we get gutter indicators for unsaved edits
+    let plugins_dir = temp_dir.path().join("plugins");
+    fs::create_dir_all(&plugins_dir).unwrap();
+    copy_plugin_lib(&plugins_dir);
+    copy_plugin(&plugins_dir, "buffer_modified");
+
+    // Create a file that exceeds the 11 MB threshold.
+    // Each line: "Line NNNNNN content for large file testing, padding." + \n ≈ 55 bytes
+    // 300 000 lines × 55 bytes ≈ 16.5 MB (comfortably above 11 MB)
+    let file_path = temp_dir.path().join("large.txt");
+    let line_count = 300_000usize;
+    let mut content = String::with_capacity(line_count * 55);
+    for i in 0..line_count {
+        use std::fmt::Write;
+        writeln!(
+            content,
+            "Line {:06} content for large file testing, padding.",
+            i
+        )
+        .unwrap();
+    }
+    let file_size = content.len();
+    assert!(
+        file_size > 11 * 1024 * 1024,
+        "Test file should be >11MB, got {} bytes",
+        file_size
+    );
+    fs::write(&file_path, &content).unwrap();
+
+    // Use 11 MB threshold so the file triggers large file mode
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        120,
+        40,
+        fresh::config::Config {
+            editor: fresh::config::EditorConfig {
+                large_file_threshold_bytes: 11 * 1024 * 1024,
+                auto_indent: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        temp_dir.path().to_path_buf(),
+    )
+    .unwrap();
+
+    harness.open_file(&file_path).unwrap();
+    harness.render().unwrap();
+
+    // Wait for file and plugin to be ready
+    harness
+        .wait_until(|h| h.screen_to_string().contains("large.txt"))
+        .unwrap();
+
+    // ── Step 1: Verify byte-offset mode (large file, no line scan yet) ──
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Byte 0"),
+        "Should be in byte-offset mode before scanning.\nScreen:\n{}",
+        screen
+    );
+
+    // ── Step 2: Make edits on three separate lines ──
+
+    // Edit A – line 1 (current position, top of file)
+    harness.type_text("EDIT_A ").unwrap();
+
+    // Edit B – move down 5 lines, edit at start of line
+    for _ in 0..5 {
+        harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    }
+    harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+    harness.type_text("EDIT_B ").unwrap();
+
+    // Edit C – move down 10 more lines, edit at start of line
+    for _ in 0..10 {
+        harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    }
+    harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+    harness.type_text("EDIT_C ").unwrap();
+
+    // Go back to top so all edits are visible on screen
+    harness
+        .send_key(KeyCode::Home, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Allow the plugin some time to process (advance test time)
+    harness.sleep(std::time::Duration::from_millis(200));
+    harness.render().unwrap();
+
+    // Capture pre-scan indicator state
+    let screen_before_scan = harness.screen_to_string();
+    let indicators_before = count_gutter_indicators(&screen_before_scan, "│");
+    println!(
+        "=== Before line scan ===\nIndicator count: {}\nIndicator lines: {:?}\nScreen:\n{}",
+        indicators_before,
+        get_indicator_lines(&screen_before_scan, "│"),
+        screen_before_scan
+    );
+
+    // Verify that the edits are visible on screen
+    assert!(
+        screen_before_scan.contains("EDIT_A"),
+        "EDIT_A should be visible on screen"
+    );
+    assert!(
+        screen_before_scan.contains("EDIT_B"),
+        "EDIT_B should be visible on screen"
+    );
+    assert!(
+        screen_before_scan.contains("EDIT_C"),
+        "EDIT_C should be visible on screen"
+    );
+
+    // ── Step 3: Enable line scanning via Ctrl+G → "y" ──
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Scan file"),
+        "Ctrl+G should show scan confirmation prompt.\nScreen:\n{}",
+        screen
+    );
+
+    // Answer "y" to start scanning
+    let _ = harness.type_text("y");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Drive incremental scan to completion
+    while harness.editor_mut().process_line_scan() {}
+
+    // The Go To Line prompt opens after the scan – type a line number and press Enter
+    // (this also tests that Go To Line works after scanning)
+    let _ = harness.type_text("1");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // ── Step 4: Verify line-number mode ──
+    harness.render().unwrap();
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("Ln "),
+        "After scanning, status bar should show 'Ln' not 'Byte'.\nScreen:\n{}",
+        screen
+    );
+
+    // ── Step 5: Trigger plugin re-evaluation ──
+    // Make a tiny no-op edit (type + backspace) on line 1 to trigger
+    // reapplyIndicatorsFromDiff which now has line_ranges available.
+    harness
+        .send_key(KeyCode::Home, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.type_text("X").unwrap();
+    harness
+        .send_key(KeyCode::Backspace, KeyModifiers::NONE)
+        .unwrap();
+
+    // Allow time for the plugin to process
+    harness.sleep(std::time::Duration::from_millis(200));
+    harness.render().unwrap();
+
+    // Capture post-scan indicator state
+    let screen_after_scan = harness.screen_to_string();
+    let indicators_after = count_gutter_indicators(&screen_after_scan, "│");
+    let indicator_lines_after = get_indicator_lines(&screen_after_scan, "│");
+    println!(
+        "=== After line scan ===\nIndicator count: {}\nIndicator lines: {:?}\nScreen:\n{}",
+        indicators_after, indicator_lines_after, screen_after_scan
+    );
+
+    // Verify the edits are still visible
+    assert!(
+        screen_after_scan.contains("EDIT_A"),
+        "EDIT_A should still be visible after scan"
+    );
+    assert!(
+        screen_after_scan.contains("EDIT_B"),
+        "EDIT_B should still be visible after scan"
+    );
+    assert!(
+        screen_after_scan.contains("EDIT_C"),
+        "EDIT_C should still be visible after scan"
+    );
+
+    // ── Step 6: Verify gutter indicators for ALL edited lines ──
+    // After scanning, the buffer_modified plugin can compute accurate line ranges.
+    // All three edited lines should now have gutter indicators.
+    assert!(
+        indicators_after >= 3,
+        "After line scan, all 3 edited lines should have gutter indicators. \
+         Got {} indicators on lines {:?}.\nScreen:\n{}",
+        indicators_after,
+        indicator_lines_after,
+        screen_after_scan
+    );
+
+    // Also verify that the indicators are on the correct content rows.
+    // EDIT_A is on content row 0, EDIT_B is on content row 5, EDIT_C is on content row 15.
+    // (Content rows are 0-indexed relative to the content area.)
+    // Find which content rows have "EDIT_A", "EDIT_B", "EDIT_C"
+    let content_lines = get_content_lines(&screen_after_scan);
+    let edit_a_row = content_lines
+        .iter()
+        .position(|l| l.contains("EDIT_A"))
+        .expect("EDIT_A should be in content area");
+    let edit_b_row = content_lines
+        .iter()
+        .position(|l| l.contains("EDIT_B"))
+        .expect("EDIT_B should be in content area");
+    let edit_c_row = content_lines
+        .iter()
+        .position(|l| l.contains("EDIT_C"))
+        .expect("EDIT_C should be in content area");
+
+    assert!(
+        indicator_lines_after.contains(&edit_a_row),
+        "EDIT_A (content row {}) should have a gutter indicator. \
+         Indicator rows: {:?}\nScreen:\n{}",
+        edit_a_row,
+        indicator_lines_after,
+        screen_after_scan
+    );
+    assert!(
+        indicator_lines_after.contains(&edit_b_row),
+        "EDIT_B (content row {}) should have a gutter indicator. \
+         Indicator rows: {:?}\nScreen:\n{}",
+        edit_b_row,
+        indicator_lines_after,
+        screen_after_scan
+    );
+    assert!(
+        indicator_lines_after.contains(&edit_c_row),
+        "EDIT_C (content row {}) should have a gutter indicator. \
+         Indicator rows: {:?}\nScreen:\n{}",
+        edit_c_row,
+        indicator_lines_after,
+        screen_after_scan
+    );
+}
+
+/// Test that gutter indicators update correctly when scrolling through a large file.
+///
+/// After line scan, the buffer_modified plugin uses viewport-filtered batch indicators.
+/// This test verifies:
+/// 1. Editing at the top shows indicators for the visible modified lines
+/// 2. Jumping to EOF and editing shows indicators at that location (not the old ones)
+/// 3. Jumping back to the beginning shows indicators for the originally modified lines
+/// 4. Jumping back to EOF shows the EOF edit indicator is still present
+#[test]
+fn test_large_file_gutter_indicators_viewport_filtering() {
+    use crate::common::harness::{copy_plugin, copy_plugin_lib};
+    use crossterm::event::KeyModifiers;
+    use std::fs;
+    use tempfile::TempDir;
+
+    // ── Helpers ──
+
+    /// Get content lines from screen (skip menu bar, tab bar, and bottom UI)
+    fn get_content_lines(screen: &str) -> Vec<&str> {
+        let lines: Vec<&str> = screen.lines().collect();
+        let content_start = 2; // after menu bar + tab bar
+        let content_end = lines.len().saturating_sub(2); // before status bar + prompt
+        if content_end > content_start {
+            lines[content_start..content_end].to_vec()
+        } else {
+            vec![]
+        }
+    }
+
+    /// Count content lines whose first character is `symbol` (gutter indicator column)
+    fn count_gutter_indicators(screen: &str, symbol: &str) -> usize {
+        get_content_lines(screen)
+            .iter()
+            .filter(|line| {
+                line.chars()
+                    .next()
+                    .map(|c| c.to_string() == symbol)
+                    .unwrap_or(false)
+            })
+            .count()
+    }
+
+    /// Return 0-indexed content-line indices that have `symbol` as gutter indicator
+    fn get_indicator_lines(screen: &str, symbol: &str) -> Vec<usize> {
+        get_content_lines(screen)
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, line)| {
+                line.chars()
+                    .next()
+                    .filter(|c| c.to_string() == symbol)
+                    .map(|_| idx)
+            })
+            .collect()
+    }
+
+    // ── Setup ──
+
+    // Use a real large file (~848MB) to reproduce the diff offset bug.
+    // The bug requires enough chunks (~848) for diff_collect_leaves to skip
+    // many identical subtrees via Arc::ptr_eq, producing span-relative
+    // line_ranges instead of document-absolute ones.
+    let huge_file = std::path::PathBuf::from(
+        std::env::var("LARGE_FILE_TEST_PATH")
+            .unwrap_or_else(|_| "/home/noam/Desktop/huge.txt".to_string()),
+    );
+    if !huge_file.exists() {
+        eprintln!(
+            "Skipping test: large file not found at {:?}. \
+             Set LARGE_FILE_TEST_PATH to provide one.",
+            huge_file
+        );
+        return;
+    }
+
+    let temp_dir = TempDir::new().unwrap();
+
+    // Install buffer_modified plugin
+    let plugins_dir = temp_dir.path().join("plugins");
+    fs::create_dir_all(&plugins_dir).unwrap();
+    copy_plugin_lib(&plugins_dir);
+    copy_plugin(&plugins_dir, "buffer_modified");
+
+    let mut harness = EditorTestHarness::with_config_and_working_dir(
+        120,
+        40,
+        fresh::config::Config {
+            editor: fresh::config::EditorConfig {
+                large_file_threshold_bytes: 11 * 1024 * 1024,
+                auto_indent: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        temp_dir.path().to_path_buf(),
+    )
+    .unwrap();
+
+    harness.open_file(&huge_file).unwrap();
+
+    // Wait for file to be ready
+    harness
+        .wait_until(|h| h.screen_to_string().contains("huge.txt"))
+        .unwrap();
+
+    // ── Step 1: Enable line scanning via Ctrl+G → "y" ──
+    harness
+        .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    let _ = harness.type_text("y");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Drive incremental scan to completion
+    while harness.editor_mut().process_line_scan() {}
+
+    // The Go To Line prompt opens after scan — go to line 1
+    let _ = harness.type_text("1");
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Verify line-number mode
+    harness
+        .wait_until(|h| h.screen_to_string().contains("Ln "))
+        .unwrap();
+    eprintln!("[test] line numbers active");
+
+    // ── Step 2: Jump to near EOF and type a single char ──
+    eprintln!("[test] Step 2: jumping to EOF...");
+    harness
+        .send_key(KeyCode::End, KeyModifiers::CONTROL)
+        .unwrap();
+    // Move up a few lines so we're not exactly at EOF
+    for _ in 0..5 {
+        harness.send_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+    }
+    harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
+    eprintln!("[test] Step 2: typing 'X'...");
+    harness
+        .send_key(KeyCode::Char('X'), KeyModifiers::NONE)
+        .unwrap();
+    eprintln!("[test] Step 2: typed 'X', waiting for settle...");
+
+    // Wait for the edit to appear, then let viewport_changed settle
+    harness
+        .wait_until(|h| h.screen_to_string().contains("X"))
+        .unwrap();
+    harness.wait_until_stable(|_| true).unwrap();
+    eprintln!("[test] Step 2: settled");
+
+    // Dump diff data to understand line_ranges
+    {
+        let diff = harness
+            .editor_mut()
+            .active_state()
+            .buffer
+            .diff_since_saved();
+        eprintln!(
+            "[test] DIFF after edit: equal={} byte_ranges={:?} line_ranges={:?} nodes_visited={}",
+            diff.equal, diff.byte_ranges, diff.line_ranges, diff.nodes_visited
+        );
+    }
+
+    let screen_eof = harness.screen_to_string();
+    let eof_indicators = count_gutter_indicators(&screen_eof, "│");
+    println!(
+        "=== After editing near EOF ===\nIndicator count: {}\nIndicator lines: {:?}\nScreen:\n{}",
+        eof_indicators,
+        get_indicator_lines(&screen_eof, "│"),
+        screen_eof
+    );
+
+    // ── Step 3: Jump to top ──
+    eprintln!("[test] Step 3: jumping to top...");
+    harness
+        .send_key(KeyCode::Home, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.wait_until_stable(|_| true).unwrap();
+    eprintln!("[test] Step 3: at top");
+
+    // ── Step 4: Jump back to EOF — indicator on the X-edited line must persist ──
+    eprintln!("[test] Step 4: jumping back to EOF...");
+    harness
+        .send_key(KeyCode::End, KeyModifiers::CONTROL)
+        .unwrap();
+
+    // Wait for the edited line to be visible, then let viewport_changed settle
+    harness
+        .wait_until(|h| h.screen_to_string().contains("X"))
+        .unwrap();
+    harness.wait_until_stable(|_| true).unwrap();
+    eprintln!("[test] Step 4: settled at EOF");
+
+    let screen_back_eof = harness.screen_to_string();
+    let back_eof_indicators = count_gutter_indicators(&screen_back_eof, "│");
+    let back_eof_indicator_lines = get_indicator_lines(&screen_back_eof, "│");
+    println!(
+        "=== Back at EOF ===\nIndicator count: {}\nIndicator lines: {:?}\nScreen:\n{}",
+        back_eof_indicators, back_eof_indicator_lines, screen_back_eof
+    );
+
+    // The edited line must have a gutter indicator after jumping back
+    assert!(
+        back_eof_indicators >= 1,
+        "Edited line near EOF should have a gutter indicator after jumping away and back.\n\
+         Indicator count: {}\nIndicator lines: {:?}\nScreen:\n{}",
+        back_eof_indicators,
+        back_eof_indicator_lines,
+        screen_back_eof
+    );
 }

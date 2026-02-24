@@ -110,7 +110,7 @@ fn test_remote_huge_file_mid_and_start_insert() {
 
     let file_path = temp_dir.path().join("remote_huge_mid_start.txt");
 
-    // Create 10,000 lines
+    // Create 1,000,000 lines
     let mut content = String::new();
     let mut expected_lines = Vec::new();
     for i in 0..1_000_000 {
@@ -137,23 +137,45 @@ fn test_remote_huge_file_mid_and_start_insert() {
     harness.open_file(&file_path).unwrap();
     harness.render().unwrap();
 
+    // Each original line is 29 bytes: "Line XXXXX: original content\n"
+    let line_len = 29;
+    // Track extra bytes inserted before each line to compute byte offsets
+    let mut extra_bytes_before_line = 0usize;
+    let mut last_edit_line = None;
+
     let _iterations = 3;
     for target_line in vec![5000, 3] {
-        // 1. Edit Middle (Line 5000)
-        // Reset to start
+        // Compute byte offset for the target line, accounting for prior edits
+        let extra = if last_edit_line.map_or(false, |l: usize| l < target_line) {
+            extra_bytes_before_line
+        } else {
+            0
+        };
+        let target_byte = target_line * line_len + extra;
+
+        // Navigate via Ctrl+G → dismiss scan prompt → byte offset
         harness
-            .send_key(KeyCode::Home, KeyModifiers::CONTROL)
+            .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
             .unwrap();
-        // Navigate
+        // Dismiss the scan confirmation prompt — opens byte offset prompt
+        let _ = harness.type_text("n");
         harness
-            .send_key_repeat(KeyCode::Down, KeyModifiers::NONE, target_line)
+            .send_key(KeyCode::Enter, KeyModifiers::NONE)
+            .unwrap();
+        let _ = harness.type_text(&format!("{}B", target_byte));
+        harness
+            .send_key(KeyCode::Enter, KeyModifiers::NONE)
             .unwrap();
 
-        // Edit line target_line
+        // Go to start of line
         harness.send_key(KeyCode::Home, KeyModifiers::NONE).unwrap();
         let edit_text = format!("ITER_{}_", target_line);
         harness.type_text(&edit_text).unwrap();
         expected_lines[target_line] = format!("{}{}", edit_text, expected_lines[target_line]);
+
+        // Track cumulative extra bytes for byte offset calculation
+        extra_bytes_before_line += edit_text.len();
+        last_edit_line = Some(target_line);
 
         // Save
         harness
@@ -229,13 +251,19 @@ fn test_remote_large_file_edits_beginning_middle_end() {
     // Edit lines
     let steps = 7;
     for i in 0..steps {
-        let target = (steps - 1 - i) * (lines / steps);
+        let target_line = (steps - 1 - i) * (lines / steps);
+        let target_byte = target_line * line_len;
         println!("{}", harness.screen_to_string());
         harness
             .send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
             .unwrap();
-        println!("target line: {}", target);
-        let _ = harness.type_text(&format!("{}", target).to_string());
+        // Dismiss the scan confirmation prompt — opens byte offset prompt
+        let _ = harness.type_text("n");
+        harness
+            .send_key(KeyCode::Enter, KeyModifiers::NONE)
+            .unwrap();
+        println!("target byte: {}", target_byte);
+        let _ = harness.type_text(&format!("{}B", target_byte).to_string());
         println!("{}", harness.screen_to_string());
         harness
             .send_key(KeyCode::Enter, KeyModifiers::NONE)

@@ -78,6 +78,17 @@ impl std::fmt::Display for LargeFileEncodingConfirmation {
 
 impl std::error::Error for LargeFileEncodingConfirmation {}
 
+/// A work item for incremental line-feed scanning (one per leaf).
+#[derive(Debug, Clone)]
+pub struct LineScanChunk {
+    /// Index of the leaf in the piece tree's leaf array.
+    pub leaf_index: usize,
+    /// Number of bytes in this leaf.
+    pub byte_len: usize,
+    /// True if the leaf already had a known line_feed_cnt (no I/O needed).
+    pub already_known: bool,
+}
+
 // Large file support configuration
 /// Default threshold for considering a file "large" (100 MB)
 pub const DEFAULT_LARGE_FILE_THRESHOLD: usize = 100 * 1024 * 1024;
@@ -87,6 +98,22 @@ pub const LOAD_CHUNK_SIZE: usize = 1024 * 1024;
 
 /// Chunk alignment for lazy loading (64 KB)
 pub const CHUNK_ALIGNMENT: usize = 64 * 1024;
+
+/// Configuration passed to TextBuffer constructors.
+#[derive(Debug, Clone)]
+pub struct BufferConfig {
+    /// Estimated average line length in bytes. Used for approximate line number
+    /// display in large files and for goto-line byte offset estimation.
+    pub estimated_line_length: usize,
+}
+
+impl Default for BufferConfig {
+    fn default() -> Self {
+        Self {
+            estimated_line_length: 80,
+        }
+    }
+}
 
 /// Line ending format used in the file
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -251,6 +278,12 @@ pub struct TextBuffer {
     /// Is this a large file (no line indexing, lazy loading enabled)?
     large_file: bool,
 
+    /// Has a line feed scan been performed on this large file?
+    /// When true, piece tree leaves have accurate `line_feed_cnt` values,
+    /// and edits will ensure the relevant chunk is loaded before splitting
+    /// so that `compute_line_feeds_static` can recount accurately.
+    line_feeds_scanned: bool,
+
     /// Is this a binary file? Binary files are opened read-only and render
     /// unprintable characters as code points.
     is_binary: bool,
@@ -277,6 +310,9 @@ pub struct TextBuffer {
 
     /// Monotonic version counter for change tracking.
     version: u64,
+
+    /// Buffer configuration (estimated line length, etc.)
+    config: BufferConfig,
 }
 
 /// Snapshot of a TextBuffer's piece tree and associated string buffers.
@@ -308,6 +344,7 @@ impl TextBuffer {
             modified: false,
             recovery_pending: false,
             large_file: false,
+            line_feeds_scanned: false,
             is_binary: false,
             line_ending,
             original_line_ending: line_ending,
@@ -315,6 +352,7 @@ impl TextBuffer {
             original_encoding: encoding,
             saved_file_size: None,
             version: 0,
+            config: BufferConfig::default(),
         }
     }
 
@@ -379,9 +417,11 @@ impl TextBuffer {
             modified: false,
             recovery_pending: false,
             large_file: false,
+            line_feeds_scanned: false,
             is_binary: true,
             saved_file_size: Some(bytes),
             version: 0,
+            config: BufferConfig::default(),
         }
     }
 
@@ -421,9 +461,11 @@ impl TextBuffer {
             modified: false,
             recovery_pending: false,
             large_file: false,
+            line_feeds_scanned: false,
             is_binary: false,
             saved_file_size: Some(bytes), // Treat initial content as "saved" state
             version: 0,
+            config: BufferConfig::default(),
         }
     }
 
@@ -467,9 +509,11 @@ impl TextBuffer {
             modified: false,
             recovery_pending: false,
             large_file: false,
+            line_feeds_scanned: false,
             is_binary: false,
             saved_file_size: Some(bytes),
             version: 0,
+            config: BufferConfig::default(),
         }
     }
 
@@ -498,6 +542,7 @@ impl TextBuffer {
             modified: false,
             recovery_pending: false,
             large_file: false,
+            line_feeds_scanned: false,
             is_binary: false,
             line_ending,
             original_line_ending: line_ending,
@@ -505,6 +550,7 @@ impl TextBuffer {
             original_encoding: encoding,
             saved_file_size: None,
             version: 0,
+            config: BufferConfig::default(),
         }
     }
 
@@ -540,6 +586,7 @@ impl TextBuffer {
         path: P,
         encoding: Encoding,
         fs: Arc<dyn FileSystem + Send + Sync>,
+        config: BufferConfig,
     ) -> anyhow::Result<Self> {
         let path = path.as_ref();
         let contents = fs.read_file(path)?;
@@ -547,6 +594,7 @@ impl TextBuffer {
         let mut buffer = Self::from_bytes_with_encoding(contents, encoding, fs);
         buffer.file_path = Some(path.to_path_buf());
         buffer.modified = false;
+        buffer.config = config;
         Ok(buffer)
     }
 
@@ -715,6 +763,7 @@ impl TextBuffer {
                 file_offset: 0,
                 bytes: file_size,
             },
+            stored_file_offset: None,
         };
 
         // Create piece tree with a single piece covering the whole file
@@ -742,6 +791,7 @@ impl TextBuffer {
             modified: false,
             recovery_pending: false,
             large_file: true,
+            line_feeds_scanned: false,
             is_binary,
             line_ending,
             original_line_ending: line_ending,
@@ -749,6 +799,7 @@ impl TextBuffer {
             original_encoding: encoding,
             saved_file_size: Some(file_size),
             version: 0,
+            config: BufferConfig::default(),
         })
     }
 
@@ -1294,7 +1345,15 @@ impl TextBuffer {
 
     /// Consolidate large file piece tree into a single piece pointing to the new file.
     /// This ensures that subsequent operations correctly reference the new content and offsets.
+    /// Preserves total line feed count from the old tree if a scan was previously done.
     fn consolidate_large_file(&mut self, path: &Path, file_size: usize) {
+        // Preserve line feed count from the old tree if we had scanned it
+        let preserved_lf = if self.line_feeds_scanned {
+            self.piece_tree.line_count().map(|c| c.saturating_sub(1))
+        } else {
+            None
+        };
+
         let buffer = StringBuffer {
             id: 0,
             data: BufferData::Unloaded {
@@ -1302,10 +1361,11 @@ impl TextBuffer {
                 file_offset: 0,
                 bytes: file_size,
             },
+            stored_file_offset: None,
         };
 
         self.piece_tree = if file_size > 0 {
-            PieceTree::new(BufferLocation::Stored(0), 0, file_size, None)
+            PieceTree::new(BufferLocation::Stored(0), 0, file_size, preserved_lf)
         } else {
             PieceTree::empty()
         };
@@ -1415,6 +1475,7 @@ impl TextBuffer {
                 equal: true,
                 byte_ranges: Vec::new(),
                 line_ranges: Some(Vec::new()),
+                nodes_visited: 0,
             };
         }
 
@@ -1451,6 +1512,7 @@ impl TextBuffer {
                     equal: true,
                     byte_ranges: Vec::new(),
                     line_ranges: Some(Vec::new()),
+                    nodes_visited: structure_diff.nodes_visited,
                 };
             }
         }
@@ -1594,13 +1656,25 @@ impl TextBuffer {
                 if len == 0 {
                     return Some(0);
                 }
-                let buf = self.buffers.get(leaf.location.buffer_id())?;
-                let data = buf.get_data()?;
-                let start = leaf.offset + start;
-                let end = start + len;
-                let slice = data.get(start..end)?;
-                let line_feeds = slice.iter().filter(|&&b| b == b'\n').count();
-                Some(line_feeds)
+                // Try counting from raw byte data first
+                if let Some(buf) = self.buffers.get(leaf.location.buffer_id()) {
+                    if let Some(data) = buf.get_data() {
+                        let start = leaf.offset + start;
+                        let end = start + len;
+                        if let Some(slice) = data.get(start..end) {
+                            let line_feeds = slice.iter().filter(|&&b| b == b'\n').count();
+                            return Some(line_feeds);
+                        }
+                    }
+                }
+                // Fallback: use the leaf's cached line_feed_cnt when we're
+                // querying the entire leaf. This handles unloaded segments in
+                // large file mode after line scanning has populated the metadata.
+                if start == 0 && len == leaf.bytes {
+                    leaf.line_feed_cnt.map(|c| c as usize)
+                } else {
+                    None
+                }
             },
         )
     }
@@ -1642,6 +1716,12 @@ impl TextBuffer {
                 self.buffers.push(buffer);
                 (BufferLocation::Added(buffer_id), 0, text.len())
             };
+
+        // When line feeds have been scanned, ensure the chunk at the insertion
+        // point is loaded so compute_line_feeds_static can recount during splits.
+        if self.line_feeds_scanned {
+            self.ensure_chunk_loaded_at(offset);
+        }
 
         // Update piece tree (need to pass buffers reference)
         self.piece_tree.insert(
@@ -1740,6 +1820,16 @@ impl TextBuffer {
     pub fn delete_bytes(&mut self, offset: usize, bytes: usize) {
         if bytes == 0 || offset >= self.total_bytes() {
             return;
+        }
+
+        // When line feeds have been scanned, ensure chunks at delete boundaries
+        // are loaded so compute_line_feeds_static can recount during splits.
+        if self.line_feeds_scanned {
+            self.ensure_chunk_loaded_at(offset);
+            let end = (offset + bytes).min(self.total_bytes());
+            if end > offset {
+                self.ensure_chunk_loaded_at(end.saturating_sub(1));
+            }
         }
 
         // Update piece tree
@@ -1924,6 +2014,7 @@ impl TextBuffer {
     /// NOTE: Currently loads entire buffers on-demand. Future optimization would split
     /// large pieces and load only LOAD_CHUNK_SIZE chunks at a time.
     pub fn get_text_range_mut(&mut self, offset: usize, bytes: usize) -> Result<Vec<u8>> {
+        let _span = tracing::trace_span!("get_text_range_mut", offset, bytes).entered();
         if bytes == 0 {
             return Ok(Vec::new());
         }
@@ -1955,6 +2046,13 @@ impl TextBuffer {
                 if needs_loading {
                     // Check if piece is too large for full loading
                     if piece_view.bytes > LOAD_CHUNK_SIZE {
+                        let _span = tracing::trace_span!(
+                            "chunk_split_and_load",
+                            piece_bytes = piece_view.bytes,
+                            buffer_id,
+                        )
+                        .entered();
+
                         // Split large piece into chunks
                         let piece_start_in_doc = piece_view.doc_offset;
                         let offset_in_piece = current_offset.saturating_sub(piece_start_in_doc);
@@ -1975,13 +2073,16 @@ impl TextBuffer {
                         let split_end_in_doc = split_start_in_doc + chunk_bytes;
 
                         // Split the piece to isolate the chunk
-                        if chunk_start_offset_in_piece > 0 {
-                            self.piece_tree
-                                .split_at_offset(split_start_in_doc, &self.buffers);
-                        }
-                        if split_end_in_doc < piece_start_in_doc + piece_view.bytes {
-                            self.piece_tree
-                                .split_at_offset(split_end_in_doc, &self.buffers);
+                        {
+                            let _span = tracing::trace_span!("split_piece", chunk_bytes).entered();
+                            if chunk_start_offset_in_piece > 0 {
+                                self.piece_tree
+                                    .split_at_offset(split_start_in_doc, &self.buffers);
+                            }
+                            if split_end_in_doc < piece_start_in_doc + piece_view.bytes {
+                                self.piece_tree
+                                    .split_at_offset(split_end_in_doc, &self.buffers);
+                            }
                         }
 
                         // Create a new buffer for this chunk
@@ -2009,17 +2110,26 @@ impl TextBuffer {
                         );
 
                         // Load the chunk buffer using the FileSystem trait
-                        self.buffers
-                            .get_mut(new_buffer_id)
-                            .context("Chunk buffer not found")?
-                            .load(&*self.fs)
-                            .context("Failed to load chunk")?;
+                        {
+                            let _span = tracing::trace_span!("load_chunk", chunk_bytes).entered();
+                            self.buffers
+                                .get_mut(new_buffer_id)
+                                .context("Chunk buffer not found")?
+                                .load(&*self.fs)
+                                .context("Failed to load chunk")?;
+                        }
 
                         // Restart iteration with the modified tree
                         restarted_iteration = true;
                         break;
                     } else {
                         // Piece is small enough, load the entire buffer
+                        let _span = tracing::trace_span!(
+                            "load_small_buffer",
+                            piece_bytes = piece_view.bytes,
+                            buffer_id,
+                        )
+                        .entered();
                         self.buffers
                             .get_mut(buffer_id)
                             .context("Buffer not found")?
@@ -2234,9 +2344,310 @@ impl TextBuffer {
         self.recovery_pending = pending;
     }
 
+    /// Ensure the buffer chunk at the given byte offset is loaded.
+    ///
+    /// When `line_feeds_scanned` is true, piece splits during insert/delete need
+    /// the buffer data to be loaded so `compute_line_feeds_static` can accurately
+    /// recount line feeds for each half. This method loads the chunk if needed.
+    fn ensure_chunk_loaded_at(&mut self, offset: usize) {
+        if let Some(piece_info) = self.piece_tree.find_by_offset(offset) {
+            let buffer_id = piece_info.location.buffer_id();
+            if let Some(buffer) = self.buffers.get_mut(buffer_id) {
+                if !buffer.is_loaded() {
+                    if let Err(e) = buffer.load(&*self.fs) {
+                        tracing::warn!("Failed to load chunk at offset {offset}: {e}");
+                    }
+                }
+            }
+        }
+    }
+
     /// Check if this is a large file with lazy loading enabled
     pub fn is_large_file(&self) -> bool {
         self.large_file
+    }
+
+    /// Check if line feeds have been scanned for this large file.
+    /// When true, `line_count()` returns exact values.
+    pub fn has_line_feed_scan(&self) -> bool {
+        self.line_feeds_scanned
+    }
+
+    /// Get the raw piece tree leaves (for storing alongside scan chunks).
+    pub fn piece_tree_leaves(&self) -> Vec<crate::model::piece_tree::LeafData> {
+        self.piece_tree.get_leaves()
+    }
+
+    /// Prepare work items for an incremental line scan.
+    ///
+    /// First splits any oversized leaves in the piece tree so every leaf is
+    /// at most `LOAD_CHUNK_SIZE` bytes.  Then returns one work item per leaf.
+    /// After scanning, `get_text_range_mut` will never need to split a scanned
+    /// leaf (it's already chunk-sized), so line-feed counts are preserved.
+    ///
+    /// Returns `(chunks, total_bytes)`.
+    pub fn prepare_line_scan(&mut self) -> (Vec<LineScanChunk>, usize) {
+        // Pre-split the tree so every leaf ≤ LOAD_CHUNK_SIZE.
+        self.piece_tree.split_leaves_to_chunk_size(LOAD_CHUNK_SIZE);
+
+        let leaves = self.piece_tree.get_leaves();
+        let total_bytes: usize = leaves.iter().map(|l| l.bytes).sum();
+        let mut chunks = Vec::new();
+
+        for (idx, leaf) in leaves.iter().enumerate() {
+            chunks.push(LineScanChunk {
+                leaf_index: idx,
+                byte_len: leaf.bytes,
+                already_known: leaf.line_feed_cnt.is_some(),
+            });
+        }
+
+        (chunks, total_bytes)
+    }
+
+    /// Count `\n` bytes in a single leaf.
+    ///
+    /// Uses `count_line_feeds_in_range` for unloaded buffers, which remote
+    /// filesystem implementations can override to count server-side.
+    pub fn scan_leaf(&self, leaf: &crate::model::piece_tree::LeafData) -> std::io::Result<usize> {
+        let buffer_id = leaf.location.buffer_id();
+        let buffer = self
+            .buffers
+            .get(buffer_id)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "buffer not found"))?;
+
+        let count = match &buffer.data {
+            crate::model::piece_tree::BufferData::Loaded { data, .. } => {
+                let end = (leaf.offset + leaf.bytes).min(data.len());
+                data[leaf.offset..end]
+                    .iter()
+                    .filter(|&&b| b == b'\n')
+                    .count()
+            }
+            crate::model::piece_tree::BufferData::Unloaded {
+                file_path,
+                file_offset,
+                ..
+            } => {
+                let read_offset = *file_offset as u64 + leaf.offset as u64;
+                self.fs
+                    .count_line_feeds_in_range(file_path, read_offset, leaf.bytes)?
+            }
+        };
+        Ok(count)
+    }
+
+    /// Return the I/O parameters for an unloaded leaf, or `None` if loaded.
+    ///
+    /// Used by the incremental scan to distinguish leaves that can be counted
+    /// in-memory (via `scan_leaf`) from those that need filesystem I/O.
+    pub fn leaf_io_params(
+        &self,
+        leaf: &crate::model::piece_tree::LeafData,
+    ) -> Option<(std::path::PathBuf, u64, usize)> {
+        let buffer_id = leaf.location.buffer_id();
+        let buffer = self.buffers.get(buffer_id)?;
+        match &buffer.data {
+            crate::model::piece_tree::BufferData::Loaded { .. } => None,
+            crate::model::piece_tree::BufferData::Unloaded {
+                file_path,
+                file_offset,
+                ..
+            } => {
+                let read_offset = *file_offset as u64 + leaf.offset as u64;
+                Some((file_path.clone(), read_offset, leaf.bytes))
+            }
+        }
+    }
+
+    /// Get a reference to the string buffers (for parallel scanning).
+    pub fn buffer_slice(&self) -> &[StringBuffer] {
+        &self.buffers
+    }
+
+    /// Apply the results of an incremental line scan.
+    pub fn apply_scan_updates(&mut self, updates: &[(usize, usize)]) {
+        self.piece_tree.update_leaf_line_feeds(updates);
+        self.line_feeds_scanned = true;
+    }
+
+    /// After an incremental line-feed scan completes, rebuild the tree so that
+    /// `saved_root` and the current tree share `Arc` pointers for unedited
+    /// subtrees. This makes `diff_since_saved()` O(edited regions) instead of
+    /// O(file size).
+    pub fn rebuild_with_pristine_saved_root(&mut self, scan_updates: &[(usize, usize)]) {
+        let file_size = match self.saved_file_size {
+            Some(s) => s,
+            None => {
+                // Fallback: no saved file size means we can't build a pristine
+                // tree. Just apply updates the old way.
+                self.apply_scan_updates(scan_updates);
+                return;
+            }
+        };
+
+        // --- Walk the current tree to extract deletions and insertions ---
+        let total = self.total_bytes();
+        // Deletions: gaps in Stored coverage (orig_offset, len).
+        let mut deletions: Vec<(usize, usize)> = Vec::new();
+        // Insertions: (post_delete_offset, location, buf_offset, bytes, lf_cnt).
+        // post_delete_offset = cumulative surviving Stored bytes before this point.
+        let mut insertions: Vec<(usize, BufferLocation, usize, usize, Option<usize>)> = Vec::new();
+        let mut orig_cursor: usize = 0;
+        let mut stored_bytes_in_doc: usize = 0;
+
+        for piece in self.piece_tree.iter_pieces_in_range(0, total) {
+            match piece.location {
+                BufferLocation::Stored(_) => {
+                    if piece.buffer_offset > orig_cursor {
+                        deletions.push((orig_cursor, piece.buffer_offset - orig_cursor));
+                    }
+                    orig_cursor = piece.buffer_offset + piece.bytes;
+                    stored_bytes_in_doc += piece.bytes;
+                }
+                BufferLocation::Added(id) => {
+                    // Check if this Added buffer was created by loading a chunk
+                    // from the stored file (via get_text_range_mut chunk loading).
+                    // If so, treat it as stored content, not a user edit.
+                    if let Some(file_off) = self.buffers.get(id).and_then(|b| b.stored_file_offset)
+                    {
+                        if file_off > orig_cursor {
+                            deletions.push((orig_cursor, file_off - orig_cursor));
+                        }
+                        orig_cursor = file_off + piece.bytes;
+                        stored_bytes_in_doc += piece.bytes;
+                    } else {
+                        insertions.push((
+                            stored_bytes_in_doc,
+                            piece.location,
+                            piece.buffer_offset,
+                            piece.bytes,
+                            piece.line_feed_cnt,
+                        ));
+                    }
+                }
+            }
+        }
+        // Trailing deletion.
+        if orig_cursor < file_size {
+            deletions.push((orig_cursor, file_size - orig_cursor));
+        }
+
+        // --- Build pristine tree (full original file, pre-split, with lf counts) ---
+        let mut pristine = if file_size > 0 {
+            PieceTree::new(BufferLocation::Stored(0), 0, file_size, None)
+        } else {
+            PieceTree::empty()
+        };
+        pristine.split_leaves_to_chunk_size(LOAD_CHUNK_SIZE);
+        pristine.update_leaf_line_feeds(scan_updates);
+
+        // Snapshot the pristine tree as saved_root.
+        self.saved_root = pristine.root();
+
+        // If no edits, the pristine tree IS the current tree.
+        if deletions.is_empty() && insertions.is_empty() {
+            self.piece_tree = pristine;
+            self.line_feeds_scanned = true;
+            return;
+        }
+
+        // --- Replay edits onto a clone of the pristine tree ---
+        let mut tree = pristine;
+
+        // Apply deletions from HIGH to LOW offset so earlier offsets stay valid.
+        deletions.sort_by(|a, b| b.0.cmp(&a.0));
+        for &(offset, len) in &deletions {
+            tree.delete(offset, len, &self.buffers);
+        }
+
+        // Apply insertions from LOW to HIGH. Each insertion shifts subsequent
+        // offsets by its byte count, tracked via insert_delta.
+        let mut insert_delta: usize = 0;
+        for &(offset, location, buf_offset, bytes, lf_cnt) in &insertions {
+            tree.insert(
+                offset + insert_delta,
+                location,
+                buf_offset,
+                bytes,
+                lf_cnt,
+                &self.buffers,
+            );
+            insert_delta += bytes;
+        }
+
+        // Path-copy insert/delete may split Stored leaves whose data is
+        // Unloaded, producing fragments with line_feed_cnt = None
+        // (compute_line_feeds_static can't read unloaded data). Fix them up
+        // by scanning any remaining None leaves.
+        let leaves = tree.get_leaves();
+        let mut fixups: Vec<(usize, usize)> = Vec::new();
+        for (idx, leaf) in leaves.iter().enumerate() {
+            if leaf.line_feed_cnt.is_none() {
+                if let Ok(count) = self.scan_leaf(leaf) {
+                    fixups.push((idx, count));
+                }
+            }
+        }
+        if !fixups.is_empty() {
+            tree.update_leaf_line_feeds_path_copy(&fixups);
+        }
+
+        self.piece_tree = tree;
+        self.line_feeds_scanned = true;
+    }
+
+    /// Resolve the exact byte offset for a given line number (0-indexed).
+    ///
+    /// Uses the tree's line feed counts to find the piece containing the target line,
+    /// then loads/reads that piece's data to find the exact newline position.
+    /// This works even when buffers are unloaded (large file with scanned line index).
+    pub fn resolve_line_byte_offset(&mut self, target_line: usize) -> Option<usize> {
+        if target_line == 0 {
+            return Some(0);
+        }
+
+        // Use tree metadata to find the piece containing the target line
+        let (doc_offset, buffer_id, piece_offset, piece_bytes, lines_before) =
+            self.piece_tree.piece_info_for_line(target_line)?;
+
+        // We need to find the (target_line - lines_before)-th newline within this piece
+        let lines_to_skip = target_line - lines_before;
+
+        // Get the piece data — either from loaded buffer or read from disk
+        let buffer = self.buffers.get(buffer_id)?;
+        let piece_data: Vec<u8> = match &buffer.data {
+            crate::model::piece_tree::BufferData::Loaded { data, .. } => {
+                let end = (piece_offset + piece_bytes).min(data.len());
+                data[piece_offset..end].to_vec()
+            }
+            crate::model::piece_tree::BufferData::Unloaded {
+                file_path,
+                file_offset,
+                ..
+            } => {
+                let read_offset = *file_offset as u64 + piece_offset as u64;
+                self.fs
+                    .read_range(file_path, read_offset, piece_bytes)
+                    .ok()?
+            }
+        };
+
+        // Count newlines to find the target line start
+        let mut newlines_found = 0;
+        for (i, &byte) in piece_data.iter().enumerate() {
+            if byte == b'\n' {
+                newlines_found += 1;
+                if newlines_found == lines_to_skip {
+                    // The target line starts right after this newline
+                    return Some(doc_offset + i + 1);
+                }
+            }
+        }
+
+        // If we didn't find enough newlines, the line starts in the next piece
+        // Return the end of this piece as an approximation
+        Some(doc_offset + piece_bytes)
     }
 
     /// Get the saved file size (size of the file on disk after last load/save)
@@ -3177,17 +3588,22 @@ impl TextBuffer {
     ///
     /// # Behavior by File Size:
     /// - **Small files (< 1MB)**: Returns exact line number from piece tree's `line_starts` metadata
-    /// - **Large files (≥ 1MB)**: Returns estimated line number using `byte_offset / 80`
+    /// - **Large files (≥ 1MB)**: Returns estimated line number using `byte_offset / estimated_line_length`
     ///
     /// Large files don't maintain line metadata for performance reasons. The estimation
-    /// assumes ~80 bytes per line on average, which works reasonably well for most text files.
+    /// uses the configured `estimated_line_length` (default 80 bytes).
     pub fn get_line_number(&self, byte_offset: usize) -> usize {
         self.offset_to_position(byte_offset)
             .map(|pos| pos.line)
             .unwrap_or_else(|| {
-                // Estimate line number based on average line length of ~80 bytes
-                byte_offset / 80
+                // Estimate line number based on configured average line length
+                byte_offset / self.config.estimated_line_length
             })
+    }
+
+    /// Get the configured estimated line length for approximate line number calculations.
+    pub fn estimated_line_length(&self) -> usize {
+        self.config.estimated_line_length
     }
 
     /// Get the starting line number at a byte offset (used for viewport rendering)
@@ -3210,7 +3626,7 @@ impl TextBuffer {
     ///
     /// ## Small vs Large File Modes:
     /// - **Small files**: `line_starts = Some(vec)` → returns exact line number from metadata
-    /// - **Large files**: `line_starts = None` → returns estimated line number (byte_offset / 80)
+    /// - **Large files**: `line_starts = None` → returns estimated line number (byte_offset / estimated_line_length)
     ///
     /// ## Legacy Line Cache Methods:
     /// These methods are now no-ops and can be removed in a future cleanup:
@@ -5015,6 +5431,433 @@ mod tests {
             let downcast = error.downcast_ref::<LargeFileEncodingConfirmation>();
             assert!(downcast.is_some());
             assert_eq!(downcast.unwrap().encoding, Encoding::EucKr);
+        }
+    }
+
+    mod rebuild_pristine_saved_root_tests {
+        use super::*;
+        use crate::model::piece_tree::BufferLocation;
+        use std::sync::Arc;
+
+        /// Create a large-file-mode TextBuffer from raw bytes, simulating what
+        /// `load_from_file` does for files above the large-file threshold.
+        fn large_file_buffer(content: &[u8]) -> TextBuffer {
+            let fs: Arc<dyn crate::model::filesystem::FileSystem + Send + Sync> =
+                Arc::new(crate::model::filesystem::StdFileSystem);
+            let bytes = content.len();
+            let buffer =
+                crate::model::piece_tree::StringBuffer::new_loaded(0, content.to_vec(), false);
+            let piece_tree = if bytes > 0 {
+                crate::model::piece_tree::PieceTree::new(BufferLocation::Stored(0), 0, bytes, None)
+            } else {
+                crate::model::piece_tree::PieceTree::empty()
+            };
+            let saved_root = piece_tree.root();
+            TextBuffer {
+                fs,
+                piece_tree,
+                saved_root,
+                buffers: vec![buffer],
+                next_buffer_id: 1,
+                file_path: None,
+                modified: false,
+                recovery_pending: false,
+                large_file: true,
+                line_feeds_scanned: false,
+                is_binary: false,
+                line_ending: LineEnding::LF,
+                original_line_ending: LineEnding::LF,
+                encoding: Encoding::Utf8,
+                original_encoding: Encoding::Utf8,
+                saved_file_size: Some(bytes),
+                version: 0,
+                config: BufferConfig::default(),
+            }
+        }
+
+        /// Simulate prepare_line_scan + scanning: pre-split and compute lf counts.
+        fn scan_line_feeds(buf: &mut TextBuffer) -> Vec<(usize, usize)> {
+            buf.piece_tree.split_leaves_to_chunk_size(LOAD_CHUNK_SIZE);
+            let leaves = buf.piece_tree.get_leaves();
+            let mut updates = Vec::new();
+            for (idx, leaf) in leaves.iter().enumerate() {
+                if leaf.line_feed_cnt.is_some() {
+                    continue;
+                }
+                let count = buf.scan_leaf(leaf).unwrap();
+                updates.push((idx, count));
+            }
+            updates
+        }
+
+        /// Generate a repeating pattern with newlines for testing.
+        fn make_content(size: usize) -> Vec<u8> {
+            let line = b"abcdefghij0123456789ABCDEFGHIJ0123456789abcdefghij0123456789ABCDEFGHIJ\n";
+            let mut out = Vec::with_capacity(size);
+            while out.len() < size {
+                let remaining = size - out.len();
+                let take = remaining.min(line.len());
+                out.extend_from_slice(&line[..take]);
+            }
+            out
+        }
+
+        #[test]
+        fn test_no_edits_arc_ptr_eq() {
+            let content = make_content(2 * 1024 * 1024);
+            let expected_lf = content.iter().filter(|&&b| b == b'\n').count();
+            let mut buf = large_file_buffer(&content);
+
+            // Before scan, line_count should be None (large file, no indexing).
+            assert!(buf.line_count().is_none());
+
+            let updates = scan_line_feeds(&mut buf);
+            buf.rebuild_with_pristine_saved_root(&updates);
+
+            // After rebuild, line_count must be Some (exact).
+            assert_eq!(buf.line_count(), Some(expected_lf + 1));
+
+            // After rebuild with no edits, roots should be identical (Arc::ptr_eq).
+            assert!(Arc::ptr_eq(&buf.saved_root, &buf.piece_tree.root()));
+            let diff = buf.diff_since_saved();
+            assert!(diff.equal);
+            assert!(buf.line_feeds_scanned);
+            assert_eq!(buf.get_all_text().unwrap(), content);
+        }
+
+        #[test]
+        fn test_single_insertion() {
+            let content = make_content(2 * 1024 * 1024);
+            let mut buf = large_file_buffer(&content);
+            let updates = scan_line_feeds(&mut buf);
+
+            // Insert some text in the middle.
+            let insert_offset = 1_000_000;
+            let insert_text = b"INSERTED_TEXT\n";
+            buf.insert_bytes(insert_offset, insert_text.to_vec());
+
+            buf.rebuild_with_pristine_saved_root(&updates);
+
+            // Content should match the shadow model.
+            let mut expected = content.clone();
+            expected.splice(insert_offset..insert_offset, insert_text.iter().copied());
+            assert_eq!(buf.get_all_text().unwrap(), expected);
+
+            // line_count must be Some (exact) after rebuild, even with edits.
+            let expected_lf = expected.iter().filter(|&&b| b == b'\n').count();
+            assert_eq!(buf.line_count(), Some(expected_lf + 1));
+
+            // Diff should NOT be equal.
+            let diff = buf.diff_since_saved();
+            assert!(!diff.equal);
+            assert!(!diff.byte_ranges.is_empty());
+        }
+
+        /// After rebuild + insert near EOF, diff line_ranges must be
+        /// document-absolute.  The bug: `with_doc_offsets` assigned consecutive
+        /// offsets from 0 to the collected leaves, missing skipped (shared)
+        /// subtrees' bytes.
+        #[test]
+        fn test_diff_line_ranges_are_document_absolute_after_eof_insert() {
+            let content = make_content(4 * 1024 * 1024); // 4MB → 4 chunks at 1MB each
+            let total_lf = content.iter().filter(|&&b| b == b'\n').count();
+            let mut buf = large_file_buffer(&content);
+            let updates = scan_line_feeds(&mut buf);
+            buf.rebuild_with_pristine_saved_root(&updates);
+
+            // Insert 5 bytes near EOF (last 100 bytes of the file).
+            let insert_offset = content.len() - 100;
+            buf.insert_bytes(insert_offset, b"HELLO".to_vec());
+
+            let diff = buf.diff_since_saved();
+            assert!(!diff.equal, "diff should detect the insertion");
+            assert!(
+                !diff.byte_ranges.is_empty(),
+                "byte_ranges should not be empty"
+            );
+
+            // byte_ranges must be near the end of the document, not near 0.
+            let first_range = &diff.byte_ranges[0];
+            assert!(
+                first_range.start >= content.len() - 200,
+                "byte_ranges should be document-absolute (near EOF): got {:?}, expected near {}",
+                first_range,
+                insert_offset,
+            );
+
+            // line_ranges must also be document-absolute.
+            let line_ranges = diff
+                .line_ranges
+                .as_ref()
+                .expect("line_ranges should be Some");
+            assert!(!line_ranges.is_empty(), "line_ranges should not be empty");
+            let first_lr = &line_ranges[0];
+            // The insert is near EOF, so the line number should be near total_lf.
+            let expected_min_line = total_lf.saturating_sub(10);
+            assert!(
+                first_lr.start >= expected_min_line,
+                "line_ranges should be document-absolute: got {:?}, expected start >= {} (total lines ~{})",
+                first_lr,
+                expected_min_line,
+                total_lf,
+            );
+        }
+
+        #[test]
+        fn test_single_deletion() {
+            let content = make_content(2 * 1024 * 1024);
+            let mut buf = large_file_buffer(&content);
+            let updates = scan_line_feeds(&mut buf);
+
+            // Delete a range.
+            let del_start = 500_000;
+            let del_len = 1000;
+            buf.delete_bytes(del_start, del_len);
+
+            buf.rebuild_with_pristine_saved_root(&updates);
+
+            let mut expected = content.clone();
+            expected.drain(del_start..del_start + del_len);
+            assert_eq!(buf.get_all_text().unwrap(), expected);
+
+            let diff = buf.diff_since_saved();
+            assert!(!diff.equal);
+        }
+
+        #[test]
+        fn test_insert_and_delete() {
+            let content = make_content(2 * 1024 * 1024);
+            let mut buf = large_file_buffer(&content);
+            let updates = scan_line_feeds(&mut buf);
+
+            // Delete near the start, insert near the end.
+            let del_start = 100_000;
+            let del_len = 500;
+            buf.delete_bytes(del_start, del_len);
+
+            let insert_offset = 1_500_000; // in the post-delete document
+            let insert_text = b"NEW_CONTENT\n";
+            buf.insert_bytes(insert_offset, insert_text.to_vec());
+
+            buf.rebuild_with_pristine_saved_root(&updates);
+
+            // Build expected content.
+            let mut expected = content.clone();
+            expected.drain(del_start..del_start + del_len);
+            expected.splice(insert_offset..insert_offset, insert_text.iter().copied());
+            assert_eq!(buf.get_all_text().unwrap(), expected);
+
+            let diff = buf.diff_since_saved();
+            assert!(!diff.equal);
+        }
+
+        #[test]
+        fn test_multiple_scattered_edits() {
+            let content = make_content(3 * 1024 * 1024);
+            let mut buf = large_file_buffer(&content);
+            let updates = scan_line_feeds(&mut buf);
+            let mut expected = content.clone();
+
+            // Apply several edits across chunk boundaries, tracking the shadow model.
+            // Edit 1: delete at offset 100k
+            buf.delete_bytes(100_000, 200);
+            expected.drain(100_000..100_200);
+
+            // Edit 2: insert at offset 500k (in current doc, which shifted)
+            buf.insert_bytes(500_000, b"AAAA\n".to_vec());
+            expected.splice(500_000..500_000, b"AAAA\n".iter().copied());
+
+            // Edit 3: delete at offset 2M
+            buf.delete_bytes(2_000_000, 300);
+            expected.drain(2_000_000..2_000_300);
+
+            // Edit 4: insert at offset 1M
+            buf.insert_bytes(1_000_000, b"BBBB\n".to_vec());
+            expected.splice(1_000_000..1_000_000, b"BBBB\n".iter().copied());
+
+            buf.rebuild_with_pristine_saved_root(&updates);
+
+            assert_eq!(buf.get_all_text().unwrap(), expected);
+            let diff = buf.diff_since_saved();
+            assert!(!diff.equal);
+        }
+
+        #[test]
+        fn test_content_preserved_after_rebuild() {
+            // Verify that get_all_text matches before and after rebuild for
+            // a buffer with edits.
+            let content = make_content(2 * 1024 * 1024);
+            let mut buf = large_file_buffer(&content);
+            let updates = scan_line_feeds(&mut buf);
+
+            buf.insert_bytes(0, b"HEADER\n".to_vec());
+            buf.delete_bytes(1_000_000, 500);
+
+            let text_before = buf.get_all_text().unwrap();
+            buf.rebuild_with_pristine_saved_root(&updates);
+            let text_after = buf.get_all_text().unwrap();
+
+            assert_eq!(text_before, text_after);
+        }
+
+        /// Create a large-file-mode TextBuffer backed by an actual file on disk
+        /// (Unloaded buffer), matching the real `load_from_file` code path.
+        fn large_file_buffer_unloaded(path: &std::path::Path, file_size: usize) -> TextBuffer {
+            let fs: Arc<dyn crate::model::filesystem::FileSystem + Send + Sync> =
+                Arc::new(crate::model::filesystem::StdFileSystem);
+            let buffer = crate::model::piece_tree::StringBuffer::new_unloaded(
+                0,
+                path.to_path_buf(),
+                0,
+                file_size,
+            );
+            let piece_tree = if file_size > 0 {
+                crate::model::piece_tree::PieceTree::new(
+                    BufferLocation::Stored(0),
+                    0,
+                    file_size,
+                    None,
+                )
+            } else {
+                crate::model::piece_tree::PieceTree::empty()
+            };
+            let saved_root = piece_tree.root();
+            TextBuffer {
+                fs,
+                piece_tree,
+                saved_root,
+                buffers: vec![buffer],
+                next_buffer_id: 1,
+                file_path: Some(path.to_path_buf()),
+                modified: false,
+                recovery_pending: false,
+                large_file: true,
+                line_feeds_scanned: false,
+                is_binary: false,
+                line_ending: LineEnding::LF,
+                original_line_ending: LineEnding::LF,
+                encoding: Encoding::Utf8,
+                original_encoding: Encoding::Utf8,
+                saved_file_size: Some(file_size),
+                version: 0,
+                config: BufferConfig::default(),
+            }
+        }
+
+        #[test]
+        fn test_unloaded_buffer_no_edits_line_count() {
+            let content = make_content(2 * 1024 * 1024);
+            let expected_lf = content.iter().filter(|&&b| b == b'\n').count();
+
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(tmp.path(), &content).unwrap();
+            let mut buf = large_file_buffer_unloaded(tmp.path(), content.len());
+
+            assert!(
+                buf.line_count().is_none(),
+                "before scan, line_count should be None"
+            );
+
+            let updates = scan_line_feeds(&mut buf);
+            buf.rebuild_with_pristine_saved_root(&updates);
+
+            assert_eq!(
+                buf.line_count(),
+                Some(expected_lf + 1),
+                "after rebuild, line_count must be exact"
+            );
+            assert!(buf.line_feeds_scanned);
+        }
+
+        #[test]
+        fn test_unloaded_buffer_with_edits_line_count() {
+            let content = make_content(2 * 1024 * 1024);
+
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(tmp.path(), &content).unwrap();
+            let mut buf = large_file_buffer_unloaded(tmp.path(), content.len());
+
+            let updates = scan_line_feeds(&mut buf);
+
+            // Insert text in the middle (creates an Added piece).
+            let insert_text = b"INSERTED\n";
+            buf.insert_bytes(1_000_000, insert_text.to_vec());
+
+            buf.rebuild_with_pristine_saved_root(&updates);
+
+            let mut expected = content.clone();
+            expected.splice(1_000_000..1_000_000, insert_text.iter().copied());
+            let expected_lf = expected.iter().filter(|&&b| b == b'\n').count();
+
+            assert_eq!(
+                buf.line_count(),
+                Some(expected_lf + 1),
+                "after rebuild with edits, line_count must be exact"
+            );
+            assert!(buf.line_feeds_scanned);
+        }
+
+        /// After rebuild, diff_since_saved should visit a small number of nodes
+        /// proportional to edit regions, NOT the full tree. This catches
+        /// regressions where Arc pointers are accidentally destroyed (e.g. by
+        /// flattening and rebuilding the tree).
+        #[test]
+        fn test_diff_efficiency_after_rebuild() {
+            // Use 32MB so the tree has ~32 leaves (at 1MB chunk size),
+            // making the efficiency difference between O(log N) and O(N) clear.
+            let content = make_content(32 * 1024 * 1024);
+            let mut buf = large_file_buffer(&content);
+
+            let updates = scan_line_feeds(&mut buf);
+
+            // Insert a small piece of text in one chunk.
+            buf.insert_bytes(1_000_000, b"HELLO".to_vec());
+
+            buf.rebuild_with_pristine_saved_root(&updates);
+
+            let diff = buf.diff_since_saved();
+            assert!(!diff.equal);
+
+            let total_leaves = buf.piece_tree.get_leaves().len();
+            // The diff should visit far fewer nodes than the total tree.
+            // With path-copying, only the path from root to the edited leaf
+            // (and its immediate neighbours) should be visited — roughly
+            // O(log N) nodes, not O(N).
+            assert!(
+                diff.nodes_visited < total_leaves,
+                "diff visited {} nodes but tree has {} leaves — \
+                 Arc::ptr_eq short-circuiting is not working",
+                diff.nodes_visited,
+                total_leaves,
+            );
+        }
+
+        /// Same test but with Unloaded data (the fixup path).
+        #[test]
+        fn test_diff_efficiency_after_rebuild_unloaded() {
+            let content = make_content(32 * 1024 * 1024);
+
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(tmp.path(), &content).unwrap();
+            let mut buf = large_file_buffer_unloaded(tmp.path(), content.len());
+
+            let updates = scan_line_feeds(&mut buf);
+
+            buf.insert_bytes(1_000_000, b"HELLO".to_vec());
+
+            buf.rebuild_with_pristine_saved_root(&updates);
+
+            let diff = buf.diff_since_saved();
+            assert!(!diff.equal);
+
+            let total_leaves = buf.piece_tree.get_leaves().len();
+            assert!(
+                diff.nodes_visited < total_leaves,
+                "diff visited {} nodes but tree has {} leaves — \
+                 Arc::ptr_eq short-circuiting is not working (unloaded path)",
+                diff.nodes_visited,
+                total_leaves,
+            );
         }
     }
 }

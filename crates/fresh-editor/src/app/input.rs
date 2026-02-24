@@ -293,10 +293,26 @@ impl Editor {
                 );
                 self.init_folder_open_state();
             }
-            Action::GotoLine => self.start_prompt(
-                t!("file.goto_line_prompt").to_string(),
-                PromptType::GotoLine,
-            ),
+            Action::GotoLine => {
+                let has_line_index = self
+                    .buffers
+                    .get(&self.active_buffer())
+                    .map_or(true, |s| s.buffer.line_count().is_some());
+                if has_line_index {
+                    self.start_prompt(
+                        t!("file.goto_line_prompt").to_string(),
+                        PromptType::GotoLine,
+                    );
+                } else {
+                    self.start_prompt(
+                        t!("goto.scan_confirm_prompt", yes = "y", no = "N").to_string(),
+                        PromptType::GotoLineScanConfirm,
+                    );
+                }
+            }
+            Action::ScanLineIndex => {
+                self.start_incremental_line_scan(false);
+            }
             Action::New => {
                 self.new_buffer();
             }

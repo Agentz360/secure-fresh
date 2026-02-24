@@ -747,6 +747,14 @@ pub struct EditorConfig {
     #[schemars(extend("x-section" = "Performance"))]
     pub estimated_line_length: usize,
 
+    /// Maximum number of concurrent filesystem read requests.
+    /// Used during line-feed scanning and other bulk I/O operations.
+    /// Higher values improve throughput, especially for remote filesystems.
+    /// Default: 64
+    #[serde(default = "default_read_concurrency")]
+    #[schemars(extend("x-section" = "Performance"))]
+    pub read_concurrency: usize,
+
     /// Poll interval in milliseconds for refreshing expanded directories in the file explorer.
     /// Directory modification times are checked at this interval to detect new/deleted files.
     /// Lower values detect changes faster but use more CPU.
@@ -767,6 +775,10 @@ pub const LARGE_FILE_THRESHOLD_BYTES: u64 = 1024 * 1024; // 1MB
 
 fn default_large_file_threshold() -> u64 {
     LARGE_FILE_THRESHOLD_BYTES
+}
+
+fn default_read_concurrency() -> usize {
+    64
 }
 
 fn default_true() -> bool {
@@ -854,6 +866,7 @@ impl Default for EditorConfig {
             mouse_hover_delay_ms: default_mouse_hover_delay(),
             double_click_time_ms: default_double_click_time(),
             auto_revert_poll_interval_ms: default_auto_revert_poll_interval(),
+            read_concurrency: default_read_concurrency(),
             file_tree_poll_interval_ms: default_file_tree_poll_interval(),
             default_line_ending: LineEndingOption::default(),
             trim_trailing_whitespace_on_save: false,

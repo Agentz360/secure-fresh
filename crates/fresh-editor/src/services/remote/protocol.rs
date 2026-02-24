@@ -149,6 +149,11 @@ pub fn read_params(path: &str, offset: Option<u64>, len: Option<usize>) -> serde
     params
 }
 
+/// Build params for count_lf request (count newlines in a file range)
+pub fn count_lf_params(path: &str, offset: u64, len: usize) -> serde_json::Value {
+    serde_json::json!({"path": path, "off": offset, "len": len})
+}
+
 /// Build params for write request
 pub fn write_params(path: &str, data: &[u8]) -> serde_json::Value {
     serde_json::json!({

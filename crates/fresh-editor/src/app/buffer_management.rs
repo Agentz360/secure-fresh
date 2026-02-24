@@ -421,6 +421,9 @@ impl Editor {
             path,
             encoding,
             Arc::clone(&self.filesystem),
+            crate::model::buffer::BufferConfig {
+                estimated_line_length: self.config.editor.estimated_line_length,
+            },
         )?;
 
         // Create editor state with the buffer
@@ -496,6 +499,9 @@ impl Editor {
             &path,
             encoding,
             Arc::clone(&self.filesystem),
+            crate::model::buffer::BufferConfig {
+                estimated_line_length: self.config.editor.estimated_line_length,
+            },
         )?;
 
         // Update the buffer in the editor state
@@ -722,7 +728,6 @@ impl Editor {
         }
 
         let buffer_id = self.active_buffer();
-        let estimated_line_length = self.config.editor.estimated_line_length;
 
         // Read cursor state from split view state
         let cursors = self.active_cursors();
@@ -732,7 +737,8 @@ impl Editor {
         let old_sticky_column = cursors.primary().sticky_column;
 
         if let Some(state) = self.buffers.get(&buffer_id) {
-            let is_large_file = state.buffer.line_count().is_none();
+            let has_line_index = state.buffer.line_count().is_some();
+            let has_line_scan = state.buffer.has_line_feed_scan();
             let buffer_len = state.buffer.len();
 
             // Convert 1-indexed line to 0-indexed
@@ -740,24 +746,28 @@ impl Editor {
             // Column is also 1-indexed, convert to 0-indexed
             let target_col = column.map(|c| c.saturating_sub(1)).unwrap_or(0);
 
-            let position = if is_large_file {
-                // Large file mode: estimate byte offset based on line number
-                let estimated_offset = target_line * estimated_line_length;
-                let clamped_offset = estimated_offset.min(buffer_len);
+            // Track the known exact line number for scanned large files,
+            // since offset_to_position may not be able to reverse-resolve it accurately.
+            let mut known_line: Option<usize> = None;
 
-                // Use LineIterator to find the actual line start at the estimated position
+            let position = if has_line_scan && has_line_index {
+                // Scanned large file: use tree metadata to find exact line offset
+                let max_line = state.buffer.line_count().unwrap_or(1).saturating_sub(1);
+                let actual_line = target_line.min(max_line);
+                known_line = Some(actual_line);
+                // Need mutable access to potentially read chunk data from disk
                 if let Some(state) = self.buffers.get_mut(&buffer_id) {
-                    let iter = state
+                    state
                         .buffer
-                        .line_iterator(clamped_offset, estimated_line_length);
-                    let line_start = iter.current_position();
-                    // Add column offset, clamped to buffer length
-                    (line_start + target_col).min(buffer_len)
+                        .resolve_line_byte_offset(actual_line)
+                        .map(|offset| (offset + target_col).min(buffer_len))
+                        .unwrap_or(0)
                 } else {
-                    clamped_offset
+                    0
                 }
             } else {
-                // Small file mode: use exact line position
+                // Small file with full line starts or no line index:
+                // use exact line position
                 let max_line = state.buffer.line_count().unwrap_or(1).saturating_sub(1);
                 let actual_line = target_line.min(max_line);
                 state.buffer.line_col_to_position(actual_line, target_col)
@@ -771,6 +781,43 @@ impl Editor {
                 new_anchor: None,
                 old_sticky_column,
                 new_sticky_column: target_col,
+            };
+
+            let split_id = self.split_manager.active_split();
+            let state = self.buffers.get_mut(&buffer_id).unwrap();
+            let view_state = self.split_view_states.get_mut(&split_id).unwrap();
+            state.apply(&mut view_state.cursors, &event);
+
+            // For scanned large files, override the line number with the known exact value
+            // since offset_to_position may fall back to proportional estimation.
+            if let Some(line) = known_line {
+                state.primary_cursor_line_number = crate::model::buffer::LineNumber::Absolute(line);
+            }
+        }
+    }
+
+    /// Go to an exact byte offset in the buffer (used in byte-offset mode for large files)
+    pub fn goto_byte_offset(&mut self, offset: usize) {
+        let buffer_id = self.active_buffer();
+
+        let cursors = self.active_cursors();
+        let cursor_id = cursors.primary_id();
+        let old_position = cursors.primary().position;
+        let old_anchor = cursors.primary().anchor;
+        let old_sticky_column = cursors.primary().sticky_column;
+
+        if let Some(state) = self.buffers.get(&buffer_id) {
+            let buffer_len = state.buffer.len();
+            let position = offset.min(buffer_len);
+
+            let event = Event::MoveCursor {
+                cursor_id,
+                old_position,
+                new_position: position,
+                old_anchor,
+                new_anchor: None,
+                old_sticky_column,
+                new_sticky_column: 0,
             };
 
             let split_id = self.split_manager.active_split();
@@ -2195,5 +2242,177 @@ impl Editor {
         }
 
         processed_any
+    }
+
+    /// Start an incremental line-feed scan for the active buffer.
+    ///
+    /// Shared by the `Action::ScanLineIndex` command and the Go to Line scan
+    /// confirmation prompt. Sets up `LineScanState` so that `process_line_scan`
+    /// will advance the scan one batch per frame.
+    ///
+    /// When `open_goto_line` is true (Go to Line flow), the Go to Line prompt
+    /// opens automatically when the scan completes.
+    pub fn start_incremental_line_scan(&mut self, open_goto_line: bool) {
+        let buffer_id = self.active_buffer();
+        if let Some(state) = self.buffers.get_mut(&buffer_id) {
+            let (chunks, total_bytes) = state.buffer.prepare_line_scan();
+            let leaves = state.buffer.piece_tree_leaves();
+            self.line_scan_state = Some(super::LineScanState {
+                buffer_id,
+                leaves,
+                chunks,
+                next_chunk: 0,
+                total_bytes,
+                scanned_bytes: 0,
+                updates: Vec::new(),
+                open_goto_line_on_complete: open_goto_line,
+            });
+            self.set_status_message(t!("goto.scanning_progress", percent = 0).to_string());
+        }
+    }
+
+    /// Process chunks for the incremental line-feed scan.
+    /// Returns `true` if the UI should re-render (progress updated or scan finished).
+    pub fn process_line_scan(&mut self) -> bool {
+        let scan = match self.line_scan_state.as_mut() {
+            Some(s) => s,
+            None => return false,
+        };
+
+        let buffer_id = scan.buffer_id;
+
+        if let Err(e) = self.process_line_scan_batch(buffer_id) {
+            tracing::warn!("Line scan error: {e}");
+            self.finish_line_scan_with_error(e);
+            return true;
+        }
+
+        let scan = self.line_scan_state.as_ref().unwrap();
+        if scan.next_chunk >= scan.chunks.len() {
+            self.finish_line_scan_ok();
+        } else {
+            let pct = if scan.total_bytes > 0 {
+                (scan.scanned_bytes * 100) / scan.total_bytes
+            } else {
+                100
+            };
+            self.set_status_message(t!("goto.scanning_progress", percent = pct).to_string());
+        }
+        true
+    }
+
+    /// Process leaves concurrently, yielding for a render after each batch.
+    ///
+    /// For loaded leaves, delegates to `TextBuffer::scan_leaf` (shared counting
+    /// logic). For unloaded leaves, extracts I/O parameters and runs them
+    /// concurrently using `tokio::task::spawn_blocking` — each task calls
+    /// `count_line_feeds_in_range` on the filesystem, which remote implementations
+    /// override to count on the server without transferring data.
+    fn process_line_scan_batch(&mut self, buffer_id: BufferId) -> std::io::Result<()> {
+        let concurrency = self.config.editor.read_concurrency.max(1);
+
+        let state = self.buffers.get(&buffer_id);
+        let scan = self.line_scan_state.as_mut().unwrap();
+
+        let mut results: Vec<(usize, usize)> = Vec::new();
+        let mut io_work: Vec<(usize, std::path::PathBuf, u64, usize)> = Vec::new();
+
+        while scan.next_chunk < scan.chunks.len() && (results.len() + io_work.len()) < concurrency {
+            let chunk = scan.chunks[scan.next_chunk].clone();
+            scan.next_chunk += 1;
+            scan.scanned_bytes += chunk.byte_len;
+
+            if chunk.already_known {
+                continue;
+            }
+
+            if let Some(state) = state {
+                let leaf = &scan.leaves[chunk.leaf_index];
+
+                // Use scan_leaf for loaded buffers (shared counting logic with
+                // the TextBuffer-level scan). For unloaded buffers, collect I/O
+                // parameters for concurrent filesystem access.
+                match state.buffer.leaf_io_params(leaf) {
+                    None => {
+                        // Loaded: count in-memory via scan_leaf
+                        let count = state.buffer.scan_leaf(leaf)?;
+                        results.push((chunk.leaf_index, count));
+                    }
+                    Some((path, offset, len)) => {
+                        // Unloaded: batch for concurrent I/O
+                        io_work.push((chunk.leaf_index, path, offset, len));
+                    }
+                }
+            }
+        }
+
+        // Run I/O concurrently using tokio::task::spawn_blocking
+        if !io_work.is_empty() {
+            let fs = match state {
+                Some(s) => s.buffer.filesystem().clone(),
+                None => return Ok(()),
+            };
+
+            let rt = self.tokio_runtime.as_ref().ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::Other, "async runtime not available")
+            })?;
+
+            let io_results: Vec<std::io::Result<(usize, usize)>> = rt.block_on(async {
+                let mut handles = Vec::with_capacity(io_work.len());
+                for (leaf_idx, path, offset, len) in io_work {
+                    let fs = fs.clone();
+                    handles.push(tokio::task::spawn_blocking(move || {
+                        let count = fs.count_line_feeds_in_range(&path, offset, len)?;
+                        Ok((leaf_idx, count))
+                    }));
+                }
+
+                let mut results = Vec::with_capacity(handles.len());
+                for handle in handles {
+                    results.push(handle.await.unwrap());
+                }
+                results
+            });
+
+            for result in io_results {
+                results.push(result?);
+            }
+        }
+
+        for (leaf_idx, count) in results {
+            scan.updates.push((leaf_idx, count));
+        }
+
+        Ok(())
+    }
+
+    fn finish_line_scan_ok(&mut self) {
+        let scan = self.line_scan_state.take().unwrap();
+        let open_goto = scan.open_goto_line_on_complete;
+        if let Some(state) = self.buffers.get_mut(&scan.buffer_id) {
+            state.buffer.rebuild_with_pristine_saved_root(&scan.updates);
+        }
+        self.set_status_message(t!("goto.scan_complete").to_string());
+        if open_goto {
+            self.open_goto_line_if_active(scan.buffer_id);
+        }
+    }
+
+    fn finish_line_scan_with_error(&mut self, e: std::io::Error) {
+        let scan = self.line_scan_state.take().unwrap();
+        let open_goto = scan.open_goto_line_on_complete;
+        self.set_status_message(t!("goto.scan_failed", error = e.to_string()).to_string());
+        if open_goto {
+            self.open_goto_line_if_active(scan.buffer_id);
+        }
+    }
+
+    fn open_goto_line_if_active(&mut self, buffer_id: BufferId) {
+        if self.active_buffer() == buffer_id {
+            self.start_prompt(
+                t!("file.goto_line_prompt").to_string(),
+                PromptType::GotoLine,
+            );
+        }
     }
 }

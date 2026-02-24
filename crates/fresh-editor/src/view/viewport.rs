@@ -147,14 +147,19 @@ impl Viewport {
     /// - Separator: " │ " = 3 chars (space, box char, space)
     ///
     /// Total width = 1 + N + 3 = N + 4 (where N >= 4 minimum, so min 8 total)
-    /// This is a heuristic that assumes approximately 80 chars per line
+    /// This is a heuristic using the configured estimated line length
     pub fn gutter_width(&self, buffer: &Buffer) -> usize {
-        let buffer_len = buffer.len();
-        let estimated_lines = (buffer_len / 80).max(1);
-        let digits = if estimated_lines == 0 {
+        let byte_offset_mode = buffer.line_count().is_none();
+        let gutter_estimate = if byte_offset_mode {
+            // In byte offset mode, gutter shows byte offsets up to file size
+            buffer.len().max(1)
+        } else {
+            buffer.line_count().unwrap_or(1)
+        };
+        let digits = if gutter_estimate == 0 {
             1
         } else {
-            ((estimated_lines as f64).log10().floor() as usize) + 1
+            ((gutter_estimate as f64).log10().floor() as usize) + 1
         };
         // 1 (indicator) + minimum 4 digits for readability + 3 (" │ ")
         1 + digits.max(4) + 3
@@ -932,6 +937,13 @@ impl Viewport {
         cursor: &Cursor,
         hidden_ranges: &[(usize, usize)],
     ) {
+        let _span = tracing::trace_span!(
+            "ensure_visible",
+            cursor_pos = cursor.position,
+            top_byte = self.top_byte,
+        )
+        .entered();
+
         // Check if we should skip sync due to session restore
         // This prevents the restored scroll position from being overwritten
         if self.should_skip_resize_sync() {
@@ -971,12 +983,16 @@ impl Viewport {
         let load_length = (estimated_viewport_bytes * 3).min(remaining_bytes);
 
         // Force-load the data by actually requesting it (not just prepare_viewport)
-        if let Err(e) = buffer.get_text_range_mut(load_start, load_length) {
-            tracing::warn!(
-                "Failed to load data around cursor at {}: {}",
-                cursor.position,
-                e
-            );
+        {
+            let _span =
+                tracing::trace_span!("ensure_visible_load", load_start, load_length,).entered();
+            if let Err(e) = buffer.get_text_range_mut(load_start, load_length) {
+                tracing::warn!(
+                    "Failed to load data around cursor at {}: {}",
+                    cursor.position,
+                    e
+                );
+            }
         }
 
         // Find the start of the line containing the cursor using iterator
@@ -1130,6 +1146,9 @@ impl Viewport {
         // - If cursor is below viewport: place cursor at (viewport - margin) from top
         // - If cursor is above viewport: place cursor at margin from top
         if !cursor_is_visible {
+            let _span =
+                tracing::trace_span!("ensure_visible_scroll", cursor_near_top, cursor_line_start,)
+                    .entered();
             // We want cursor at (viewport_lines - 1 - effective_offset) rows from new top
             // when scrolling down, or at effective_offset rows from new top when scrolling up.
 

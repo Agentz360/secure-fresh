@@ -147,6 +147,42 @@ impl Editor {
                     self.set_status_message(t!("error.invalid_line", input = &input).to_string());
                 }
             },
+            PromptType::GotoByteOffset => {
+                // Parse byte offset — strip optional trailing 'B' or 'b' suffix
+                let trimmed = input.trim();
+                let num_str = trimmed
+                    .strip_suffix('B')
+                    .or_else(|| trimmed.strip_suffix('b'))
+                    .unwrap_or(trimmed);
+                match num_str.parse::<usize>() {
+                    Ok(offset) => {
+                        self.goto_byte_offset(offset);
+                        self.set_status_message(
+                            t!("goto.jumped_byte", offset = offset).to_string(),
+                        );
+                    }
+                    Err(_) => {
+                        self.set_status_message(
+                            t!("goto.invalid_byte_offset", input = &input).to_string(),
+                        );
+                    }
+                }
+            }
+            PromptType::GotoLineScanConfirm => {
+                let answer = input.trim().to_lowercase();
+                if answer == "y" || answer == "yes" {
+                    // Start incremental scan (non-blocking, updates progress in status bar)
+                    self.start_incremental_line_scan(true);
+                    // The GotoLine prompt will be opened when the scan completes
+                    // (in process_line_scan)
+                } else {
+                    // No scan — open byte offset prompt (exact byte navigation)
+                    self.start_prompt(
+                        t!("goto.byte_offset_prompt").to_string(),
+                        PromptType::GotoByteOffset,
+                    );
+                }
+            }
             PromptType::QuickOpen => {
                 // Handle Quick Open confirmation based on prefix
                 return self.handle_quick_open_confirm(&input, selected_index);

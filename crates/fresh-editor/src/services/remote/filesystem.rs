@@ -7,8 +7,9 @@ use crate::model::filesystem::{
 };
 use crate::services::remote::channel::{AgentChannel, ChannelError};
 use crate::services::remote::protocol::{
-    append_params, decode_base64, ls_params, patch_params, read_params, stat_params,
-    sudo_write_params, truncate_params, write_params, PatchOp, RemoteDirEntry, RemoteMetadata,
+    append_params, count_lf_params, decode_base64, ls_params, patch_params, read_params,
+    stat_params, sudo_write_params, truncate_params, write_params, PatchOp, RemoteDirEntry,
+    RemoteMetadata,
 };
 use std::io::{self, Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -192,6 +193,25 @@ impl FileSystem for RemoteFileSystem {
         }
 
         Ok(content)
+    }
+
+    fn count_line_feeds_in_range(&self, path: &Path, offset: u64, len: usize) -> io::Result<usize> {
+        let path_str = path.to_string_lossy();
+        let result = self
+            .channel
+            .request_blocking("count_lf", count_lf_params(&path_str, offset, len))
+            .map_err(Self::to_io_error)?;
+
+        result
+            .get("count")
+            .and_then(|v| v.as_u64())
+            .map(|c| c as usize)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "missing count in count_lf response",
+                )
+            })
     }
 
     fn write_file(&self, path: &Path, data: &[u8]) -> io::Result<()> {

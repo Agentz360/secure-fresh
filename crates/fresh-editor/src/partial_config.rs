@@ -158,6 +158,7 @@ pub struct PartialEditorConfig {
     pub mouse_hover_delay_ms: Option<u64>,
     pub double_click_time_ms: Option<u64>,
     pub auto_revert_poll_interval_ms: Option<u64>,
+    pub read_concurrency: Option<usize>,
     pub file_tree_poll_interval_ms: Option<u64>,
     pub default_line_ending: Option<LineEndingOption>,
     pub trim_trailing_whitespace_on_save: Option<bool>,
@@ -219,6 +220,7 @@ impl Merge for PartialEditorConfig {
             .merge_from(&other.double_click_time_ms);
         self.auto_revert_poll_interval_ms
             .merge_from(&other.auto_revert_poll_interval_ms);
+        self.read_concurrency.merge_from(&other.read_concurrency);
         self.file_tree_poll_interval_ms
             .merge_from(&other.file_tree_poll_interval_ms);
         self.default_line_ending
@@ -450,6 +452,7 @@ impl From<&crate::config::EditorConfig> for PartialEditorConfig {
             mouse_hover_delay_ms: Some(cfg.mouse_hover_delay_ms),
             double_click_time_ms: Some(cfg.double_click_time_ms),
             auto_revert_poll_interval_ms: Some(cfg.auto_revert_poll_interval_ms),
+            read_concurrency: Some(cfg.read_concurrency),
             file_tree_poll_interval_ms: Some(cfg.file_tree_poll_interval_ms),
             default_line_ending: Some(cfg.default_line_ending.clone()),
             trim_trailing_whitespace_on_save: Some(cfg.trim_trailing_whitespace_on_save),
@@ -531,6 +534,7 @@ impl PartialEditorConfig {
             auto_revert_poll_interval_ms: self
                 .auto_revert_poll_interval_ms
                 .unwrap_or(defaults.auto_revert_poll_interval_ms),
+            read_concurrency: self.read_concurrency.unwrap_or(defaults.read_concurrency),
             file_tree_poll_interval_ms: self
                 .file_tree_poll_interval_ms
                 .unwrap_or(defaults.file_tree_poll_interval_ms),

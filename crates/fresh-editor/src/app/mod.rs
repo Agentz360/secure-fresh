@@ -61,6 +61,9 @@ pub fn editor_tick(
     if editor.process_pending_file_opens() {
         needs_render = true;
     }
+    if editor.process_line_scan() {
+        needs_render = true;
+    }
     if editor.check_mouse_hover_timer() {
         needs_render = true;
     }
@@ -786,6 +789,9 @@ pub struct Editor {
 
     /// Stdin streaming state (if reading from stdin)
     stdin_streaming: Option<StdinStreamingState>,
+
+    /// Incremental line scan state (for non-blocking progress during Go to Line)
+    line_scan_state: Option<LineScanState>,
 }
 
 /// A file that should be opened after the TUI starts
@@ -797,6 +803,23 @@ pub struct PendingFileOpen {
     pub line: Option<usize>,
     /// Column number to navigate to (1-indexed, optional)
     pub column: Option<usize>,
+}
+
+/// State for an incremental line-feed scan (non-blocking Go to Line)
+struct LineScanState {
+    buffer_id: BufferId,
+    /// Snapshot of the (pre-split) leaves, needed for `scan_leaf`.
+    leaves: Vec<crate::model::piece_tree::LeafData>,
+    /// One work item per leaf (each ≤ LOAD_CHUNK_SIZE bytes).
+    chunks: Vec<crate::model::buffer::LineScanChunk>,
+    next_chunk: usize,
+    total_bytes: usize,
+    scanned_bytes: usize,
+    /// Completed per-leaf updates: (leaf_index, lf_count).
+    updates: Vec<(usize, usize)>,
+    /// Whether to open the Go to Line prompt after the scan completes.
+    /// True when triggered from the Go to Line flow, false from the command palette.
+    open_goto_line_on_complete: bool,
 }
 
 /// State for tracking stdin streaming in background
@@ -1369,6 +1392,7 @@ impl Editor {
             color_capability,
             pending_file_opens: Vec::new(),
             stdin_streaming: None,
+            line_scan_state: None,
             review_hunks: Vec::new(),
             active_action_popup: None,
             composite_buffers: HashMap::new(),
@@ -4555,16 +4579,7 @@ impl Editor {
                 };
                 snapshot.buffers.insert(*buffer_id, buffer_info);
 
-                // Skip diffing in large file mode - too expensive
-                // TODO: Enable when we have an efficient streaming diff algorithm
-                let is_large_file = state.buffer.line_count().is_none();
-                let diff = if is_large_file {
-                    BufferSavedDiff {
-                        equal: !state.buffer.is_modified(),
-                        byte_ranges: vec![],
-                        line_ranges: None,
-                    }
-                } else {
+                let diff = {
                     let diff = state.buffer.diff_since_saved();
                     BufferSavedDiff {
                         equal: diff.equal,
@@ -4627,8 +4642,16 @@ impl Editor {
                 }
 
                 // Viewport - get from SplitViewState (the authoritative source)
+                let top_line = self.buffers.get(&self.active_buffer()).and_then(|state| {
+                    if state.buffer.line_count().is_some() {
+                        Some(state.buffer.get_line_number(active_vs.viewport.top_byte))
+                    } else {
+                        None
+                    }
+                });
                 snapshot.viewport = Some(ViewportInfo {
                     top_byte: active_vs.viewport.top_byte,
+                    top_line,
                     left_column: active_vs.viewport.left_column,
                     width: active_vs.viewport.width,
                     height: active_vs.viewport.height,
@@ -4979,6 +5002,18 @@ impl Editor {
                 priority,
             } => {
                 self.handle_set_line_indicator(buffer_id, line, namespace, symbol, color, priority);
+            }
+            PluginCommand::SetLineIndicators {
+                buffer_id,
+                lines,
+                namespace,
+                symbol,
+                color,
+                priority,
+            } => {
+                self.handle_set_line_indicators(
+                    buffer_id, lines, namespace, symbol, color, priority,
+                );
             }
             PluginCommand::ClearLineIndicators {
                 buffer_id,

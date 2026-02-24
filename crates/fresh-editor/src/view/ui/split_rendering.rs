@@ -422,6 +422,9 @@ struct LineRenderInput<'a> {
     software_cursor_only: bool,
     /// Whether to show line numbers in the gutter
     show_line_numbers: bool,
+    /// Whether the gutter shows byte offsets instead of line numbers
+    /// (large file without line index scan)
+    byte_offset_mode: bool,
 }
 
 /// Context for computing the style of a single character
@@ -467,6 +470,10 @@ struct LeftMarginContext<'a> {
     relative_line_numbers: bool,
     /// Whether to show line numbers in the gutter
     show_line_numbers: bool,
+    /// Whether the gutter shows byte offsets instead of line numbers
+    byte_offset_mode: bool,
+    /// The absolute byte offset at the start of this line (used in byte_offset_mode)
+    line_byte_offset: Option<usize>,
 }
 
 /// Render the left margin (indicators + line numbers + separator) to line_spans
@@ -548,9 +555,25 @@ fn render_left_margin(
             Style::default().fg(ctx.theme.line_number_fg),
             None,
         );
+    } else if ctx.byte_offset_mode && ctx.show_line_numbers {
+        // Byte offset mode: show the absolute byte offset at the start of each line
+        let is_cursor_line = ctx.current_source_line_num == ctx.cursor_line;
+        let byte_off = ctx.line_byte_offset.unwrap_or(0);
+        let rendered_text = format!(
+            "{:>width$}",
+            byte_off,
+            width = ctx.state.margins.left_config.width
+        );
+        let margin_style = if is_cursor_line {
+            Style::default().fg(ctx.theme.editor_fg)
+        } else {
+            Style::default().fg(ctx.theme.line_number_fg)
+        };
+        push_span_with_map(line_spans, line_view_map, rendered_text, margin_style, None);
     } else if ctx.relative_line_numbers {
         // Relative line numbers: show distance from cursor, or absolute for cursor line
-        let display_num = if ctx.current_source_line_num == ctx.cursor_line {
+        let is_cursor_line = ctx.current_source_line_num == ctx.cursor_line;
+        let display_num = if is_cursor_line {
             // Show absolute line number for the cursor line (1-indexed)
             ctx.current_source_line_num + 1
         } else {
@@ -563,7 +586,7 @@ fn render_left_margin(
             width = ctx.state.margins.left_config.width
         );
         // Use brighter color for the cursor line
-        let margin_style = if ctx.current_source_line_num == ctx.cursor_line {
+        let margin_style = if is_cursor_line {
             Style::default().fg(ctx.theme.editor_fg)
         } else {
             Style::default().fg(ctx.theme.line_number_fg)
@@ -1069,13 +1092,16 @@ impl SplitRenderer {
                     })
                     .unwrap_or_default();
 
-                Self::sync_viewport_to_content(
-                    &mut viewport,
-                    &mut state.buffer,
-                    &split_cursors,
-                    layout.content_rect,
-                    &hidden_ranges,
-                );
+                {
+                    let _span = tracing::trace_span!("sync_viewport_to_content").entered();
+                    Self::sync_viewport_to_content(
+                        &mut viewport,
+                        &mut state.buffer,
+                        &split_cursors,
+                        layout.content_rect,
+                        &hidden_ranges,
+                    );
+                }
                 let view_prefs =
                     Self::resolve_view_preferences(state, split_view_states.as_deref(), split_id);
 
@@ -1086,6 +1112,7 @@ impl SplitRenderer {
                     .map(|vs| &mut vs.folds)
                     .unwrap_or(&mut empty_folds);
 
+                let _render_buf_span = tracing::trace_span!("render_buffer_in_split").entered();
                 let split_view_mappings = Self::render_buffer_in_split(
                     frame,
                     state,
@@ -1115,18 +1142,23 @@ impl SplitRenderer {
                     view_prefs.show_line_numbers,
                 );
 
+                drop(_render_buf_span);
+
                 // Store view line mappings for mouse click handling
                 view_line_mappings.insert(split_id, split_view_mappings);
 
                 // For small files, count actual lines for accurate scrollbar
                 // For large files, we'll use a constant thumb size
                 let buffer_len = state.buffer.len();
-                let (total_lines, top_line) = Self::scrollbar_line_counts(
-                    state,
-                    &viewport,
-                    large_file_threshold_bytes,
-                    buffer_len,
-                );
+                let (total_lines, top_line) = {
+                    let _span = tracing::trace_span!("scrollbar_line_counts").entered();
+                    Self::scrollbar_line_counts(
+                        state,
+                        &viewport,
+                        large_file_threshold_bytes,
+                        buffer_len,
+                    )
+                };
 
                 // Render vertical scrollbar for this split and get thumb position
                 let (thumb_start, thumb_end) = if show_vertical_scrollbar {
@@ -2189,8 +2221,8 @@ impl SplitRenderer {
 
         // Get total line count (if available) or estimate
         let line_count = state.buffer.line_count().unwrap_or_else(|| {
-            // Estimate based on buffer size
-            (buffer_len / 80).max(1)
+            // Estimate based on buffer size and configured line length
+            (buffer_len / state.buffer.estimated_line_length()).max(1)
         });
 
         for line_idx in 0..line_count {
@@ -4058,6 +4090,7 @@ impl SplitRenderer {
             session_mode,
             software_cursor_only,
             show_line_numbers,
+            byte_offset_mode,
         } = input;
 
         let selection_ranges = &selection.ranges;
@@ -4181,6 +4214,13 @@ impl SplitRenderer {
             // This is critical for proper rendering of combining characters (Thai, etc.)
             let mut span_acc = SpanAccumulator::new();
 
+            // Compute the byte offset at the start of this line (for byte offset gutter mode)
+            let line_byte_offset = if byte_offset_mode && !is_continuation {
+                line_char_source_bytes.iter().find_map(|opt| *opt)
+            } else {
+                None
+            };
+
             // Render left margin (indicators + line numbers + separator)
             render_left_margin(
                 &LeftMarginContext {
@@ -4195,6 +4235,8 @@ impl SplitRenderer {
                     cursor_line,
                     relative_line_numbers,
                     show_line_numbers,
+                    byte_offset_mode,
+                    line_byte_offset,
                 },
                 &mut line_spans,
                 &mut line_view_map,
@@ -4889,18 +4931,26 @@ impl SplitRenderer {
                         implicit_line_spans.push(Span::styled(" ", Style::default()));
                     }
 
-                    // Line number
-                    let estimated_lines = (state.buffer.len() / 80).max(1);
-                    let margin_content = state.margins.render_line(
-                        implicit_line_num,
-                        crate::view::margin::MarginPosition::Left,
-                        estimated_lines,
-                        show_line_numbers,
-                    );
-                    let (rendered_text, style_opt) =
-                        margin_content.render(state.margins.left_config.width);
-                    let margin_style =
-                        style_opt.unwrap_or_else(|| Style::default().fg(theme.line_number_fg));
+                    // Line number (or byte offset in byte_offset_mode)
+                    let rendered_text = if byte_offset_mode && show_line_numbers {
+                        format!(
+                            "{:>width$}",
+                            state.buffer.len(),
+                            width = state.margins.left_config.width
+                        )
+                    } else {
+                        let estimated_lines = state.buffer.line_count().unwrap_or(
+                            (state.buffer.len() / state.buffer.estimated_line_length()).max(1),
+                        );
+                        let margin_content = state.margins.render_line(
+                            implicit_line_num,
+                            crate::view::margin::MarginPosition::Left,
+                            estimated_lines,
+                            show_line_numbers,
+                        );
+                        margin_content.render(state.margins.left_config.width).0
+                    };
+                    let margin_style = Style::default().fg(theme.line_number_fg);
                     implicit_line_spans.push(Span::styled(rendered_text, margin_style));
 
                     // Separator
@@ -5073,7 +5123,14 @@ impl SplitRenderer {
         let visible_count = viewport.visible_line_count();
 
         let buffer_len = state.buffer.len();
-        let estimated_lines = (buffer_len / 80).max(1);
+        let byte_offset_mode = state.buffer.line_count().is_none();
+        let estimated_lines = if byte_offset_mode {
+            // In byte offset mode, gutter shows byte offsets, so size the gutter
+            // for the largest byte offset (file size)
+            buffer_len.max(1)
+        } else {
+            state.buffer.line_count().unwrap_or(1)
+        };
         state
             .margins
             .update_width_for_buffer(estimated_lines, show_line_numbers);
@@ -5085,19 +5142,22 @@ impl SplitRenderer {
         // Clone view_transform so we can reuse it if scrolling triggers a rebuild
         let view_transform_for_rebuild = view_transform.clone();
 
-        let view_data = Self::build_view_data(
-            state,
-            viewport,
-            view_transform,
-            estimated_line_length,
-            visible_count,
-            line_wrap,
-            render_area.width as usize,
-            gutter_width,
-            &view_mode,
-            folds,
-            theme,
-        );
+        let view_data = {
+            let _span = tracing::trace_span!("build_view_data").entered();
+            Self::build_view_data(
+                state,
+                viewport,
+                view_transform,
+                estimated_line_length,
+                visible_count,
+                line_wrap,
+                render_area.width as usize,
+                gutter_width,
+                &view_mode,
+                folds,
+                theme,
+            )
+        };
 
         // Same-buffer scroll sync: if the sync code flagged this viewport to
         // scroll to the end, apply it now using the view lines we just built.
@@ -5275,6 +5335,7 @@ impl SplitRenderer {
             session_mode,
             software_cursor_only,
             show_line_numbers,
+            byte_offset_mode,
         });
 
         let view_line_mappings = render_output.view_line_mappings.clone();
@@ -5840,7 +5901,7 @@ mod tests {
         );
         let view_anchor = SplitRenderer::calculate_view_anchor(&view_data.lines, 0);
 
-        let estimated_lines = (state.buffer.len() / 80).max(1);
+        let estimated_lines = (state.buffer.len() / state.buffer.estimated_line_length()).max(1);
         state.margins.update_width_for_buffer(estimated_lines, true);
         let gutter_width = state.margins.left_total_width();
 
@@ -5886,6 +5947,7 @@ mod tests {
             session_mode: false,
             software_cursor_only: false,
             show_line_numbers: true, // Tests show line numbers
+            byte_offset_mode: false, // Tests use exact line numbers
         });
 
         (
