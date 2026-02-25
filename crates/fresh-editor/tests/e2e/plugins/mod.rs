@@ -9,6 +9,7 @@ pub mod git;
 pub mod gutter;
 pub mod language_pack;
 pub mod lsp_find_references;
+pub mod markdown_source;
 pub mod package_manager;
 pub mod plugin;
 pub mod theme_editor;

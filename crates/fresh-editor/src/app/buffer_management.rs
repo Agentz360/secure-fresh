@@ -39,6 +39,15 @@ impl Editor {
     /// If the file doesn't exist, creates an unsaved buffer with that filename.
     /// Saving the buffer will create the file.
     pub fn open_file(&mut self, path: &Path) -> anyhow::Result<BufferId> {
+        // Check whether the active buffer had a file path before loading.
+        // If it didn't, open_file_no_focus may replace the empty initial buffer
+        // in-place (same buffer ID, new content), and we need to notify plugins.
+        let active_had_path = self
+            .buffers
+            .get(&self.active_buffer())
+            .and_then(|s| s.buffer.file_path())
+            .is_some();
+
         let buffer_id = self.open_file_no_focus(path)?;
 
         // Check if this was an already-open buffer or a new one
@@ -60,6 +69,22 @@ impl Editor {
         }
 
         self.set_active_buffer(buffer_id);
+
+        // If the initial empty buffer was replaced in-place with file content,
+        // set_active_buffer is a no-op (same buffer ID). Fire buffer_activated
+        // explicitly so plugins see the newly loaded file.
+        // Skip this when re-opening an already-active file (active_had_path),
+        // as nothing changed and the extra hook would cause spurious refreshes
+        // in plugins like the diagnostics panel.
+        if !is_new_buffer && !active_had_path {
+            #[cfg(feature = "plugins")]
+            self.update_plugin_state_snapshot();
+
+            self.plugin_manager.run_hook(
+                "buffer_activated",
+                crate::services::plugins::hooks::HookArgs::BufferActivated { buffer_id },
+            );
+        }
 
         // Use display_name from metadata for relative path display
         let display_name = self
@@ -111,6 +136,11 @@ impl Editor {
         // Determine if we're opening a non-existent file (for creating new files)
         // Use filesystem trait method to support remote files
         let file_exists = self.filesystem.exists(&resolved_path);
+
+        // Save the user-visible (non-canonicalized) path for language detection.
+        // Glob patterns in language config should match the path as the user sees it,
+        // not the canonical path (e.g., on macOS /var -> /private/var symlinks).
+        let display_path = resolved_path.clone();
 
         // Canonicalize the path to resolve symlinks and normalize path components
         // This ensures consistent path representation throughout the editor
@@ -188,26 +218,26 @@ impl Editor {
             self.grammar_registry.user_extensions_debug()
         );
         let mut state = if file_exists {
-            EditorState::from_file_with_languages(
-                path,
-                self.terminal_width,
-                self.terminal_height,
+            // Load from canonical path (for I/O and dedup), detect language from
+            // display path (for glob pattern matching against user-visible names).
+            let buffer = crate::model::buffer::Buffer::load_from_file(
+                &canonical_path,
                 self.config.editor.large_file_threshold_bytes as usize,
+                Arc::clone(&self.filesystem),
+            )?;
+            let detected = crate::primitives::detected_language::DetectedLanguage::from_path(
+                &display_path,
                 &self.grammar_registry,
                 &self.config.languages,
-                Arc::clone(&self.filesystem),
-            )?
+            );
+            EditorState::from_buffer_with_language(buffer, detected)
         } else {
             // File doesn't exist - create empty buffer with the file path set
-            let mut new_state = EditorState::new(
-                self.terminal_width,
-                self.terminal_height,
+            EditorState::new_with_path(
                 self.config.editor.large_file_threshold_bytes as usize,
                 Arc::clone(&self.filesystem),
-            );
-            // Set the file path so saving will create the file
-            new_state.buffer.set_file_path(path.to_path_buf());
-            new_state
+                path.to_path_buf(),
+            )
         };
         // Note: line_wrap_enabled is set on SplitViewState.viewport when the split is created
 
@@ -312,6 +342,9 @@ impl Editor {
             path.to_path_buf()
         };
 
+        // Save user-visible path for language detection before canonicalizing
+        let display_path = resolved_path.clone();
+
         // Canonicalize the path
         let canonical_path = resolved_path
             .canonicalize()
@@ -334,16 +367,19 @@ impl Editor {
         let buffer_id = BufferId(self.next_buffer_id);
         self.next_buffer_id += 1;
 
-        // Create editor state using LOCAL filesystem
-        let state = EditorState::from_file_with_languages(
-            path,
-            self.terminal_width,
-            self.terminal_height,
+        // Load from canonical path (for I/O and dedup), detect language from
+        // display path (for glob pattern matching against user-visible names).
+        let buffer = crate::model::buffer::Buffer::load_from_file(
+            &canonical_path,
             self.config.editor.large_file_threshold_bytes as usize,
-            &self.grammar_registry,
-            &self.config.languages,
             Arc::clone(&self.local_filesystem),
         )?;
+        let detected = crate::primitives::detected_language::DetectedLanguage::from_path(
+            &display_path,
+            &self.grammar_registry,
+            &self.config.languages,
+        );
+        let state = EditorState::from_buffer_with_language(buffer, detected);
 
         self.buffers.insert(buffer_id, state);
         self.event_logs
@@ -389,6 +425,9 @@ impl Editor {
             path.to_path_buf()
         };
 
+        // Save user-visible path for language detection before canonicalizing
+        let display_path = resolved_path.clone();
+
         // Canonicalize the path
         let canonical_path = self
             .filesystem
@@ -416,7 +455,7 @@ impl Editor {
         let buffer_id = BufferId(self.next_buffer_id);
         self.next_buffer_id += 1;
 
-        // Load buffer with the specified encoding
+        // Load buffer with the specified encoding (use canonical path for I/O)
         let buffer = crate::model::buffer::Buffer::load_from_file_with_encoding(
             path,
             encoding,
@@ -425,25 +464,15 @@ impl Editor {
                 estimated_line_length: self.config.editor.estimated_line_length,
             },
         )?;
-
         // Create editor state with the buffer
-        let highlighter =
-            crate::primitives::highlight_engine::HighlightEngine::for_file_with_languages(
-                path,
-                &self.grammar_registry,
-                &self.config.languages,
-            );
+        // Use display_path for language detection (glob patterns match user-visible paths)
+        let detected = crate::primitives::detected_language::DetectedLanguage::from_path(
+            &display_path,
+            &self.grammar_registry,
+            &self.config.languages,
+        );
 
-        let language = crate::primitives::highlighter::Language::from_path(path);
-        let language_name = if let Some(lang) = &language {
-            lang.to_string()
-        } else {
-            crate::services::lsp::manager::detect_language(path, &self.config.languages)
-                .unwrap_or_else(|| "text".to_string())
-        };
-
-        let mut state =
-            EditorState::from_buffer_with_highlighter(buffer, highlighter, language_name, language);
+        let mut state = EditorState::from_buffer_with_language(buffer, detected);
 
         state
             .margins
@@ -536,6 +565,9 @@ impl Editor {
             path.to_path_buf()
         };
 
+        // Save user-visible path for language detection before canonicalizing
+        let display_path = resolved_path.clone();
+
         // Canonicalize the path
         let canonical_path = self
             .filesystem
@@ -564,25 +596,15 @@ impl Editor {
             path,
             Arc::clone(&self.filesystem),
         )?;
-
         // Create editor state with the buffer
-        let highlighter =
-            crate::primitives::highlight_engine::HighlightEngine::for_file_with_languages(
-                path,
-                &self.grammar_registry,
-                &self.config.languages,
-            );
+        // Use display_path for language detection (glob patterns match user-visible paths)
+        let detected = crate::primitives::detected_language::DetectedLanguage::from_path(
+            &display_path,
+            &self.grammar_registry,
+            &self.config.languages,
+        );
 
-        let language = crate::primitives::highlighter::Language::from_path(path);
-        let language_name = if let Some(lang) = &language {
-            lang.to_string()
-        } else {
-            crate::services::lsp::manager::detect_language(path, &self.config.languages)
-                .unwrap_or_else(|| "text".to_string())
-        };
-
-        let mut state =
-            EditorState::from_buffer_with_highlighter(buffer, highlighter, language_name, language);
+        let mut state = EditorState::from_buffer_with_language(buffer, detected);
 
         state
             .margins
@@ -2274,6 +2296,7 @@ impl Editor {
     /// Process chunks for the incremental line-feed scan.
     /// Returns `true` if the UI should re-render (progress updated or scan finished).
     pub fn process_line_scan(&mut self) -> bool {
+        let _span = tracing::info_span!("process_line_scan").entered();
         let scan = match self.line_scan_state.as_mut() {
             Some(s) => s,
             None => return false,
@@ -2309,6 +2332,7 @@ impl Editor {
     /// `count_line_feeds_in_range` on the filesystem, which remote implementations
     /// override to count on the server without transferring data.
     fn process_line_scan_batch(&mut self, buffer_id: BufferId) -> std::io::Result<()> {
+        let _span = tracing::info_span!("process_line_scan_batch").entered();
         let concurrency = self.config.editor.read_concurrency.max(1);
 
         let state = self.buffers.get(&buffer_id);
@@ -2387,9 +2411,15 @@ impl Editor {
     }
 
     fn finish_line_scan_ok(&mut self) {
+        let _span = tracing::info_span!("finish_line_scan_ok").entered();
         let scan = self.line_scan_state.take().unwrap();
         let open_goto = scan.open_goto_line_on_complete;
         if let Some(state) = self.buffers.get_mut(&scan.buffer_id) {
+            let _span = tracing::info_span!(
+                "rebuild_with_pristine_saved_root",
+                updates = scan.updates.len()
+            )
+            .entered();
             state.buffer.rebuild_with_pristine_saved_root(&scan.updates);
         }
         self.set_status_message(t!("goto.scan_complete").to_string());

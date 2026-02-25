@@ -790,11 +790,10 @@ fn test_indent_after_empty_line_in_function_body() {
 
     // Now we're on an empty line with 4 spaces indent
     // Delete all the spaces to simulate an empty line with NO indent
-    for _ in 0..4 {
-        harness
-            .send_key(KeyCode::Backspace, KeyModifiers::NONE)
-            .unwrap();
-    }
+    // Smart backspace removes one indent unit (4 spaces) per press
+    harness
+        .send_key(KeyCode::Backspace, KeyModifiers::NONE)
+        .unwrap();
 
     // Now we're on an empty line with NO spaces (inside function body)
     // Press Enter - should recognize we're inside function body and indent to 4 spaces
@@ -1685,5 +1684,366 @@ fn test_bracket_expansion_jsx_component() {
         lines.len() >= 3,
         "Expected at least 3 lines. Content:\n{}",
         content
+    );
+}
+
+// ============================================================================
+// Python Nested Indentation Tests (Issue #1069)
+// When writing nested block syntax (if/for/while/def/class) in Python and
+// pressing Enter, the auto-indent feature should produce the correct
+// indentation level. The issue reports that nesting beyond level 1 doesn't
+// work correctly.
+// ============================================================================
+
+/// Test Python nested indent - typing nested block statements (if inside def)
+/// and pressing Enter should produce correct nested indentation.
+/// Issue #1069: nested Python auto-indent doesn't work correctly beyond level 1
+#[test]
+fn test_python_nested_indent_if_inside_def() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.py");
+    std::fs::write(&file_path, "").unwrap();
+
+    let mut harness = harness_with_auto_indent();
+    harness.open_file(&file_path).unwrap();
+
+    // Type outer block: def foo():
+    harness.type_text("def foo():").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // After pressing Enter after "def foo():", should have 4 spaces indent
+    let content = harness.get_buffer_content().unwrap();
+    assert!(
+        content.contains("def foo():\n    "),
+        "Expected 4-space indent after 'def foo():', got: {:?}",
+        content
+    );
+
+    // Type nested block: if True:
+    harness.type_text("if True:").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // After pressing Enter after "    if True:", should have 8 spaces indent (2 levels)
+    let content = harness.get_buffer_content().unwrap();
+    assert!(
+        content.contains("if True:\n        "),
+        "Expected 8-space indent after nested 'if True:', got: {:?}",
+        content
+    );
+}
+
+/// Test Python deeply nested indent - three levels deep (for inside if inside def)
+/// Issue #1069: nested Python auto-indent doesn't work correctly beyond level 1
+#[test]
+fn test_python_nested_indent_three_levels() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.py");
+    std::fs::write(&file_path, "").unwrap();
+
+    let mut harness = harness_with_auto_indent();
+    harness.open_file(&file_path).unwrap();
+
+    // Level 1: def foo():
+    harness.type_text("def foo():").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Verify level 1 indent (4 spaces)
+    let content = harness.get_buffer_content().unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    let last_line = lines.last().unwrap();
+    let indent = last_line.chars().take_while(|&c| c == ' ').count();
+    assert_eq!(
+        indent, 4,
+        "Level 1: expected 4-space indent after 'def foo():', got {} spaces. Content:\n{}",
+        indent, content
+    );
+
+    // Level 2: if True:
+    harness.type_text("if True:").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Verify level 2 indent (8 spaces)
+    let content = harness.get_buffer_content().unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    let last_line = lines.last().unwrap();
+    let indent = last_line.chars().take_while(|&c| c == ' ').count();
+    assert_eq!(
+        indent, 8,
+        "Level 2: expected 8-space indent after 'if True:', got {} spaces. Content:\n{}",
+        indent, content
+    );
+
+    // Level 3: for x in range(10):
+    harness.type_text("for x in range(10):").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Verify level 3 indent (12 spaces)
+    let content = harness.get_buffer_content().unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    let last_line = lines.last().unwrap();
+    let indent = last_line.chars().take_while(|&c| c == ' ').count();
+    assert_eq!(
+        indent, 12,
+        "Level 3: expected 12-space indent after 'for x in range(10):', got {} spaces. Content:\n{}",
+        indent, content
+    );
+}
+
+/// Test Python nested indent with pre-written file content
+/// Issue #1069: verifies auto-indent works when opening a file with existing
+/// nested Python code and pressing Enter at the end of a nested block statement
+#[test]
+fn test_python_nested_indent_from_file() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.py");
+    // Write a file with nested Python code, cursor will be at the end
+    std::fs::write(
+        &file_path,
+        "def foo():\n    if True:\n        for x in range(10):",
+    )
+    .unwrap();
+
+    let mut harness = harness_with_auto_indent();
+    harness.open_file(&file_path).unwrap();
+
+    // Move cursor to end of file
+    harness
+        .send_key(KeyCode::End, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Press Enter after "        for x in range(10):"
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Should have 12 spaces indent (3 levels deep)
+    let content = harness.get_buffer_content().unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert!(
+        lines.len() >= 4,
+        "Expected at least 4 lines, got {}. Content:\n{}",
+        lines.len(),
+        content
+    );
+
+    let last_line = lines.last().unwrap();
+    let indent = last_line.chars().take_while(|&c| c == ' ').count();
+    assert_eq!(
+        indent, 12,
+        "Expected 12-space indent (3 levels) after nested 'for x in range(10):', got {} spaces. Content:\n{}",
+        indent, content
+    );
+}
+
+/// Test Python nested indent - while inside def inside class
+/// Issue #1069: tests a different combination of block statements
+#[test]
+fn test_python_nested_indent_class_def_while() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.py");
+    std::fs::write(&file_path, "").unwrap();
+
+    let mut harness = harness_with_auto_indent();
+    harness.open_file(&file_path).unwrap();
+
+    // Level 1: class MyClass:
+    harness.type_text("class MyClass:").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Level 2: def method(self):
+    harness.type_text("def method(self):").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Verify level 2 indent (8 spaces)
+    let content = harness.get_buffer_content().unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    let last_line = lines.last().unwrap();
+    let indent = last_line.chars().take_while(|&c| c == ' ').count();
+    assert_eq!(
+        indent, 8,
+        "Level 2: expected 8-space indent after 'def method(self):', got {} spaces. Content:\n{}",
+        indent, content
+    );
+
+    // Level 3: while True:
+    harness.type_text("while True:").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    // Verify level 3 indent (12 spaces)
+    let content = harness.get_buffer_content().unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    let last_line = lines.last().unwrap();
+    let indent = last_line.chars().take_while(|&c| c == ' ').count();
+    assert_eq!(
+        indent, 12,
+        "Level 3: expected 12-space indent after 'while True:', got {} spaces. Content:\n{}",
+        indent, content
+    );
+}
+
+/// Test that Go auto-indent uses tab characters, not spaces.
+/// When pressing Enter after `{` in a Go file, the new line should be
+/// indented with `\t`, never with spaces.
+#[test]
+fn test_go_auto_indent_uses_tabs_not_spaces() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.go");
+    std::fs::write(&file_path, "func main() {").unwrap();
+
+    let mut harness = harness_with_auto_indent();
+    harness.open_file(&file_path).unwrap();
+
+    // Move to end and press Enter
+    harness
+        .send_key(KeyCode::End, KeyModifiers::CONTROL)
+        .unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    let content = harness.get_buffer_content().unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert!(lines.len() >= 2, "Expected at least 2 lines");
+
+    let indented_line = lines[1];
+    let leading_whitespace: String = indented_line
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .collect();
+
+    // Must contain at least one tab
+    assert!(
+        leading_whitespace.contains('\t'),
+        "Go auto-indent should use tab characters, got whitespace: {:?}",
+        leading_whitespace
+    );
+    // Must NOT contain any spaces
+    assert!(
+        !leading_whitespace.contains(' '),
+        "Go auto-indent should not contain spaces, got whitespace: {:?}",
+        leading_whitespace
+    );
+}
+
+/// Test that Python auto-indent uses spaces, not tabs.
+/// When pressing Enter after `:` in a Python file, the new line should be
+/// indented with spaces, never with tabs.
+#[test]
+fn test_python_auto_indent_uses_spaces_not_tabs() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.py");
+    std::fs::write(&file_path, "def foo():").unwrap();
+
+    let mut harness = harness_with_auto_indent();
+    harness.open_file(&file_path).unwrap();
+
+    // Move to end and press Enter
+    harness
+        .send_key(KeyCode::End, KeyModifiers::CONTROL)
+        .unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    let content = harness.get_buffer_content().unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert!(lines.len() >= 2, "Expected at least 2 lines");
+
+    let indented_line = lines[1];
+    let leading_whitespace: String = indented_line
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .collect();
+
+    // Must contain spaces
+    assert!(
+        !leading_whitespace.is_empty(),
+        "Python auto-indent should produce indentation"
+    );
+    // Must NOT contain any tabs
+    assert!(
+        !leading_whitespace.contains('\t'),
+        "Python auto-indent should use spaces, not tabs, got whitespace: {:?}",
+        leading_whitespace
+    );
+    // Should be 4 spaces
+    assert_eq!(
+        leading_whitespace, "    ",
+        "Python auto-indent should be 4 spaces"
+    );
+}
+
+/// Test that Go nested auto-indent uses only tabs, never spaces.
+/// Pressing Enter after nested `{` in Go should produce multiple tabs.
+#[test]
+fn test_go_nested_auto_indent_uses_only_tabs() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.go");
+    std::fs::write(&file_path, "func main() {\n\tif true {").unwrap();
+
+    let mut harness = harness_with_auto_indent();
+    harness.open_file(&file_path).unwrap();
+
+    // Move to end and press Enter
+    harness
+        .send_key(KeyCode::End, KeyModifiers::CONTROL)
+        .unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    let content = harness.get_buffer_content().unwrap();
+    let lines: Vec<&str> = content.lines().collect();
+    assert!(lines.len() >= 3, "Expected at least 3 lines");
+
+    let indented_line = lines[2];
+    let leading_whitespace: String = indented_line
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .collect();
+
+    // Must be only tabs, no spaces
+    assert!(
+        !leading_whitespace.is_empty(),
+        "Nested Go indent should produce indentation"
+    );
+    assert!(
+        !leading_whitespace.contains(' '),
+        "Nested Go indent must use only tabs, got whitespace: {:?} in content: {:?}",
+        leading_whitespace,
+        content
+    );
+    assert_eq!(
+        leading_whitespace, "\t\t",
+        "Nested Go indent should be two tabs"
     );
 }

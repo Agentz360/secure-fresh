@@ -1,5 +1,66 @@
 # Release Notes
 
+## 0.2.6
+
+### Features
+
+* **Code Folding**: Fold/unfold code blocks via LSP foldingRange. Per-view fold state, gutter indicators for collapsed ranges, fold-aware scrolling. Toggle via command palette ("Toggle Fold") (#900). Thanks @asukaminato0721 !
+
+* **Large File Line Numbers**: Large files show byte offsets in gutter/status bar until scanned. On-demand parallel line index scanning (via Ctrl+G prompt or "Scan Line Index" command) gives exact line numbers with progress indicator. Remote scanning counts newlines server-side without data transfer.
+
+* **Markdown Source Editing**: New plugin for smart Markdown source-mode editing — auto-continues list items on Enter (bullets, ordered lists, checkboxes), removes empty markers, Tab indents + cycles bullet style (#1095).
+
+* **GUI mode - can run without terminal** (experimental): GPU-accelerated windowed mode via winit + wgpu. Handles macOS Left/Right Option key distinction, software cursor rendering, and correct mouse positioning. Build with `--features gui` and run with `--gui` to try it.
+
+### Improvements
+
+* **Smart Backspace Dedent**: Backspace in leading whitespace removes one indent unit (tab_size spaces or 1 tab) instead of a single character.
+
+* **Diagnostics Panel**: Up/Down now scrolls the editor to preview diagnostic location. Enter jumps and focuses the editor.
+
+* **Glob Patterns in Language Config**: `filenames` field now supports glob patterns (`*.conf`, `*rc`, `/etc/**/rc.*`) for extensionless file detection (#1083).
+
+* Disabled single-quote auto-close in Markdown files (interferes with apostrophes).
+
+### Bug Fixes
+
+* **Auto-Indent**: Fixed `tab_size` setting ignored for auto-indent; fixed indent level lost on normal statement lines; fixed Go auto-dedent using spaces instead of tabs (#1068); fixed Python nested indent after consecutive `:` lines (#1069).
+
+* **File Explorer Dotfiles**: Fixed dotfiles always visible regardless of "Show hidden files" toggle. Config `show_hidden`/`show_gitignored` now applied on init (#1079).
+
+* **LSP Toggle Desync**: Fixed state corruption when toggling LSP off/on — now sends `didClose` so re-enable gets fresh `didOpen` (#952).
+
+* **LSP Client Capabilities**: Now advertises all supported capabilities including `publishDiagnostics`, enabling diagnostics from strict servers like pyright (#1006).
+
+* **LSP Status Indicator**: Fixed status bar indicator disappearing after each request completion (#952).
+
+* **Set Language**: Fixed command storing display name instead of canonical ID, breaking LSP config lookups (#1078).
+
+* **Escape Sequences in Client Mode**: Fixed mouse codes, Shift+Tab, and standalone ESC not working in `fresh -a` attach mode (#1089).
+
+* **Client Mode Terminal Reset**: Fixed terminal not fully restored on exit in client mode (#1089).
+
+* **Ctrl+End with Line Wrap**: Fixed viewport not scrolling to trailing empty line; fixed Down arrow not reaching it (#992).
+
+* **Diagnostics Panel Windows Paths**: Fixed file URIs not decoded properly on Windows (#1071).
+
+* **Debug Keyboard Dialog**: Fixed not capturing keys in client/server mode (#1089).
+
+### Performance
+
+* Replaced linear span lookups in syntax highlighting with O(1) amortized cursor.
+* Eliminated JSON round-trip and JS re-parsing in plugin hook dispatch (~16% CPU reduction).
+* Path-copying PieceTree mutations with structural diff via `Arc::ptr_eq` — O(edit regions) instead of O(all leaves).
+* Viewport-aware filtering and batch API for large file gutter indicators (~780K IPC commands → ~50 per edit).
+
+### Internal
+
+* Split GUI backend into separate `fresh-gui` crate.
+* Unified language detection with `DetectedLanguage` struct and single `apply_language()` mutation point.
+* CI now runs clippy with `--all-features` to lint GUI code.
+
+---
+
 ## 0.2.5
 
 ### Features

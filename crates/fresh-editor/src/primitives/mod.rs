@@ -16,6 +16,7 @@
 
 // Pure modules - available for both runtime and WASM
 pub mod display_width;
+pub mod glob_match;
 pub mod grapheme;
 pub mod line_wrapping;
 pub mod path_utils;
@@ -56,6 +57,8 @@ pub mod textmate_engine;
 
 // Runtime-only modules (depend on tree-sitter)
 // These provide enhanced features using AST analysis
+#[cfg(feature = "runtime")]
+pub mod detected_language;
 #[cfg(feature = "runtime")]
 pub mod highlight_engine;
 #[cfg(feature = "runtime")]

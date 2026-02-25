@@ -408,6 +408,10 @@ pub fn get_auto_close_char(ch: char, auto_indent: bool, language: &str) -> Optio
     if language == "text" && matches!(ch, '"' | '\'' | '`') {
         return None;
     }
+    // Disable auto-closing single quotes in markdown (used as apostrophes)
+    if matches!(language, "markdown" | "mdx") && ch == '\'' {
+        return None;
+    }
     match ch {
         '(' => Some(')'),
         '[' => Some(']'),
@@ -468,9 +472,21 @@ fn handle_skip_over_with_dedent(
     tab_size: usize,
 ) -> bool {
     let correct_indent = calculate_closing_delimiter_indent(state, insert_position, ch, tab_size);
-    let current_indent = insert_position - line_start;
+    let use_tabs = state.buffer_settings.use_tabs;
 
-    if current_indent != correct_indent {
+    // Calculate current visual indent width (tabs count as tab_size columns)
+    let mut current_visual_indent = 0;
+    let mut pos = line_start;
+    while pos < insert_position {
+        match state.buffer.slice_bytes(pos..pos + 1).first() {
+            Some(&b' ') => current_visual_indent += 1,
+            Some(&b'\t') => current_visual_indent += tab_size,
+            _ => break,
+        }
+        pos += 1;
+    }
+
+    if current_visual_indent != correct_indent {
         // Delete incorrect spacing
         let deleted_text = state.get_text_range(line_start, insert_position);
         events.push(Event::Delete {
@@ -479,11 +495,13 @@ fn handle_skip_over_with_dedent(
             cursor_id,
         });
 
-        // Insert correct spacing
-        if correct_indent > 0 {
+        // Insert correct spacing using tabs or spaces per language config
+        let indent_str = indent_to_string(correct_indent, use_tabs, tab_size);
+        let indent_byte_len = indent_str.len();
+        if indent_byte_len > 0 {
             events.push(Event::Insert {
                 position: line_start,
-                text: " ".repeat(correct_indent),
+                text: indent_str,
                 cursor_id,
             });
         }
@@ -491,8 +509,8 @@ fn handle_skip_over_with_dedent(
         // Move cursor to after the closing delimiter
         events.push(Event::MoveCursor {
             cursor_id,
-            old_position: line_start + correct_indent,
-            new_position: line_start + correct_indent + 1,
+            old_position: line_start + indent_byte_len,
+            new_position: line_start + indent_byte_len + 1,
             old_anchor: None,
             new_anchor: None,
             old_sticky_column: 0,
@@ -541,7 +559,9 @@ fn handle_auto_dedent(
     }
 
     // Insert correct spacing + the closing delimiter
-    let mut text = " ".repeat(correct_indent);
+    // Use tabs or spaces per language config
+    let use_tabs = state.buffer_settings.use_tabs;
+    let mut text = indent_to_string(correct_indent, use_tabs, tab_size);
     text.push(ch);
     events.push(Event::Insert {
         position: line_start,
@@ -689,7 +709,9 @@ fn insert_char_events(
         }
 
         // Try skip-over logic for closing brackets/quotes
-        if auto_indent && matches!(ch, ')' | ']' | '}' | '"' | '\'' | '`') {
+        // Single quotes are excluded in markdown (apostrophes, not paired quotes)
+        let skip_single_quote = ch == '\'' && matches!(state.language.as_str(), "markdown" | "mdx");
+        if auto_indent && matches!(ch, ')' | ']' | '}' | '"' | '\'' | '`') && !skip_single_quote {
             if let Some(next_byte) = data.char_after {
                 if next_byte == ch as u8 {
                     // Try skip-over with dedent for closing delimiters
@@ -2076,13 +2098,52 @@ pub fn action_to_events(
             let mut cursor_vec: Vec<_> = cursors.iter().collect();
             cursor_vec.sort_by_key(|(_, c)| std::cmp::Reverse(c.position));
 
-            // Collect all deletions first, checking for auto-pair deletion
+            // Collect all deletions first, checking for smart dedent and auto-pair deletion
             let deletions: Vec<_> = cursor_vec
                 .iter()
                 .filter_map(|(cursor_id, cursor)| {
                     if let Some(range) = cursor.selection_range() {
                         Some((*cursor_id, range))
                     } else if cursor.position > 0 {
+                        // Smart backspace: if cursor is after only whitespace indentation,
+                        // dedent by one indent unit instead of deleting a single character.
+                        // Deletes from just before the cursor (not from line start) so the
+                        // cursor naturally ends up at the right position.
+                        let iter = state
+                            .buffer
+                            .line_iterator(cursor.position, estimated_line_length);
+                        let line_start = iter.current_position();
+                        let prefix_len = cursor.position - line_start;
+
+                        if prefix_len > 0 {
+                            let prefix_bytes =
+                                state.buffer.slice_bytes(line_start..cursor.position);
+                            let all_whitespace =
+                                prefix_bytes.iter().all(|&b| b == b' ' || b == b'\t');
+
+                            if all_whitespace {
+                                let last_byte = prefix_bytes[prefix_len - 1];
+                                let chars_to_remove = if last_byte == b'\t' {
+                                    1
+                                } else {
+                                    // Count trailing spaces and remove up to tab_size
+                                    let trailing_spaces = prefix_bytes
+                                        .iter()
+                                        .rev()
+                                        .take_while(|&&b| b == b' ')
+                                        .count();
+                                    trailing_spaces.min(tab_size)
+                                };
+                                if chars_to_remove > 0 {
+                                    return Some((
+                                        *cursor_id,
+                                        cursor.position - chars_to_remove..cursor.position,
+                                    ));
+                                }
+                            }
+                        }
+
+                        // Normal backspace: delete one character
                         // Use prev_char_boundary to delete one code point at a time
                         // This allows "layer-by-layer" deletion of Thai combining marks
                         // In CRLF files, this also ensures we delete \r\n as a unit

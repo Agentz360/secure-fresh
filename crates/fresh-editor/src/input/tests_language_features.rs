@@ -34,6 +34,20 @@ mod tests {
         assert_eq!(get_auto_close_char('{', true, "text"), Some('}'));
     }
 
+    #[test]
+    fn test_auto_close_single_quote_markdown() {
+        // In Markdown, single quotes should NOT auto-close (used as apostrophes)
+        assert_eq!(get_auto_close_char('\'', true, "markdown"), None);
+
+        // But double quotes and backticks SHOULD still auto-close
+        assert_eq!(get_auto_close_char('"', true, "markdown"), Some('"'));
+        assert_eq!(get_auto_close_char('`', true, "markdown"), Some('`'));
+
+        // And brackets should still auto-close
+        assert_eq!(get_auto_close_char('(', true, "markdown"), Some(')'));
+        assert_eq!(get_auto_close_char('[', true, "markdown"), Some(']'));
+    }
+
     // --- Word Movement Tests ---
 
     #[test]

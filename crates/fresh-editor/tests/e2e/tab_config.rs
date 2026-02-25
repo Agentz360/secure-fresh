@@ -669,3 +669,302 @@ fn test_issue_384_indent_respects_tab_size_in_calculation() {
         visual_indent
     );
 }
+
+/// Issue #384 - Auto-indent should maintain indentation on Enter after a normal
+/// statement line in Go (using tabs).
+///
+/// When pressing Enter after `fmt.Println("Hello")` inside a Go function,
+/// the new line should be auto-indented to the same level using tab characters.
+/// This tests the "maintain current indent" path, not the "increase indent after {" path.
+///
+/// The bug: pressing Enter after a normal statement produces zero indentation
+/// instead of maintaining the current indent level with tabs.
+#[test]
+fn test_issue_384_auto_indent_maintains_indent_with_tabs_in_go() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.go");
+
+    // Create a Go file with a function containing a statement
+    std::fs::write(
+        &file_path,
+        "package main\n\nfunc main() {\n\tfmt.Println(\"Hello\")\n}\n",
+    )
+    .unwrap();
+
+    let mut config = Config::default();
+    config.editor.auto_indent = true;
+    let mut harness = EditorTestHarness::create(
+        80,
+        24,
+        HarnessOptions::new()
+            .with_config(config)
+            .without_empty_plugins_dir(),
+    )
+    .unwrap();
+    harness.open_file(&file_path).unwrap();
+
+    // Move to end of the fmt.Println line (line 4, after the `)`):
+    // "package main\n\nfunc main() {\n\tfmt.Println(\"Hello\")\n}\n"
+    //  ^0                            ^28                   ^49
+    // Line 4 is: \tfmt.Println("Hello")
+    // Move to end of line 4
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap(); // Now on line 4 (0-indexed line 3)
+    harness.send_key(KeyCode::End, KeyModifiers::NONE).unwrap();
+    harness.render().unwrap();
+
+    // Press Enter - auto-indent should maintain the tab indentation
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.render().unwrap();
+
+    let content = harness.get_buffer_content().unwrap();
+    println!("Buffer after Enter on normal Go line: {:?}", content);
+
+    // The new line should have a tab character for indentation (same level as fmt.Println)
+    let lines: Vec<&str> = content.lines().collect();
+    // Lines should be:
+    // 0: "package main"
+    // 1: ""
+    // 2: "func main() {"
+    // 3: "\tfmt.Println(\"Hello\")"
+    // 4: "\t"  <-- the new line with auto-indent (should have a tab)
+    // 5: "}"
+    assert!(
+        lines.len() >= 6,
+        "Should have at least 6 lines after Enter, got {}: {:?}",
+        lines.len(),
+        lines
+    );
+
+    let new_line = lines[4];
+    println!("New line after Enter: {:?}", new_line);
+
+    // The new line should start with a tab (maintaining indent from the previous line)
+    assert!(
+        new_line.starts_with('\t'),
+        "Auto-indent should maintain tab indentation on new line in Go, got: {:?}",
+        new_line
+    );
+
+    // The indentation should NOT use spaces
+    let leading_spaces = new_line.chars().take_while(|c| *c == ' ').count();
+    assert_eq!(
+        leading_spaces, 0,
+        "Auto-indent in Go should not use spaces, got {} leading spaces in: {:?}",
+        leading_spaces, new_line
+    );
+}
+
+// =============================================================================
+// GitHub Issue #1068: Go auto-dedent should use tabs, not spaces
+// https://github.com/sinelaw/fresh/issues/1068
+// =============================================================================
+
+/// Issue #1068 - Auto-dedent for nested closing brace should use tabs in Go files.
+///
+/// When typing `}` to close an inner block in a Go file, the auto-dedent logic
+/// produces the indentation string. This string should use tab characters (since
+/// Go's use_tabs=true), not spaces.
+///
+/// The bug: `handle_auto_dedent` uses `" ".repeat(correct_indent)` which always
+/// produces spaces regardless of the language's use_tabs setting. When the closing
+/// brace needs non-zero indentation (e.g., closing an inner block), this results
+/// in space characters in a Go file where only tabs should be used. This means
+/// that changing tab_size later has no visual effect on those lines.
+#[test]
+fn test_issue_1068_auto_dedent_uses_tabs_not_spaces_in_go() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.go");
+
+    // Create a Go file with nested blocks, ending with an empty line where the
+    // user will type `}` to close the inner block. The empty line has two tabs
+    // of indentation.
+    //
+    // The file content before the cursor:
+    //   func main() {
+    //   \tif true {
+    //   \t\tfmt.Println("hello")
+    //   \t\t                         <-- cursor goes here (end of file)
+    //
+    // When user types `}`, auto-dedent should compute the correct indent level
+    // for closing `if true {` (which is 1 tab = 8 visual columns for Go).
+    // The bug: it would produce "        }" (8 spaces) instead of "\t}" (1 tab).
+    let file_content = "func main() {\n\tif true {\n\t\tfmt.Println(\"hello\")\n\t\t";
+    std::fs::write(&file_path, file_content).unwrap();
+
+    let mut config = Config::default();
+    config.editor.auto_indent = true;
+    let mut harness = EditorTestHarness::create(
+        80,
+        24,
+        HarnessOptions::new()
+            .with_config(config)
+            .without_empty_plugins_dir(),
+    )
+    .unwrap();
+    harness.open_file(&file_path).unwrap();
+
+    // Move cursor to end of file (end of the "\t\t" line)
+    harness
+        .send_key(KeyCode::End, KeyModifiers::CONTROL)
+        .unwrap();
+    harness.render().unwrap();
+
+    let content_before = harness.get_buffer_content().unwrap();
+    println!("Buffer before typing }}: {:?}", content_before);
+
+    // Verify cursor position: it should be at the end of the file
+    let cursor_pos = harness.editor().active_cursors().primary().position;
+    assert_eq!(
+        cursor_pos,
+        file_content.len(),
+        "Cursor should be at end of file"
+    );
+
+    // Type `}` - this triggers auto-dedent because:
+    // - `}` is a closing delimiter
+    // - the line before cursor only has whitespace (two tabs)
+    // - auto_indent is enabled
+    harness.type_text("}").unwrap();
+    harness.render().unwrap();
+
+    let content = harness.get_buffer_content().unwrap();
+    println!("Buffer after typing }}: {:?}", content);
+
+    // Check the last line (where we typed `}`)
+    let lines: Vec<&str> = content.lines().collect();
+    let last_line = lines.last().unwrap();
+    println!("Last line (dedented): {:?}", last_line);
+
+    // The critical assertion: the line must NOT contain spaces for indentation.
+    // In Go, all indentation should be tab characters.
+    let leading_whitespace: String = last_line
+        .chars()
+        .take_while(|c| c.is_whitespace())
+        .collect();
+    assert!(
+        !leading_whitespace.contains(' '),
+        "Auto-dedent in Go should use tabs, not spaces. Line: {:?}, leading whitespace: {:?}",
+        last_line,
+        leading_whitespace
+    );
+
+    // Also verify no spaces are used for indentation in any line of the buffer
+    for (i, line) in lines.iter().enumerate() {
+        let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+        assert_eq!(
+            leading_spaces, 0,
+            "Line {} should not have leading spaces (Go uses tabs), got: {:?}",
+            i, line
+        );
+    }
+}
+
+/// Issue #1068 - Skip-over-with-dedent for closing brace should use tabs in Go.
+///
+/// When typing `}` and the next character is already `}` (e.g., from auto-close
+/// bracket expansion), the skip-over-with-dedent logic corrects the indentation
+/// and skips over the existing character. The indentation correction should use
+/// tabs in Go files.
+///
+/// The bug: `handle_skip_over_with_dedent` uses `" ".repeat(correct_indent)` which
+/// always produces spaces.
+#[test]
+fn test_issue_1068_skip_over_with_dedent_uses_tabs_in_go() {
+    let temp_dir = TempDir::new().unwrap();
+    let file_path = temp_dir.path().join("test.go");
+
+    // Create an empty Go file and build content interactively to trigger
+    // bracket auto-close and then skip-over-with-dedent.
+    std::fs::write(&file_path, "").unwrap();
+
+    let mut config = Config::default();
+    config.editor.auto_indent = true;
+    let mut harness = EditorTestHarness::create(
+        80,
+        24,
+        HarnessOptions::new()
+            .with_config(config)
+            .without_empty_plugins_dir(),
+    )
+    .unwrap();
+    harness.open_file(&file_path).unwrap();
+
+    // Type "func main() {" - auto-close creates "func main() {}" with cursor between
+    harness.type_text("func main() {").unwrap();
+
+    // Press Enter - bracket expansion creates:
+    // func main() {
+    // \t<cursor>
+    // }
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Type "if true {" - auto-close creates "if true {}" with cursor between
+    harness.type_text("if true {").unwrap();
+
+    // Press Enter - bracket expansion creates:
+    // func main() {
+    // \tif true {
+    // \t\t<cursor>
+    // \t}
+    // }
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    // Type some content
+    harness.type_text("x := 1").unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+
+    let content_before = harness.get_buffer_content().unwrap();
+    println!("Buffer before typing }}: {:?}", content_before);
+
+    // Now type `}` - this should trigger skip-over-with-dedent because:
+    // - The cursor is on a line with only tab whitespace
+    // - The next character after newline is `\t}` (the auto-closed inner brace)
+    // Or it may trigger auto-dedent if the next char isn't `}`
+    harness.type_text("}").unwrap();
+    harness.render().unwrap();
+
+    let content = harness.get_buffer_content().unwrap();
+    println!("Buffer after typing inner }}: {:?}", content);
+
+    // Verify no spaces are used for indentation in any line
+    let lines: Vec<&str> = content.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+        assert_eq!(
+            leading_spaces, 0,
+            "Line {} should not have leading spaces (Go uses tabs), got: {:?}",
+            i, line
+        );
+    }
+
+    // Now type another `}` to close the outer block
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
+    harness.type_text("}").unwrap();
+    harness.render().unwrap();
+
+    let content = harness.get_buffer_content().unwrap();
+    println!("Buffer after typing outer }}: {:?}", content);
+
+    // Verify no spaces are used for indentation in any line
+    let lines: Vec<&str> = content.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let leading_spaces = line.chars().take_while(|c| *c == ' ').count();
+        assert_eq!(
+            leading_spaces, 0,
+            "Line {} should not have leading spaces (Go uses tabs), got: {:?}",
+            i, line
+        );
+    }
+}

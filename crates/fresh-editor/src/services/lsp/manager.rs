@@ -704,26 +704,54 @@ impl Drop for LspManager {
 
 /// Helper function to detect language from file path using the config's languages section.
 ///
-/// Checks in order:
-/// 1. File extension against `extensions`
-/// 2. Exact filename against `filenames`
+/// Priority order matches the grammar registry (`find_syntax_for_file_with_languages`):
+/// 1. Exact filename match against `filenames` (highest priority)
+/// 2. Glob pattern match against `filenames` entries containing wildcards
+/// 3. File extension match against `extensions` (lowest config-based priority)
 pub fn detect_language(
     path: &std::path::Path,
     languages: &std::collections::HashMap<String, crate::config::LanguageConfig>,
 ) -> Option<String> {
-    // Try extension first
-    if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
+    use crate::primitives::glob_match::{
+        filename_glob_matches, is_glob_pattern, is_path_pattern, path_glob_matches,
+    };
+
+    if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+        // 1. Exact filename match (highest priority)
         for (language_name, lang_config) in languages {
-            if lang_config.extensions.iter().any(|ext| ext == extension) {
+            if lang_config
+                .filenames
+                .iter()
+                .any(|f| !is_glob_pattern(f) && f == filename)
+            {
+                return Some(language_name.clone());
+            }
+        }
+
+        // 2. Glob pattern match
+        // Path patterns (containing `/`) match against the full path;
+        // filename-only patterns match against just the filename.
+        let path_str = path.to_str().unwrap_or("");
+        for (language_name, lang_config) in languages {
+            if lang_config.filenames.iter().any(|f| {
+                if !is_glob_pattern(f) {
+                    return false;
+                }
+                if is_path_pattern(f) {
+                    path_glob_matches(f, path_str)
+                } else {
+                    filename_glob_matches(f, filename)
+                }
+            }) {
                 return Some(language_name.clone());
             }
         }
     }
 
-    // Try exact filename match
-    if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
+    // 3. Extension match (lowest priority among config-based detection)
+    if let Some(extension) = path.extension().and_then(|e| e.to_str()) {
         for (language_name, lang_config) in languages {
-            if lang_config.filenames.iter().any(|f| f == filename) {
+            if lang_config.extensions.iter().any(|ext| ext == extension) {
                 return Some(language_name.clone());
             }
         }
@@ -932,5 +960,46 @@ mod tests {
         let languages = test_languages();
         assert_eq!(detect_language(Path::new("README"), &languages), None);
         assert_eq!(detect_language(Path::new("Makefile"), &languages), None);
+    }
+
+    #[test]
+    fn test_detect_language_path_glob() {
+        let mut languages = test_languages();
+        languages.insert(
+            "shell".to_string(),
+            crate::config::LanguageConfig {
+                extensions: vec!["sh".to_string()],
+                filenames: vec!["/etc/**/rc.*".to_string(), "*rc".to_string()],
+                grammar: "bash".to_string(),
+                comment_prefix: Some("#".to_string()),
+                auto_indent: true,
+                highlighter: crate::config::HighlighterPreference::Auto,
+                textmate_grammar: None,
+                show_whitespace_tabs: false,
+                use_tabs: false,
+                tab_size: None,
+                formatter: None,
+                format_on_save: false,
+                on_save: vec![],
+            },
+        );
+
+        // Path glob: /etc/**/rc.* should match
+        assert_eq!(
+            detect_language(Path::new("/etc/rc.conf"), &languages),
+            Some("shell".to_string())
+        );
+        assert_eq!(
+            detect_language(Path::new("/etc/init/rc.local"), &languages),
+            Some("shell".to_string())
+        );
+        // Path glob should NOT match different root
+        assert_eq!(detect_language(Path::new("/var/rc.conf"), &languages), None);
+
+        // Filename glob: *rc should still work
+        assert_eq!(
+            detect_language(Path::new("lfrc"), &languages),
+            Some("shell".to_string())
+        );
     }
 }

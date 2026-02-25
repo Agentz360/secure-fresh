@@ -2236,7 +2236,7 @@ fn run_open_files_command(session_name: Option<&str>, files: &[String]) -> Anyho
 
 /// Attach to an existing session, starting a server if needed
 fn run_attach_command(args: &Args) -> AnyhowResult<()> {
-    use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+    use crossterm::terminal::enable_raw_mode;
     use fresh::server::protocol::{
         ClientControl, ClientHello, ServerControl, TermSize, PROTOCOL_VERSION,
     };
@@ -2244,7 +2244,9 @@ fn run_attach_command(args: &Args) -> AnyhowResult<()> {
 
     // Initialize tracing to a file for debugging
     use tracing_subscriber::{fmt, EnvFilter};
-    let log_file = std::fs::File::create("fresh-client.log").ok();
+    let log_path = fresh::services::log_dirs::log_dir()
+        .join(format!("fresh-client-{}.log", std::process::id()));
+    let log_file = std::fs::File::create(&log_path).ok();
     if let Some(file) = log_file {
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
         // Best-effort: tracing subscriber may already be set
@@ -2362,9 +2364,10 @@ fn run_attach_command(args: &Args) -> AnyhowResult<()> {
     // Run the client relay loop (handshake already done)
     let result = client::run_client_relay(conn);
 
-    // Best-effort: disable raw mode before printing any messages
-    #[allow(clippy::let_underscore_must_use)]
-    let _ = disable_raw_mode();
+    // Best-effort: restore terminal state before printing any messages.
+    // The server sends terminal setup sequences (alternate screen, mouse capture, etc.)
+    // through us, so we must undo all of them, not just raw mode.
+    fresh::services::terminal_modes::emergency_cleanup();
 
     // Handle result
     match result {
@@ -2740,11 +2743,14 @@ where
 
     loop {
         // Run shared per-tick housekeeping (async messages, timers, auto-save, etc.)
-        if fresh::app::editor_tick(editor, || {
-            terminal.clear()?;
-            Ok(())
-        })? {
-            needs_render = true;
+        {
+            let _span = tracing::info_span!("editor_tick").entered();
+            if fresh::app::editor_tick(editor, || {
+                terminal.clear()?;
+                Ok(())
+            })? {
+                needs_render = true;
+            }
         }
 
         if editor.should_quit() {
@@ -2759,7 +2765,10 @@ where
         }
 
         if needs_render && last_render.elapsed() >= FRAME_DURATION {
-            terminal.draw(|frame| editor.render(frame))?;
+            {
+                let _span = tracing::info_span!("terminal_draw").entered();
+                terminal.draw(|frame| editor.render(frame))?;
+            }
             last_render = Instant::now();
             needs_render = false;
         }

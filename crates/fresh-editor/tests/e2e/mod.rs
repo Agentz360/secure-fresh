@@ -22,6 +22,7 @@ pub mod file_browser;
 pub mod file_explorer;
 pub mod file_permissions;
 pub mod folding;
+pub mod glob_language_detection;
 #[cfg(feature = "gui")]
 pub mod gui;
 pub mod horizontal_scrollbar;
@@ -90,6 +91,7 @@ pub mod stdin_input;
 pub mod sudo_save_prompt;
 #[cfg(unix)]
 pub mod symlinks;
+pub mod syntax_language_case;
 pub mod tab_config;
 pub mod tab_drag;
 pub mod tab_indent_selection;

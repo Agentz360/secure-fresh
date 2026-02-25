@@ -718,11 +718,17 @@ Another line with **bold text** for testing.
     //    We should now be on the long paragraph (line 6).
     //    Record screen cursor position, press Down, and verify we moved
     //    exactly one visual row while staying in the same logical paragraph.
-    harness.render().unwrap();
+    //
+    //    Use wait_until_stable to ensure compose rendering has fully settled
+    //    before reading cursor positions (avoids flakiness on Windows CI).
+    harness.wait_until_stable(|_| true).unwrap();
     let pos_before = harness.screen_cursor_position();
+    let byte_before = harness.cursor_position();
 
     harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-    harness.render().unwrap();
+    harness
+        .wait_until_stable(|h| h.cursor_position() != byte_before)
+        .unwrap();
     let pos_after_one = harness.screen_cursor_position();
     let byte_after_one = harness.cursor_position();
 
@@ -747,7 +753,9 @@ Another line with **bold text** for testing.
 
     // Press Down again — should advance one more visual row
     harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-    harness.render().unwrap();
+    harness
+        .wait_until_stable(|h| h.cursor_position() != byte_after_one)
+        .unwrap();
     let pos_after_two = harness.screen_cursor_position();
     let byte_after_two = harness.cursor_position();
 

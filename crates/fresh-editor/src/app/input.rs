@@ -43,6 +43,14 @@ impl Editor {
         // Create key event for dispatch methods
         let key_event = crossterm::event::KeyEvent::new(code, modifiers);
 
+        // Event debug dialog intercepts ALL key events before any other processing.
+        // This must be checked here (not just in main.rs/gui) so it works in
+        // client/server mode where handle_key is called directly.
+        if self.is_event_debug_active() {
+            self.handle_event_debug_input(&key_event);
+            return Ok(());
+        }
+
         // Try terminal input dispatch first (handles terminal mode and re-entry)
         if self.dispatch_terminal_input(&key_event).is_some() {
             return Ok(());
@@ -1296,8 +1304,8 @@ impl Editor {
             {
                 // Scroll the file explorer
                 if let Some(explorer) = &mut self.file_explorer {
-                    let visible = explorer.tree().get_visible_nodes();
-                    if visible.is_empty() {
+                    let count = explorer.visible_count();
+                    if count == 0 {
                         return Ok(());
                     }
 
@@ -1310,7 +1318,7 @@ impl Editor {
                         current_index.saturating_sub(delta.unsigned_abs() as usize)
                     } else {
                         // Scroll down (positive delta)
-                        (current_index + delta as usize).min(visible.len() - 1)
+                        (current_index + delta as usize).min(count - 1)
                     };
 
                     // Set the new selection
@@ -2839,7 +2847,7 @@ impl Editor {
             // Plain Text option (no syntax highlighting)
             crate::input::commands::Suggestion {
                 text: "Plain Text".to_string(),
-                description: if current_language == "Plain Text" || current_language == "text" {
+                description: if current_language == "text" || current_language == "Plain Text" {
                     Some("current".to_string())
                 } else {
                     None
@@ -2856,12 +2864,21 @@ impl Editor {
         // Sort alphabetically for easier navigation
         syntax_names.sort_unstable_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
 
+        let mut current_index_found = None;
         for syntax_name in syntax_names {
             // Skip "Plain Text" as we already added it at the top
             if syntax_name == "Plain Text" {
                 continue;
             }
-            let is_current = syntax_name == current_language;
+            // Resolve the syntect display name to the canonical config language
+            // ID so we can compare against state.language (which is always a
+            // config key, e.g. "rust" not "Rust").
+            let is_current = self
+                .resolve_language_id(syntax_name)
+                .map_or(false, |id| id == current_language);
+            if is_current {
+                current_index_found = Some(suggestions.len());
+            }
             suggestions.push(crate::input::commands::Suggestion {
                 text: syntax_name.to_string(),
                 description: if is_current {
@@ -2877,10 +2894,7 @@ impl Editor {
         }
 
         // Find current language index
-        let current_index = suggestions
-            .iter()
-            .position(|s| s.value.as_deref() == Some(&current_language))
-            .unwrap_or(0);
+        let current_index = current_index_found.unwrap_or(0);
 
         self.prompt = Some(crate::view::prompt::Prompt::with_suggestions(
             "Language: ".to_string(),

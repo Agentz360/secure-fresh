@@ -2687,3 +2687,113 @@ fn test_file_explorer_escape_clears_search() {
         "Should remain in FileExplorer context after second Escape"
     );
 }
+
+/// Test that dotfiles (files/folders starting with .) are hidden by default
+/// and that toggling "Show hidden files" controls their visibility.
+///
+/// Reproduces https://github.com/sinelaw/fresh/issues/1079:
+/// Dotfiles are always visible in the explorer regardless of the
+/// "Show hidden files" toggle.
+#[test]
+fn test_dotfiles_hidden_by_default_and_toggle_controls_visibility() {
+    let mut harness = EditorTestHarness::with_temp_project(120, 40).unwrap();
+    let project_root = harness.project_dir().unwrap();
+
+    // Create both regular files and dotfiles/dotfolders
+    fs::write(project_root.join("visible_file.txt"), "visible").unwrap();
+    fs::write(project_root.join(".hidden_file"), "hidden").unwrap();
+    fs::create_dir(project_root.join(".hidden_dir")).unwrap();
+    fs::write(project_root.join(".hidden_dir/inner.txt"), "inner hidden").unwrap();
+
+    // Open and focus file explorer
+    harness.editor_mut().focus_file_explorer();
+    harness.wait_for_file_explorer().unwrap();
+
+    // Wait for the regular file to appear (proves the tree has loaded)
+    harness
+        .wait_for_file_explorer_item("visible_file.txt")
+        .unwrap();
+
+    // Dotfiles should NOT be visible by default (show_hidden defaults to false)
+    let screen = harness.screen_to_string();
+    assert!(
+        !screen.contains(".hidden_file"),
+        "Dotfile '.hidden_file' should NOT be visible when 'Show hidden files' is off.\nScreen:\n{}",
+        screen
+    );
+    assert!(
+        !screen.contains(".hidden_dir"),
+        "Dotfolder '.hidden_dir' should NOT be visible when 'Show hidden files' is off.\nScreen:\n{}",
+        screen
+    );
+
+    // Toggle "Show hidden files" on
+    harness.editor_mut().file_explorer_toggle_hidden();
+    harness.render().unwrap();
+
+    // Now dotfiles SHOULD be visible
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains(".hidden_file"),
+        "Dotfile '.hidden_file' SHOULD be visible after toggling 'Show hidden files' on.\nScreen:\n{}",
+        screen
+    );
+    assert!(
+        screen.contains(".hidden_dir"),
+        "Dotfolder '.hidden_dir' SHOULD be visible after toggling 'Show hidden files' on.\nScreen:\n{}",
+        screen
+    );
+
+    // Expand .hidden_dir so its children are loaded, then navigate to it
+    // First find and select .hidden_dir by navigating down
+    harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    // Keep going down until we find .hidden_dir (it's sorted among the entries)
+    for _ in 0..10 {
+        let entry = harness
+            .editor()
+            .file_explorer()
+            .and_then(|e| e.get_selected_entry())
+            .map(|e| e.name.clone());
+        if entry.as_deref() == Some(".hidden_dir") {
+            break;
+        }
+        harness.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    }
+    // Expand it with Right arrow
+    harness
+        .send_key(KeyCode::Right, KeyModifiers::NONE)
+        .unwrap();
+    harness.sleep(std::time::Duration::from_millis(200));
+    let _ = harness.editor_mut().process_async_messages();
+    harness.render().unwrap();
+
+    // inner.txt should now be visible (hidden dir is expanded, show_hidden is on)
+    let screen = harness.screen_to_string();
+    assert!(
+        screen.contains("inner.txt"),
+        "inner.txt should be visible when .hidden_dir is expanded and show_hidden is on.\nScreen:\n{}",
+        screen
+    );
+
+    // Toggle "Show hidden files" off again
+    harness.editor_mut().file_explorer_toggle_hidden();
+    harness.render().unwrap();
+
+    // Dotfiles AND their children should be hidden
+    let screen = harness.screen_to_string();
+    assert!(
+        !screen.contains(".hidden_file"),
+        "Dotfile '.hidden_file' should NOT be visible after toggling 'Show hidden files' off.\nScreen:\n{}",
+        screen
+    );
+    assert!(
+        !screen.contains(".hidden_dir"),
+        "Dotfolder '.hidden_dir' should NOT be visible after toggling 'Show hidden files' off.\nScreen:\n{}",
+        screen
+    );
+    assert!(
+        !screen.contains("inner.txt"),
+        "Children of hidden dirs should NOT be visible when 'Show hidden files' is off.\nScreen:\n{}",
+        screen
+    );
+}

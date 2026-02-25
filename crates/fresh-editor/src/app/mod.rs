@@ -2009,6 +2009,11 @@ impl Editor {
         // Note: We don't sync file explorer here to avoid flicker during tab switches.
         // File explorer syncs when explicitly focused via focus_file_explorer().
 
+        // Update plugin state snapshot BEFORE firing the hook so that
+        // the handler sees the new active buffer, not the old one.
+        #[cfg(feature = "plugins")]
+        self.update_plugin_state_snapshot();
+
         // Emit buffer_activated hook for plugins
         self.plugin_manager.run_hook(
             "buffer_activated",
@@ -6157,8 +6162,7 @@ impl Editor {
             // Save to the specified path
             match state.buffer.save_to_file(&path) {
                 Ok(()) => {
-                    // Update the buffer's file path so future saves go to the same file
-                    state.buffer.set_file_path(path.clone());
+                    // save_to_file already updates file_path internally via finalize_save
                     // Run on-save actions (formatting, etc.)
                     if let Err(e) = self.finalize_save(Some(path)) {
                         tracing::warn!("Failed to finalize save: {}", e);
@@ -8220,21 +8224,21 @@ mod tests {
             .get_mut(&buf1)
             .unwrap()
             .buffer
-            .set_file_path(std::path::PathBuf::from("aaa_long_name_01.txt"));
+            .rename_file_path(std::path::PathBuf::from("aaa_long_name_01.txt"));
         let buf2 = editor.new_buffer();
         editor
             .buffers
             .get_mut(&buf2)
             .unwrap()
             .buffer
-            .set_file_path(std::path::PathBuf::from("bbb_long_name_02.txt"));
+            .rename_file_path(std::path::PathBuf::from("bbb_long_name_02.txt"));
         let buf3 = editor.new_buffer();
         editor
             .buffers
             .get_mut(&buf3)
             .unwrap()
             .buffer
-            .set_file_path(std::path::PathBuf::from("ccc_long_name_03.txt"));
+            .rename_file_path(std::path::PathBuf::from("ccc_long_name_03.txt"));
 
         {
             let view_state = editor.split_view_states.get_mut(&split_id).unwrap();
