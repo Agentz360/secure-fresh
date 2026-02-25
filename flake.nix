@@ -36,8 +36,8 @@
           pname = "fresh";
 
           rust-manifest = pkgs.fetchurl {
-            url = "https://static.rust-lang.org/dist/channel-rust-1.91.0.toml";
-            hash = "sha256-2eWc3xVTKqg5wKSHGwt1XoM/kUBC6y3MWfKg74Zn+fY=";
+            url = "https://static.rust-lang.org/dist/channel-rust-1.92.0.toml";
+            hash = "sha256-sqSWJDUxc+zaz1nBWMAJKTAGBuGWP25GCftIOlCEAtA=";
           };
 
           rustToolchain = inputs.fenix.packages.${system}.fromManifestFile rust-manifest;
