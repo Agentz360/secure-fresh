@@ -222,6 +222,47 @@ In the Settings UI, each setting shows where its current value comes from:
 - **(session)** - Temporary session override
 - *(no indicator)* - Using system default
 
+## Editor Settings Reference
+
+All settings can be changed via the Settings UI (command palette → "Open Settings").
+
+### Display
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Line numbers | Show line numbers in gutter | on |
+| Line wrap | Soft-wrap long lines | off |
+| Rulers | Column positions for vertical ruler lines | none |
+| Vertical scrollbar | Show vertical scrollbar | on |
+| Horizontal scrollbar | Show horizontal scrollbar | off |
+| Terminal background | Let terminal background show through | off |
+| Bracket matching | Highlight matching bracket pairs | on |
+
+### Editing
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Tab size | Spaces per indent level | 4 |
+| Trim trailing whitespace on save | Remove trailing whitespace when saving | off |
+| Ensure final newline on save | Add trailing newline when saving | off |
+
+### Auto-Save
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| Auto-save | Save modified buffers to disk automatically | off |
+| Auto-save interval | Seconds between auto-saves (when enabled) | 30 |
+| Recovery save interval | Seconds between crash-recovery saves | 2 |
+
+### Clipboard
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| OSC 52 | Use OSC 52 escape sequence for clipboard | on |
+| System clipboard | Use system clipboard | on |
+
+If copy/paste hangs (common with PuTTY), try disabling one or both of these.
+
 ## Process Resource Limits
 
 To prevent LSP servers from consuming too many resources, Fresh can limit their memory and CPU usage.

@@ -5,6 +5,11 @@
 //! events are translated to crossterm types so consumers can reuse the same
 //! input handling as a terminal-based frontend.
 
+#[cfg(target_os = "macos")]
+pub mod macos;
+mod native_menu;
+
+use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,6 +19,7 @@ use crossterm::event::{
     KeyCode, KeyEvent as CtKeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MediaKeyCode,
     ModifierKeyCode, MouseButton as CtMouseButton, MouseEvent as CtMouseEvent, MouseEventKind,
 };
+use fresh_core::menu::{Menu, MenuContext};
 use ratatui::backend::Backend;
 use ratatui::Terminal;
 use ratatui_wgpu::{Builder, Dimensions, Font, WgpuBackend};
@@ -24,8 +30,13 @@ use winit::keyboard::KeyLocation;
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes, WindowId};
 
+use native_menu::NativeMenuBar;
+
 /// Embedded JetBrains Mono Regular font (SIL Open Font License 1.1).
 const FONT_DATA: &[u8] = include_bytes!("../fonts/JetBrainsMono-Regular.ttf");
+
+/// Embedded application icon (32x32 RGBA PNG).
+const ICON_PNG_32: &[u8] = include_bytes!("../resources/icon_32x32.png");
 
 /// Frame duration target (60fps).
 const FRAME_DURATION: Duration = Duration::from_millis(16);
@@ -38,6 +49,12 @@ const FRAME_DURATION: Duration = Duration::from_millis(16);
 ///
 /// All input events are delivered as crossterm types so the application can
 /// share input-handling logic with a terminal frontend.
+///
+/// The trait also defines the application's menu structure via
+/// [`menu_definitions`](Self::menu_definitions) and
+/// [`take_menu_update`](Self::take_menu_update).  The GUI layer uses these to
+/// build and maintain platform-native menus (e.g. the macOS menu bar) without
+/// the application needing to know which platform it is running on.
 pub trait GuiApplication {
     /// Handle a translated key event.
     fn on_key(&mut self, key: CtKeyEvent) -> AnyhowResult<()>;
@@ -60,6 +77,52 @@ pub trait GuiApplication {
 
     /// Called when the window is about to close (e.g. save state).
     fn on_close(&mut self);
+
+    /// Return the application's initial menu bar definition.
+    ///
+    /// Called once during initialization to build platform-native menus.
+    /// The returned [`Menu`] items are the same model used by the editor's
+    /// built-in TUI menu bar — single source of truth.
+    ///
+    /// **Important:** `DynamicSubmenu` items should be expanded (resolved to
+    /// `Submenu`) before returning so that the native menu layer can render
+    /// them.
+    ///
+    /// Default: empty (no native menus).
+    fn menu_definitions(&self) -> Vec<Menu> {
+        Vec::new()
+    }
+
+    /// Return an updated menu bar definition if the menus have changed since
+    /// the last call.
+    ///
+    /// The GUI event loop calls this every frame. Return `Some(menus)` to
+    /// trigger a native menu rebuild, or `None` if nothing changed.
+    ///
+    /// Default: always returns `None`.
+    fn take_menu_update(&mut self) -> Option<Vec<Menu>> {
+        None
+    }
+
+    /// Return the current menu context (boolean state flags).
+    ///
+    /// The GUI layer uses these values to update enabled/disabled state and
+    /// checkmark display on native menu items each frame.  The context is
+    /// the same `MenuContext` the editor uses for its TUI menu bar.
+    ///
+    /// Default: empty context (all flags false).
+    fn menu_context(&self) -> MenuContext {
+        MenuContext::default()
+    }
+
+    /// Handle a menu action triggered by the native platform menu bar.
+    ///
+    /// `action` and `args` come directly from the
+    /// [`MenuItem::Action`](fresh_core::menu::MenuItem::Action) that the user
+    /// clicked in the native menu.
+    ///
+    /// Default implementation does nothing.
+    fn on_menu_action(&mut self, _action: &str, _args: &HashMap<String, serde_json::Value>) {}
 }
 
 // ---------------------------------------------------------------------------
@@ -100,7 +163,15 @@ where
     A: GuiApplication + 'static,
 {
     let event_loop = EventLoop::new().context("Failed to create winit event loop")?;
-    event_loop.set_control_flow(winit::event_loop::ControlFlow::Poll);
+    // Use WaitUntil for frame pacing instead of Poll.  Poll causes winit to
+    // schedule a CFRunLoopTimer at f64::MIN (fire immediately), which
+    // continuously wakes the run loop — including during macOS's modal menu
+    // tracking loop, causing the highlighted menu to jump to the leftmost
+    // item.  WaitUntil achieves the same ~60fps without aggressive polling
+    // and is also friendlier to CPU / battery.
+    event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+        Instant::now() + FRAME_DURATION,
+    ));
 
     let mut runner: WgpuRunner<A> = WgpuRunner {
         config,
@@ -144,6 +215,8 @@ struct RunnerState<A: GuiApplication> {
     cell_size: (f64, f64),
     /// Which Alt/Option key is currently held (for macOS Left/Right distinction).
     alt_location: Option<KeyLocation>,
+    /// Platform-native menu bar (macOS: real AppKit menus; other: no-op stub).
+    native_menu: NativeMenuBar,
 }
 
 impl<A: GuiApplication + 'static> ApplicationHandler for WgpuRunner<A> {
@@ -348,11 +421,44 @@ impl<A: GuiApplication + 'static> ApplicationHandler for WgpuRunner<A> {
             return;
         };
 
+        // While the macOS menu bar is being tracked (user hovering over menus),
+        // switch to pure Wait mode so winit does not schedule any timer wake-
+        // ups.  The modal tracking run loop is very sensitive to external
+        // interference; even periodic timer wake-ups can cause the highlighted
+        // menu to jump to the leftmost item.
+        if state.native_menu.is_tracking() {
+            event_loop.set_control_flow(winit::event_loop::ControlFlow::Wait);
+            return;
+        }
+        // Schedule the next frame wake-up (~60fps).
+        event_loop.set_control_flow(winit::event_loop::ControlFlow::WaitUntil(
+            Instant::now() + FRAME_DURATION,
+        ));
+
+        // Poll native menu bar for user clicks and dispatch to the app.
+        if let Some(action) = state.native_menu.poll_action() {
+            state.app.on_menu_action(&action.action, &action.args);
+            state.needs_render = true;
+        }
+
         match state.app.tick() {
             Ok(true) => state.needs_render = true,
             Ok(false) => {}
             Err(e) => tracing::error!("Tick error: {}", e),
         }
+
+        // If the app signalled a menu model change, rebuild native menus.
+        if let Some(updated_menus) = state.app.take_menu_update() {
+            let ctx = state.app.menu_context();
+            state
+                .native_menu
+                .update(&updated_menus, &self.config.title, &ctx);
+        }
+
+        // Sync native menu item states (enabled/disabled, checkmarks) from
+        // the application's current MenuContext — cheap incremental update.
+        let ctx = state.app.menu_context();
+        state.native_menu.sync_state(&ctx);
 
         if state.app.should_quit() {
             state.app.on_close();
@@ -368,12 +474,17 @@ impl<A: GuiApplication + 'static> ApplicationHandler for WgpuRunner<A> {
 
 impl<A: GuiApplication> WgpuRunner<A> {
     fn create_state(&mut self, event_loop: &ActiveEventLoop) -> AnyhowResult<RunnerState<A>> {
-        let window_attrs = WindowAttributes::default()
+        let mut window_attrs = WindowAttributes::default()
             .with_title(&self.config.title)
             .with_inner_size(winit::dpi::PhysicalSize::new(
                 self.config.width,
                 self.config.height,
             ));
+
+        // Set window icon from embedded PNG (shows in taskbar/dock on supported platforms)
+        if let Some(icon) = load_window_icon() {
+            window_attrs = window_attrs.with_window_icon(Some(icon));
+        }
 
         let window = Arc::new(
             event_loop
@@ -417,6 +528,11 @@ impl<A: GuiApplication> WgpuRunner<A> {
             .context("create_app already consumed")?;
         let app = create_app(cols, rows)?;
 
+        // Build platform-native menu bar from the app's menu model.
+        let menus = app.menu_definitions();
+        let ctx = app.menu_context();
+        let native_menu = NativeMenuBar::build(&menus, &self.config.title, &ctx);
+
         Ok(RunnerState {
             app,
             terminal,
@@ -428,6 +544,7 @@ impl<A: GuiApplication> WgpuRunner<A> {
             pressed_button: None,
             cell_size,
             alt_location: None,
+            native_menu,
         })
     }
 }
@@ -747,6 +864,38 @@ pub fn cell_dimensions_to_grid(width: f64, height: f64, cell_size: (f64, f64)) -
     let cols = (width / cell_size.0.max(1.0)) as u16;
     let rows = (height / cell_size.1.max(1.0)) as u16;
     (cols.max(1), rows.max(1))
+}
+
+/// Decode the embedded 32x32 PNG icon into a winit `Icon`.
+fn load_window_icon() -> Option<winit::window::Icon> {
+    decode_png_rgba(ICON_PNG_32)
+        .and_then(|(rgba, w, h)| winit::window::Icon::from_rgba(rgba, w, h).ok())
+}
+
+/// Decode a PNG image to RGBA bytes.
+/// Returns (rgba_bytes, width, height) or None on failure.
+fn decode_png_rgba(data: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(data));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buf = vec![0u8; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buf).ok()?;
+    buf.truncate(info.buffer_size());
+
+    // Convert to RGBA if needed.
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buf,
+        png::ColorType::Rgb => {
+            let mut rgba = Vec::with_capacity(buf.len() / 3 * 4);
+            for chunk in buf.chunks_exact(3) {
+                rgba.extend_from_slice(chunk);
+                rgba.push(255);
+            }
+            rgba
+        }
+        _ => return None,
+    };
+
+    Some((rgba, info.width, info.height))
 }
 
 // ---------------------------------------------------------------------------

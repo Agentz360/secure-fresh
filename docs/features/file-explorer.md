@@ -7,3 +7,4 @@ Fresh includes a built-in file explorer.
 *   **Navigation:** Use the arrow keys to move up and down the file tree.
 *   **Open Files:** Press `Enter` to open the selected file and focus the editor. Single-click opens a file but keeps focus on the explorer; double-click opens and focuses the editor.
 *   **Gitignore Support:** The file explorer respects your `.gitignore` file, hiding ignored files by default.
+*   **Visibility Toggles:** Use "Toggle Hidden Files" and "Toggle Gitignored Files" from the command palette. These settings persist to config across sessions.

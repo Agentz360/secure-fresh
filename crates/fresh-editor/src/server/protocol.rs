@@ -116,15 +116,25 @@ pub enum ClientControl {
     /// Request to quit (shutdown server if last client)
     Quit,
     /// Request to open files in the editor
-    OpenFiles { files: Vec<FileRequest> },
+    OpenFiles {
+        files: Vec<FileRequest>,
+        #[serde(default)]
+        wait: bool,
+    },
 }
 
-/// A file to open with optional line/column position
+/// A file to open with optional line/column position, range, and hover message
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileRequest {
     pub path: String,
     pub line: Option<usize>,
     pub column: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_line: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_column: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Control messages from server to client
@@ -145,6 +155,8 @@ pub enum ServerControl {
     Quit { reason: String },
     /// Error message
     Error { message: String },
+    /// Signal that a --wait operation has completed
+    WaitComplete,
 }
 
 /// Wrapper for control channel messages (used for JSON serialization)
@@ -267,7 +279,11 @@ mod tests {
                     path: "/test/file.txt".to_string(),
                     line: Some(10),
                     column: Some(5),
+                    end_line: None,
+                    end_column: None,
+                    message: None,
                 }],
+                wait: false,
             },
         ];
 
@@ -292,6 +308,7 @@ mod tests {
             ServerControl::Error {
                 message: "error".to_string(),
             },
+            ServerControl::WaitComplete,
         ];
 
         for variant in variants {

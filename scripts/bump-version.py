@@ -19,6 +19,7 @@ BumpType = Literal["patch", "minor", "major"]
 # Local workspace crates that need version updates in [workspace.dependencies]
 LOCAL_CRATES = [
     "fresh-core",
+    "fresh-gui",
     "fresh-parser-js",
     "fresh-languages",
     "fresh-plugin-runtime",

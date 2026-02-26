@@ -6,6 +6,14 @@ Fresh has native support for the Language Server Protocol (LSP), providing featu
 *   **Code completion:** Get intelligent code completion suggestions.
 *   **Go-to-definition:** Quickly jump to the definition of a symbol.
 
+## Diagnostics Panel
+
+Open the diagnostics panel with "Show Diagnostics Panel" or "Toggle Diagnostics Panel" from the command palette. In the panel, Up/Down scrolls the editor to preview each diagnostic's location; Enter jumps to the diagnostic and focuses the editor. `F8` and `Shift+F8` jump to next/previous diagnostic without the panel.
+
+## Code Folding
+
+When the LSP server provides `foldingRange`, fold indicators appear in the gutter. See [Editing — Code Folding](./editing.md#code-folding).
+
 ## Built-in LSP Support
 
 Fresh includes built-in LSP configurations for many languages. Install the server and Fresh will use it automatically:
@@ -133,5 +141,7 @@ To make Fresh recognize `.bashrc`, `.zshrc`, and similar files as shell scripts:
 2. Go to **Languages** → **bash** (or create a new `bash` entry)
 3. Add filenames: `.bashrc`, `.zshrc`, `.bash_profile`, `.profile`
 4. The grammar should be set to `Bourne Again Shell (bash)` or similar
+
+The `filenames` field supports glob patterns like `*.conf`, `*rc`, or `/etc/**/rc.*` for matching files without standard extensions.
 
 Fresh checks filenames first, then extensions, allowing dotfiles without traditional extensions to get proper syntax highlighting.

@@ -6,8 +6,11 @@ edition.workspace = true
 description = "GUI backend for Fresh editor: windowed ratatui via winit + wgpu"
 license.workspace = true
 repository.workspace = true
+publish = false  # depends on git-only ratatui-wgpu, not publishable to crates.io
 
 [dependencies]
+# Shared types (Menu, MenuItem) — the menu model lives here
+fresh-core = { workspace = true }
 # Window management
 winit = { workspace = true }
 # GPU-accelerated rendering
@@ -24,3 +27,17 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 # Async runtime for wgpu init (needs rt-multi-thread for Runtime::new())
 tokio = { version = "1.49", features = ["rt", "rt-multi-thread"] }
+# JSON for menu action args
+serde_json = { workspace = true }
+# PNG decoding for window icon (already a transitive dep via ratatui-wgpu)
+png = "0.18"
+
+# macOS: native menu bar
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = "0.15"
+# ObjC interop for NSNotificationCenter (menu tracking detection).
+# Versions match the ones muda 0.15 already pulls in.
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", features = ["NSNotification", "NSString", "NSOperation", "block2"] }
+objc2-app-kit = { version = "0.2", features = ["NSMenu"] }
+block2 = "0.5"

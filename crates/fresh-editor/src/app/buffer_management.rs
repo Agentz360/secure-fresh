@@ -818,6 +818,65 @@ impl Editor {
         }
     }
 
+    /// Select a range in the active buffer. Lines/columns are 1-indexed.
+    /// The cursor moves to the end of the range and the anchor is set to the
+    /// start, producing a visual selection.
+    pub fn select_range(
+        &mut self,
+        start_line: usize,
+        start_col: Option<usize>,
+        end_line: usize,
+        end_col: Option<usize>,
+    ) {
+        if start_line == 0 || end_line == 0 {
+            return;
+        }
+
+        let buffer_id = self.active_buffer();
+
+        let cursors = self.active_cursors();
+        let cursor_id = cursors.primary_id();
+        let old_position = cursors.primary().position;
+        let old_anchor = cursors.primary().anchor;
+        let old_sticky_column = cursors.primary().sticky_column;
+
+        if let Some(state) = self.buffers.get(&buffer_id) {
+            let buffer_len = state.buffer.len();
+
+            // Convert 1-indexed to 0-indexed
+            let start_line_0 = start_line.saturating_sub(1);
+            let start_col_0 = start_col.map(|c| c.saturating_sub(1)).unwrap_or(0);
+            let end_line_0 = end_line.saturating_sub(1);
+            let end_col_0 = end_col.map(|c| c.saturating_sub(1)).unwrap_or(0);
+
+            let max_line = state.buffer.line_count().unwrap_or(1).saturating_sub(1);
+
+            let start_pos = state
+                .buffer
+                .line_col_to_position(start_line_0.min(max_line), start_col_0)
+                .min(buffer_len);
+            let end_pos = state
+                .buffer
+                .line_col_to_position(end_line_0.min(max_line), end_col_0)
+                .min(buffer_len);
+
+            let event = Event::MoveCursor {
+                cursor_id,
+                old_position,
+                new_position: end_pos,
+                old_anchor,
+                new_anchor: Some(start_pos),
+                old_sticky_column,
+                new_sticky_column: end_col_0,
+            };
+
+            let split_id = self.split_manager.active_split();
+            let state = self.buffers.get_mut(&buffer_id).unwrap();
+            let view_state = self.split_view_states.get_mut(&split_id).unwrap();
+            state.apply(&mut view_state.cursors, &event);
+        }
+    }
+
     /// Go to an exact byte offset in the buffer (used in byte-offset mode for large files)
     pub fn goto_byte_offset(&mut self, offset: usize) {
         let buffer_id = self.active_buffer();
@@ -1417,6 +1476,33 @@ impl Editor {
         self.open_warning_log();
     }
 
+    /// Show a transient hover popup with the given message text, positioned below the cursor.
+    /// Used for file-open messages (e.g. `file.txt:10@"Look at this"`).
+    pub fn show_file_message_popup(&mut self, message: &str) {
+        use crate::view::popup::{Popup, PopupPosition};
+        use ratatui::style::Style;
+
+        // Build markdown: message text + blank line + italic hint
+        let md = format!("{}\n\n*esc to dismiss*", message);
+        // Size popup width to content: longest line + border padding, clamped to reasonable bounds
+        let content_width = message.lines().map(|l| l.len()).max().unwrap_or(0) as u16;
+        let hint_width = 16u16; // "*esc to dismiss*"
+        let popup_width = (content_width.max(hint_width) + 4).clamp(20, 60);
+
+        let mut popup = Popup::markdown(&md, &self.theme, Some(&self.grammar_registry));
+        popup.transient = false;
+        popup.position = PopupPosition::BelowCursor;
+        popup.width = popup_width;
+        popup.max_height = 15;
+        popup.border_style = Style::default().fg(self.theme.popup_border_fg);
+        popup.background_style = Style::default().bg(self.theme.popup_bg);
+
+        let buffer_id = self.active_buffer();
+        if let Some(state) = self.buffers.get_mut(&buffer_id) {
+            state.popups.show(popup);
+        }
+    }
+
     /// Get text properties at the cursor position in the active buffer
     pub fn get_text_properties_at_cursor(
         &self,
@@ -1445,6 +1531,11 @@ impl Editor {
 
     /// Internal helper to close a buffer (shared by close_buffer and force_close_buffer)
     fn close_buffer_internal(&mut self, id: BufferId) -> anyhow::Result<()> {
+        // Complete any --wait tracking for this buffer
+        if let Some((wait_id, _)) = self.wait_tracking.remove(&id) {
+            self.completed_waits.push(wait_id);
+        }
+
         // Save file state before closing (for per-file session persistence)
         self.save_file_state_on_close(id);
 
@@ -2213,9 +2304,25 @@ impl Editor {
     /// This is used for CLI file arguments to ensure they go through the same
     /// code path as interactive file opens, providing consistent error handling
     /// (e.g., encoding confirmation prompts are shown in the UI instead of crashing).
-    pub fn queue_file_open(&mut self, path: PathBuf, line: Option<usize>, column: Option<usize>) {
-        self.pending_file_opens
-            .push(super::PendingFileOpen { path, line, column });
+    pub fn queue_file_open(
+        &mut self,
+        path: PathBuf,
+        line: Option<usize>,
+        column: Option<usize>,
+        end_line: Option<usize>,
+        end_column: Option<usize>,
+        message: Option<String>,
+        wait_id: Option<u64>,
+    ) {
+        self.pending_file_opens.push(super::PendingFileOpen {
+            path,
+            line,
+            column,
+            end_line,
+            end_column,
+            message,
+            wait_id,
+        });
     }
 
     /// Process pending file opens (called from the event loop).
@@ -2239,9 +2346,27 @@ impl Editor {
 
             match self.open_file(&pending_file.path) {
                 Ok(_) => {
-                    // Navigate to line/column if specified
-                    if let Some(line) = pending_file.line {
+                    // Navigate to line/column or select range if specified
+                    if let (Some(line), Some(end_line)) = (pending_file.line, pending_file.end_line)
+                    {
+                        self.select_range(
+                            line,
+                            pending_file.column,
+                            end_line,
+                            pending_file.end_column,
+                        );
+                    } else if let Some(line) = pending_file.line {
                         self.goto_line_col(line, pending_file.column);
+                    }
+                    // Show hover message popup if specified
+                    let has_popup = pending_file.message.is_some();
+                    if let Some(ref msg) = pending_file.message {
+                        self.show_file_message_popup(msg);
+                    }
+                    // Track wait ID for --wait support
+                    if let Some(wait_id) = pending_file.wait_id {
+                        let buffer_id = self.active_buffer();
+                        self.wait_tracking.insert(buffer_id, (wait_id, has_popup));
                     }
                     processed_any = true;
                 }
@@ -2264,6 +2389,16 @@ impl Editor {
         }
 
         processed_any
+    }
+
+    /// Take and return completed wait IDs (for --wait support).
+    pub fn take_completed_waits(&mut self) -> Vec<u64> {
+        std::mem::take(&mut self.completed_waits)
+    }
+
+    /// Remove wait tracking for a given wait_id (e.g., when waiting client disconnects).
+    pub fn remove_wait_tracking(&mut self, wait_id: u64) {
+        self.wait_tracking.retain(|_, (wid, _)| *wid != wait_id);
     }
 
     /// Start an incremental line-feed scan for the active buffer.

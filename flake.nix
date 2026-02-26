@@ -36,8 +36,8 @@
           pname = "fresh";
 
           rust-manifest = pkgs.fetchurl {
-            url = "https://static.rust-lang.org/dist/channel-rust-1.91.0.toml";
-            hash = "sha256-2eWc3xVTKqg5wKSHGwt1XoM/kUBC6y3MWfKg74Zn+fY=";
+            url = "https://static.rust-lang.org/dist/channel-rust-1.92.0.toml";
+            hash = "sha256-sqSWJDUxc+zaz1nBWMAJKTAGBuGWP25GCftIOlCEAtA=";
           };
 
           rustToolchain = inputs.fenix.packages.${system}.fromManifestFile rust-manifest;
@@ -56,6 +56,8 @@
               (lib.fileset.fileFilter (file: file.hasExt "py") unfilteredRoot)
               # Keep sublime-syntax grammar files (used by include_str! in grammar_registry.rs)
               (lib.fileset.fileFilter (file: file.hasExt "sublime-syntax") unfilteredRoot)
+              # Font files (used by include_bytes! in fresh-gui and fresh-editor)
+              (lib.fileset.fileFilter (file: file.hasExt "ttf") unfilteredRoot)
               # Runtime assets in crates/fresh-editor
               ./crates/fresh-editor/docs
               ./crates/fresh-editor/keymaps

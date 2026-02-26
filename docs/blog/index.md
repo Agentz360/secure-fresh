@@ -8,6 +8,14 @@ Updates on new features and changes in Fresh.
 
 <div class="blog-grid">
 
+<a class="blog-card" href="./fresh-0.2.9/">
+  <img src="./fresh-0.2.9/compose-mode/showcase.gif" alt="What's New (0.2.9)" />
+  <div class="blog-card-body">
+    <h3>What's New (0.2.9)</h3>
+    <p>Code folding, markdown compose mode, large file line scanning, vertical rulers, auto-save, and more.</p>
+  </div>
+</a>
+
 <a class="blog-card" href="./fresh-0.2/">
   <img src="./productivity/keybinding-editor/showcase.gif" alt="Fresh 0.2" />
   <div class="blog-card-body">

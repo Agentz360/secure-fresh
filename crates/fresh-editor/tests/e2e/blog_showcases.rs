@@ -11,8 +11,10 @@
 //   # ... etc
 
 use crate::common::blog_showcase::BlogShowcase;
-use crate::common::harness::EditorTestHarness;
+use crate::common::fixtures::TestFixture;
+use crate::common::harness::{copy_plugin, copy_plugin_lib, EditorTestHarness};
 use crossterm::event::{KeyCode, KeyModifiers};
+use lsp_types::FoldingRange;
 use std::fs;
 
 // =========================================================================
@@ -1025,6 +1027,515 @@ fn blog_showcase_themes_select_theme() {
     h.render().unwrap();
     snap(&mut h, &mut s, Some("Enter"), 200);
     hold(&mut h, &mut s, 5, 100);
+
+    s.finalize().unwrap();
+}
+
+// =========================================================================
+// Blog Post 4: What's New in Fresh (0.2.3–0.2.9)
+// =========================================================================
+
+/// Code Folding: fold/unfold code blocks via gutter click
+#[test]
+#[ignore]
+fn blog_showcase_fresh_0_2_9_code_folding() {
+    let mut h = EditorTestHarness::with_temp_project(100, 30).unwrap();
+    let pd = h.project_dir().unwrap();
+    create_demo_project(&pd);
+    h.open_file(&pd.join("src/main.rs")).unwrap();
+
+    // Set up folding ranges for the functions in our demo file
+    // load_config starts at line 17 (0-indexed), process_item at line 22
+    {
+        let state = h.editor_mut().active_state_mut();
+        state.folding_ranges = vec![
+            FoldingRange {
+                start_line: 2, // fn main()
+                end_line: 15,
+                start_character: None,
+                end_character: None,
+                kind: None,
+                collapsed_text: None,
+            },
+            FoldingRange {
+                start_line: 17, // fn load_config
+                end_line: 20,
+                start_character: None,
+                end_character: None,
+                kind: None,
+                collapsed_text: None,
+            },
+            FoldingRange {
+                start_line: 22, // fn process_item
+                end_line: 26,
+                start_character: None,
+                end_character: None,
+                kind: None,
+                collapsed_text: None,
+            },
+        ];
+    }
+
+    let mut s = BlogShowcase::new(
+        "fresh-0.2.9/code-folding",
+        "Code Folding",
+        "Fold and unfold code blocks via gutter click or command palette.",
+    );
+
+    // Show the file with fold indicators in the gutter
+    hold(&mut h, &mut s, 5, 100);
+
+    // Click gutter on line 2 (fn main) to fold — content row 2 + menu/tab offset
+    let fold_row = 4u16; // CONTENT_START_ROW (2) + line 2 = row 4
+    h.mouse_click(0, fold_row).unwrap();
+    snap(&mut h, &mut s, Some("Click gutter"), 200);
+    hold(&mut h, &mut s, 4, 100);
+
+    // Fold load_config too — after main is folded, it shifts up
+    // After folding main (lines 2-15), load_config header moves up
+    h.mouse_click(0, fold_row + 1).unwrap();
+    snap(&mut h, &mut s, Some("Click gutter"), 200);
+    hold(&mut h, &mut s, 4, 100);
+
+    // Navigate down past the folded regions
+    for _ in 0..5 {
+        h.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        snap(&mut h, &mut s, Some("↓"), 80);
+    }
+    hold(&mut h, &mut s, 3, 100);
+
+    // Unfold main by clicking gutter again
+    h.mouse_click(0, fold_row).unwrap();
+    snap(&mut h, &mut s, Some("Unfold"), 200);
+    hold(&mut h, &mut s, 5, 100);
+
+    s.finalize().unwrap();
+}
+
+/// Markdown Compose Mode: side-by-side source and composed view with scroll sync
+#[test]
+#[ignore]
+fn blog_showcase_fresh_0_2_9_compose_mode() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let project_root = temp_dir.path().join("project");
+    fs::create_dir(&project_root).unwrap();
+
+    let plugins_dir = project_root.join("plugins");
+    fs::create_dir(&plugins_dir).unwrap();
+    copy_plugin(&plugins_dir, "markdown_compose");
+    copy_plugin_lib(&plugins_dir);
+
+    // Use a messy, unaligned table so the compose rendering difference is obvious.
+    // Document is long enough that scrolling visibly moves the viewport.
+    let md_content = r#"# Project Notes
+
+## Overview
+
+This is a **terminal text editor** written in Rust. It supports *syntax highlighting*, **code folding**, and [LSP integration](https://langserver.org/).
+
+## Features
+
+- Multi-cursor editing with **Ctrl+D**
+- Markdown **compose mode** for distraction-free writing
+- Side-by-side *diff view* with word-level highlights
+- Integrated terminal with *session persistence*
+- [Plugin system](https://getfresh.dev/plugins/) with package manager
+
+## Status
+
+|Feature|Status|Notes|
+|---|---|---|
+|Code folding|done|via LSP foldingRange|
+|Auto-save|done|configurable interval|
+|Vertical rulers|done|per-buffer|
+|Line scanning|done|SSH server-side|
+|Compose mode|experimental|tables, conceals, soft breaks|
+
+## Getting Started
+
+Install with `cargo install fresh-editor` or download a binary from the [releases page](https://github.com/sinelaw/fresh/releases).
+
+Run `fresh` to start editing. Press **Ctrl+P** to open the command palette.
+
+## Architecture
+
+Fresh is built on a **piece table** data structure for efficient text manipulation. The rendering pipeline uses [ratatui](https://ratatui.rs/) for terminal UI.
+
+Plugins run in a **QuickJS** sandbox with an async message-passing API. Each plugin can register hooks for editor events like `buffer_activated`, `cursor_moved`, and `buffer_saved`.
+
+## Configuration
+
+Settings are stored in `~/.config/fresh/config.json`. You can edit them via the **Settings UI** or directly in the JSON file.
+
+Keybindings live in the same config file under the `keybindings` key. Use the **Keybinding Editor** for a visual interface.
+
+## Remote Editing
+
+Fresh supports editing files over **SSH** with `fresh user@host:path`. The connection uses your existing SSH keys or prompts for a password.
+
+Large file operations like *line scanning* run server-side — only the index is transferred, not the file content.
+
+## License
+
+Released under the **Apache 2.0** license. See [LICENSE](https://github.com/sinelaw/fresh/blob/master/LICENSE) for details.
+"#;
+
+    let md_path = project_root.join("notes.md");
+    fs::write(&md_path, md_content).unwrap();
+
+    let mut h =
+        EditorTestHarness::with_config_and_working_dir(120, 30, Default::default(), project_root)
+            .unwrap();
+    h.open_file(&md_path).unwrap();
+    h.render().unwrap();
+
+    let mut s = BlogShowcase::new(
+        "fresh-0.2.9/compose-mode",
+        "Markdown Compose Mode",
+        "Distraction-free writing with concealed markup and table rendering.",
+    );
+
+    // Show the raw markdown
+    hold(&mut h, &mut s, 5, 100);
+
+    // Create a vertical split
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    h.render().unwrap();
+    h.type_text("split vert").unwrap();
+    h.render().unwrap();
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Split Vertical"), 200);
+    hold(&mut h, &mut s, 3, 100);
+
+    // Enable compose mode in the right panel
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    h.render().unwrap();
+    h.type_text("Toggle Compose").unwrap();
+    h.render().unwrap();
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+
+    // Wait for compose mode to take effect
+    for _ in 0..10 {
+        h.render().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    snap(&mut h, &mut s, Some("Toggle Compose"), 300);
+    hold(&mut h, &mut s, 5, 100);
+
+    // Enable scroll sync
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    h.render().unwrap();
+    h.type_text("Toggle Scroll Sync").unwrap();
+    h.render().unwrap();
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Scroll Sync"), 200);
+    hold(&mut h, &mut s, 3, 100);
+
+    // Switch to source panel (left) so scrolling there drives the compose panel
+    h.send_key(KeyCode::Char('k'), KeyModifiers::CONTROL)
+        .unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Ctrl+K"), 150);
+    hold(&mut h, &mut s, 2, 100);
+
+    // Scroll down well past the viewport — both panels move together
+    for i in 0..45 {
+        h.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        h.render().unwrap();
+        if i % 4 == 3 {
+            snap(&mut h, &mut s, Some("↓"), 80);
+        }
+    }
+    hold(&mut h, &mut s, 5, 100);
+
+    s.finalize().unwrap();
+    drop(temp_dir);
+}
+
+/// Large File Line Scanning: Go to Line triggers scan, then jumps precisely
+#[test]
+#[ignore]
+fn blog_showcase_fresh_0_2_9_large_file_scanning() {
+    let big_txt_path = TestFixture::big_txt_for_test("blog_showcase").unwrap();
+
+    let mut h = EditorTestHarness::new(100, 30).unwrap();
+    h.open_file(&big_txt_path).unwrap();
+    h.render().unwrap();
+
+    let mut s = BlogShowcase::new(
+        "fresh-0.2.9/large-file-scanning",
+        "Precise Go to Line in Large Files",
+        "Go to Line triggers an efficient scan, then jumps to the exact line.",
+    );
+
+    // Show the file with byte offsets in the gutter
+    hold(&mut h, &mut s, 5, 200);
+
+    // Navigate down a bit to show byte offsets
+    for _ in 0..8 {
+        h.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    }
+    h.render().unwrap();
+    snap(&mut h, &mut s, None, 200);
+    hold(&mut h, &mut s, 3, 200);
+
+    // Press Ctrl+G to trigger Go to Line — shows scan confirm prompt
+    h.send_key(KeyCode::Char('g'), KeyModifiers::CONTROL)
+        .unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Ctrl+G"), 500);
+    hold(&mut h, &mut s, 3, 200);
+
+    // Type "y" to accept the scan
+    h.send_key(KeyCode::Char('y'), KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("y"), 300);
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 400);
+
+    // Drive the scan to completion
+    while h.editor_mut().process_line_scan() {}
+    h.render().unwrap();
+
+    // The "Go to line:" prompt is now open — show it
+    hold(&mut h, &mut s, 5, 200);
+
+    // Type a line number to jump to
+    for ch in "500000".chars() {
+        h.send_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        h.render().unwrap();
+        snap(&mut h, &mut s, Some(&ch.to_string()), 120);
+    }
+    hold(&mut h, &mut s, 2, 200);
+
+    // Press Enter to jump
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 200);
+
+    // Hold on the result — gutter shows exact line numbers at the target
+    hold(&mut h, &mut s, 8, 200);
+
+    s.finalize().unwrap();
+}
+
+/// Vertical Rulers: add column rulers via command palette
+#[test]
+#[ignore]
+fn blog_showcase_fresh_0_2_9_vertical_rulers() {
+    let mut h = EditorTestHarness::with_temp_project(100, 30).unwrap();
+    let pd = h.project_dir().unwrap();
+    create_demo_project(&pd);
+    h.open_file(&pd.join("src/main.rs")).unwrap();
+
+    let mut s = BlogShowcase::new(
+        "fresh-0.2.9/vertical-rulers",
+        "Vertical Rulers",
+        "Add column rulers to enforce line length limits.",
+    );
+
+    hold(&mut h, &mut s, 4, 100);
+
+    // Add ruler at column 40 (visible in 100-col terminal)
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    h.render().unwrap();
+    h.type_text("Add Ruler").unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Ctrl+P"), 120);
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 150);
+    hold(&mut h, &mut s, 2, 100);
+
+    // Type column number
+    h.type_text("40").unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("40"), 150);
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 200);
+    hold(&mut h, &mut s, 4, 100);
+
+    // Add a second ruler at column 80
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    h.render().unwrap();
+    h.type_text("Add Ruler").unwrap();
+    h.render().unwrap();
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Add Ruler"), 150);
+    hold(&mut h, &mut s, 2, 100);
+
+    h.type_text("80").unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("80"), 150);
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 200);
+    hold(&mut h, &mut s, 5, 100);
+
+    s.finalize().unwrap();
+}
+
+/// Smart Editing: smart home, smart backspace dedent, auto-indent
+#[test]
+#[ignore]
+fn blog_showcase_fresh_0_2_9_smart_editing() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let project_root = temp_dir.path().join("project");
+    fs::create_dir(&project_root).unwrap();
+
+    let rs_path = project_root.join("test.rs");
+    fs::write(&rs_path, "").unwrap();
+
+    let mut h =
+        EditorTestHarness::with_config_and_working_dir(80, 24, Default::default(), project_root)
+            .unwrap();
+    h.open_file(&rs_path).unwrap();
+    h.render().unwrap();
+
+    let mut s = BlogShowcase::new(
+        "fresh-0.2.9/smart-editing",
+        "Smart Editing",
+        "Smart Home, smart backspace dedent, and improved auto-indent.",
+    );
+
+    // Start typing a function declaration
+    hold(&mut h, &mut s, 3, 200);
+
+    for ch in "fn example() {".chars() {
+        h.send_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        h.render().unwrap();
+        snap(&mut h, &mut s, Some(&ch.to_string()), 60);
+    }
+    hold(&mut h, &mut s, 2, 200);
+
+    // Press Enter — auto-indent adds leading whitespace
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 300);
+    hold_key(&mut h, &mut s, "auto-indent", 3, 200);
+
+    // Type a line of code
+    for ch in "let x = 1;".chars() {
+        h.send_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        h.render().unwrap();
+        snap(&mut h, &mut s, Some(&ch.to_string()), 60);
+    }
+    hold(&mut h, &mut s, 2, 200);
+
+    // Press Enter again — indent is preserved
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 300);
+    hold_key(&mut h, &mut s, "auto-indent", 3, 200);
+
+    // Type another line
+    for ch in "let y = 2;".chars() {
+        h.send_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        h.render().unwrap();
+        snap(&mut h, &mut s, Some(&ch.to_string()), 60);
+    }
+    hold(&mut h, &mut s, 2, 200);
+
+    // Press Enter
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 200);
+    hold(&mut h, &mut s, 2, 200);
+
+    // Backspace — smart dedent removes one indent level
+    h.send_key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Backspace"), 400);
+    hold_key(&mut h, &mut s, "smart dedent", 3, 200);
+
+    // Tab — indent back
+    h.send_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Tab"), 400);
+    hold_key(&mut h, &mut s, "indent", 3, 200);
+
+    hold(&mut h, &mut s, 5, 200);
+
+    s.finalize().unwrap();
+    drop(temp_dir);
+}
+
+/// Auto-Save: enable persistent auto-save via settings
+#[test]
+#[ignore]
+fn blog_showcase_fresh_0_2_9_auto_save() {
+    let mut h = EditorTestHarness::with_temp_project(100, 30).unwrap();
+    let pd = h.project_dir().unwrap();
+    create_demo_project(&pd);
+    h.open_file(&pd.join("src/main.rs")).unwrap();
+
+    let mut s = BlogShowcase::new(
+        "fresh-0.2.9/auto-save",
+        "Auto-Save",
+        "Persistent auto-save writes modified buffers to disk at a configurable interval.",
+    );
+
+    hold(&mut h, &mut s, 4, 100);
+
+    // Open settings via command palette
+    h.send_key(KeyCode::Char('p'), KeyModifiers::CONTROL)
+        .unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Ctrl+P"), 120);
+
+    for ch in "settings".chars() {
+        h.send_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        h.render().unwrap();
+        snap(&mut h, &mut s, Some(&ch.to_string()), 50);
+    }
+    hold(&mut h, &mut s, 2, 100);
+
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 200);
+    hold(&mut h, &mut s, 3, 100);
+
+    // Filter settings to find auto_save
+    h.send_key(KeyCode::Char('/'), KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("/"), 150);
+
+    for ch in "auto_save".chars() {
+        h.send_key(KeyCode::Char(ch), KeyModifiers::NONE).unwrap();
+        h.render().unwrap();
+        snap(&mut h, &mut s, Some(&ch.to_string()), 60);
+    }
+    hold(&mut h, &mut s, 3, 100);
+
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 200);
+    hold(&mut h, &mut s, 3, 100);
+
+    // Navigate to the setting and toggle it
+    h.send_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("↓"), 100);
+    h.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    snap(&mut h, &mut s, Some("Enter"), 200);
+    hold(&mut h, &mut s, 5, 100);
+
+    // Close settings
+    h.send_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+    h.render().unwrap();
+    hold(&mut h, &mut s, 3, 100);
 
     s.finalize().unwrap();
 }

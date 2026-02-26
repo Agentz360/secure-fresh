@@ -4,6 +4,25 @@
 Some keybindings may not work or may differ on your system due to differences in keyboard layouts, terminal emulators, and operating systems. Terminals capture and report key events differently, and some key combinations may be intercepted by your OS or terminal before reaching Fresh. If a keybinding doesn't work, check the command palette (`Ctrl+P`) for alternative bindings, use the [keyboard configuration](../configuration/keyboard.md) to customize bindings, or browse all available shortcuts in the [Keybinding Editor](./keybinding-editor.md).
 :::
 
+## Smart Editing
+
+- **Smart Home** — Home toggles between first non-whitespace character and column 0.
+- **Smart Backspace** — Backspace in leading whitespace removes one indent level instead of a single character.
+- **Auto-indent** — Enter preserves the current indentation level. After `{`, `(`, or `:`, an extra indent level is added.
+- **Bracket matching** — Matching brackets are highlighted. Use "Go to Matching Bracket" from the command palette to jump. Enabled by default; toggle via `highlight_matching_brackets` in settings.
+
+## Vertical Rulers
+
+Add column rulers at any position via "Add Ruler" from the command palette. Useful for enforcing line length limits. Remove with "Remove Ruler". Rulers are per-buffer. The `rulers` config setting can also set default rulers (e.g. `[80, 120]`).
+
+## Auto-Save
+
+Enable `auto_save_enabled` in settings to automatically save modified buffers to disk at a configurable interval (default 30 seconds). This is separate from the crash-recovery auto-save, which runs independently every 2 seconds to a recovery directory.
+
+## Code Folding
+
+Fold and unfold code blocks using LSP `foldingRange`. Click the gutter indicator to collapse a range; click again to expand. Use "Toggle Fold" from the command palette. Up/Down navigation skips over folded regions. Each split view maintains its own fold state.
+
 ## Multiple Cursors
 
 Edit multiple locations simultaneously:
@@ -58,6 +77,15 @@ Edit multiple locations simultaneously:
 | `Ctrl+Backspace` | Delete word backward |
 | `Ctrl+Del` | Delete word forward |
 | `Ctrl+K` | Delete to end of line |
+
+### Sort and Transform
+
+Available from the command palette:
+
+- **Sort Lines** — sort selected lines alphabetically
+- **Trim Trailing Whitespace** — remove trailing whitespace from all lines
+
+Configure `trim_trailing_whitespace_on_save` and `ensure_final_newline_on_save` in settings to run these automatically on save.
 
 ### Case Conversion
 
@@ -125,6 +153,19 @@ Jump quickly between locations in your code:
 |----------|--------|
 | `Ctrl+Shift+0-9` | Set bookmark 0-9 |
 | `Alt+0-9` | Jump to bookmark 0-9 |
+
+## Markdown Editing
+
+Smart editing for Markdown files (provided by the built-in `markdown_source` plugin, enabled by default):
+
+- Enter continues list items (bullets, ordered lists, checkboxes)
+- Enter on an empty list marker removes it
+- Tab indents list items and cycles the bullet style
+- Single-quote auto-close is disabled so apostrophes don't interfere
+
+### Compose Mode (experimental)
+
+"Markdown: Toggle Compose" from the command palette enables a distraction-free mode that conceals markup (`**`, `*`, `[]()`), applies soft line breaks at a configurable width, and renders tables. Use "Markdown: Set Compose Width" to adjust the width. Open the same file in a vertical split to see source and composed views side by side.
 
 ## Shell Integration
 

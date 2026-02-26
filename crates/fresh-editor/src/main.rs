@@ -28,10 +28,6 @@ use std::{
     time::Duration,
 };
 
-/// Exit code when open-file command starts a new session.
-/// Callers can check for this to spawn a terminal with an attached client.
-const EXIT_NEW_SESSION: i32 = 2;
-
 /// A terminal text editor with multi-cursor support
 #[derive(Parser, Debug)]
 #[command(name = "fresh")]
@@ -47,25 +43,62 @@ const EXIT_NEW_SESSION: i32 = 2;
     "  session attach [NAME]     Attach to a session (NAME or current dir)\n",
     "  session new NAME          Start a new named session\n",
     "  session kill [NAME]       Terminate a session\n",
-    "  session open-file NAME FILES   Open files in session (starts if needed, exit 2 = new)\n",
+    "  session open-file NAME FILES [--wait]   Open files in session (--wait blocks until done)\n",
+    "\n",
+    "File location syntax:\n",
+    "  file.txt:10                  Open at line 10\n",
+    "  file.txt:10:5                Open at line 10, column 5\n",
+    "  file.txt:10-20               Select lines 10 to 20\n",
+    "  file.txt:10:5-20:1           Select from line 10 col 5 to line 20 col 1\n",
+    "  file.txt:10@\"msg\"            Open at line 10 with markdown popup message\n",
+    "  file.txt:10-20@\"msg\"         Select range with markdown popup message\n",
+    "  Tip: use single quotes to avoid shell expansion, e.g. 'file.txt:10@\"msg\"'\n",
     "\n",
     "Examples:\n",
     "  fresh file.txt                               Open a file\n",
+    "  fresh 'file.txt:10-20@\"Check this code\"'     Open with range selected and popup\n",
     "  fresh -a                                     Attach to session (current dir)\n",
     "  fresh -a mysession                           Attach to named session\n",
     "  fresh --cmd session new proj                 Start session named 'proj'\n",
     "  fresh --cmd session open-file . main.rs     Open file in current dir session\n",
     "  fresh --cmd session open-file proj a.rs     Open file in 'proj' session\n",
     "\n",
+    "Guided walkthrough with --wait:\n",
+    "  The --wait flag blocks the CLI process until the user dismisses the popup\n",
+    "  (if @\"message\" was given) or closes the buffer (if no message). This lets\n",
+    "  a script or tool open files sequentially, waiting for the user to finish\n",
+    "  with each one before moving on.\n",
+    "\n",
+    "  Use NAME '.' to target the session for the current working directory.\n",
+    "  A session is started automatically if one isn't already running. When a\n",
+    "  new session is started, the client attaches interactively (--wait is ignored).\n",
+    "\n",
+    "  To show a file with an annotation, combine range selection with @\"msg\":\n",
+    "    fresh --cmd session open-file . 'src/main.rs:10-25@\"msg\"' --wait\n",
+    "\n",
+    "  The message supports markdown. Use real newlines (not \\n literals) in\n",
+    "  the shell string for multi-line messages. For example with $'...':\n",
+    "    fresh --cmd session open-file . \\\n",
+    "      $'src/main.rs:10-25@\"**Title**\\nBody text here\"' --wait\n",
+    "\n",
+    "  To walk through multiple locations, run commands sequentially — each\n",
+    "  one blocks until the user presses Escape (popup) or closes the buffer:\n",
+    "    fresh --cmd session open-file . 'a.rs:1-10@\"Step 1\"' --wait\n",
+    "    fresh --cmd session open-file . 'b.rs:5-20@\"Step 2\"' --wait\n",
+    "    fresh --cmd session open-file . 'c.rs:30@\"Step 3\"'   --wait\n",
+    "\n",
+    "  Use as git's editor:\n",
+    "    git config core.editor 'fresh --cmd session open-file . --wait'\n",
+    "\n",
     "Documentation: https://getfresh.dev/docs"
 ))]
 struct Cli {
     /// Run a command instead of opening files
     /// Commands: session (list|attach|new|kill|open-file), config (show|paths), init
-    #[arg(long, num_args = 1.., value_name = "COMMAND")]
+    #[arg(long, num_args = 1.., value_name = "COMMAND", allow_hyphen_values = true)]
     cmd: Vec<String>,
 
-    /// Files to open (supports line:col syntax, e.g., file.txt:10:5)
+    /// Files to open (supports file:line:col, ranges, and @"message" syntax)
     #[arg(value_name = "FILES")]
     files: Vec<String>,
 
@@ -160,8 +193,8 @@ struct Args {
     list_sessions: bool,
     session_name: Option<String>,
     kill: Option<Option<String>>,
-    /// Open files in a session without attaching (session_name, files)
-    open_files_in_session: Option<(Option<String>, Vec<String>)>,
+    /// Open files in a session without attaching (session_name, files, wait)
+    open_files_in_session: Option<(Option<String>, Vec<String>, bool)>,
     /// Launch in GUI mode
     #[cfg(feature = "gui")]
     gui: bool,
@@ -189,7 +222,7 @@ impl From<Cli> for Args {
                 | ["s", "list", ..]
                 | ["session", "ls", ..]
                 | ["s", "ls", ..] => (true, None, false, None, false, false, None, cli.files, None),
-                // Open file in session: fresh --cmd session open-file <name> <files...>
+                // Open file in session: fresh --cmd session open-file <name> <files...> [--wait]
                 ["session", "open-file", name, files @ ..]
                 | ["s", "open-file", name, files @ ..] => {
                     let session = if *name == "." {
@@ -197,7 +230,12 @@ impl From<Cli> for Args {
                     } else {
                         Some((*name).to_string())
                     };
-                    let file_list: Vec<String> = files.iter().map(|s| (*s).to_string()).collect();
+                    let wait = files.iter().any(|s| *s == "--wait");
+                    let file_list: Vec<String> = files
+                        .iter()
+                        .filter(|s| **s != "--wait")
+                        .map(|s| (*s).to_string())
+                        .collect();
                     (
                         false,
                         None,
@@ -207,7 +245,7 @@ impl From<Cli> for Args {
                         false,
                         None,
                         vec![],
-                        Some((session, file_list)),
+                        Some((session, file_list, wait)),
                     )
                 }
                 ["session", "attach", name, ..]
@@ -383,11 +421,16 @@ impl From<Cli> for Args {
 }
 
 /// Parsed file location from CLI argument in file:line:col format
+/// Also supports range selections (file:L-EL or file:L:C-EL:EC) and
+/// hover messages (file:L@"message").
 #[derive(Debug)]
 struct FileLocation {
     path: PathBuf,
     line: Option<usize>,
     column: Option<usize>,
+    end_line: Option<usize>,
+    end_column: Option<usize>,
+    message: Option<String>,
 }
 
 /// Parsed remote location from CLI argument in user@host:path format
@@ -724,7 +767,15 @@ fn handle_first_run_setup(
             continue;
         }
         tracing::info!("[SYNTAX DEBUG] Queueing CLI file for open: {:?}", loc.path);
-        editor.queue_file_open(loc.path.clone(), loc.line, loc.column);
+        editor.queue_file_open(
+            loc.path.clone(),
+            loc.line,
+            loc.column,
+            loc.end_line,
+            loc.end_column,
+            loc.message.clone(),
+            None,
+        );
     }
 
     if show_file_explorer {
@@ -749,11 +800,15 @@ fn handle_first_run_setup(
     Ok(())
 }
 
-/// Parse a file path that may include line and column information.
+/// Parse a file path that may include line/column, range, and message information.
 /// Supports formats:
 /// - file.txt
 /// - file.txt:10
 /// - file.txt:10:5
+/// - file.txt:13-16           (line range)
+/// - file.txt:13:17-21:1      (full range with columns)
+/// - file.txt:10@"message"    (position + hover message)
+/// - file.txt:13-16@"message" (range + hover message)
 /// - /path/to/file.txt:10:5
 ///
 /// For Windows paths like C:\path\file.txt:10:5, we handle the drive letter
@@ -763,6 +818,15 @@ fn handle_first_run_setup(
 fn parse_file_location(input: &str) -> FileLocation {
     use std::path::{Component, Path};
 
+    let empty = FileLocation {
+        path: PathBuf::from(input),
+        line: None,
+        column: None,
+        end_line: None,
+        end_column: None,
+        message: None,
+    };
+
     let full_path = PathBuf::from(input);
 
     // If the full path exists as a file, use it directly
@@ -770,13 +834,15 @@ fn parse_file_location(input: &str) -> FileLocation {
     if full_path.is_file() {
         return FileLocation {
             path: full_path,
-            line: None,
-            column: None,
+            ..empty
         };
     }
 
+    // Extract message from @"..." suffix (before parsing positions)
+    let (input_no_msg, message) = extract_message_suffix(input);
+
     // Check if the path has a Windows drive prefix using std::path
-    let has_prefix = Path::new(input)
+    let has_prefix = Path::new(input_no_msg)
         .components()
         .next()
         .map(|c| matches!(c, Component::Prefix(_)))
@@ -786,25 +852,43 @@ fn parse_file_location(input: &str) -> FileLocation {
     // For Windows paths with prefix (e.g., "C:"), skip past the drive letter and colon
     let search_start = if has_prefix {
         // Find the first colon (the drive letter separator) and skip it
-        input.find(':').map(|i| i + 1).unwrap_or(0)
+        input_no_msg.find(':').map(|i| i + 1).unwrap_or(0)
     } else {
         0
     };
 
     // Find the last colon(s) that could be line:col
-    let suffix = &input[search_start..];
+    let suffix = &input_no_msg[search_start..];
 
-    // Try to parse from the end: look for :col and :line patterns
-    // We work backwards to find numeric suffixes
+    // Check if there's a range (contains '-' in the location suffix, not in the path)
+    // We need to find the first colon that starts the location suffix, then check for '-'
+    if let Some(first_colon) = suffix.find(':') {
+        let location_part = &suffix[first_colon + 1..];
+        if location_part.contains('-') {
+            // Range syntax: try to parse as L-EL or L:C-EL:EC
+            let path_part = &suffix[..first_colon];
+            let path_str = if has_prefix {
+                format!("{}{}", &input_no_msg[..search_start], path_part)
+            } else {
+                path_part.to_string()
+            };
+
+            if let Some(result) =
+                parse_range(location_part, PathBuf::from(path_str), message.clone())
+            {
+                return result;
+            }
+        }
+    }
+
+    // No range — fall back to standard :line or :line:col parsing
     let parts: Vec<&str> = suffix.rsplitn(3, ':').collect();
 
     match parts.as_slice() {
-        // Could be "col", "line", "rest" or just parts of the path
         [maybe_col, maybe_line, rest] => {
             if let (Ok(line), Ok(col)) = (maybe_line.parse::<usize>(), maybe_col.parse::<usize>()) {
-                // Both parsed as numbers: file:line:col
                 let path_str = if has_prefix {
-                    format!("{}{}", &input[..search_start], rest)
+                    format!("{}{}", &input_no_msg[..search_start], rest)
                 } else {
                     rest.to_string()
                 };
@@ -812,35 +896,87 @@ fn parse_file_location(input: &str) -> FileLocation {
                     path: PathBuf::from(path_str),
                     line: Some(line),
                     column: Some(col),
+                    message,
+                    ..empty
                 };
             }
-            // Fall through - not valid line:col format
         }
-        // Could be "line", "rest" or just parts of the path
         [maybe_line, rest] => {
             if let Ok(line) = maybe_line.parse::<usize>() {
-                // Parsed as number: file:line
                 let path_str = if has_prefix {
-                    format!("{}{}", &input[..search_start], rest)
+                    format!("{}{}", &input_no_msg[..search_start], rest)
                 } else {
                     rest.to_string()
                 };
                 return FileLocation {
                     path: PathBuf::from(path_str),
                     line: Some(line),
-                    column: None,
+                    message,
+                    ..empty
                 };
             }
-            // Fall through - not valid line format
         }
         _ => {}
     }
 
-    // No valid line:col suffix found, treat the whole thing as a path
+    // No valid suffix found, treat the whole thing as a path
     FileLocation {
-        path: full_path,
-        line: None,
-        column: None,
+        path: PathBuf::from(input_no_msg),
+        message,
+        ..empty
+    }
+}
+
+/// Extract a @"message" suffix from a file location string.
+/// Returns (remaining_input, optional_message).
+fn extract_message_suffix(input: &str) -> (&str, Option<String>) {
+    // Look for @" pattern — the message is everything between the quotes
+    if let Some(at_pos) = input.rfind("@\"") {
+        if input.ends_with('"') && input.len() > at_pos + 2 {
+            let msg = &input[at_pos + 2..input.len() - 1];
+            // Unescape \" within the message
+            let msg = msg.replace("\\\"", "\"");
+            return (&input[..at_pos], Some(msg));
+        }
+    }
+    (input, None)
+}
+
+/// Parse a range location suffix like "13-16" or "13:17-21:1".
+/// Returns a FileLocation if successful.
+fn parse_range(location: &str, path: PathBuf, message: Option<String>) -> Option<FileLocation> {
+    let parts: Vec<&str> = location.splitn(2, '-').collect();
+    if parts.len() != 2 {
+        return None;
+    }
+
+    let start_part = parts[0];
+    let end_part = parts[1];
+
+    // Parse start: either "L" or "L:C"
+    let (start_line, start_col) = parse_line_col(start_part)?;
+    // Parse end: either "EL" or "EL:EC"
+    let (end_line, end_col) = parse_line_col(end_part)?;
+
+    Some(FileLocation {
+        path,
+        line: Some(start_line),
+        column: start_col,
+        end_line: Some(end_line),
+        end_column: end_col,
+        message,
+    })
+}
+
+/// Parse "L" or "L:C" into (line, optional_column).
+fn parse_line_col(s: &str) -> Option<(usize, Option<usize>)> {
+    if let Some((line_str, col_str)) = s.split_once(':') {
+        let line = line_str.parse::<usize>().ok()?;
+        let col = col_str.parse::<usize>().ok()?;
+        Some((line, Some(col)))
+    } else {
+        let line = s.parse::<usize>().ok()?;
+        Some((line, None))
     }
 }
 
@@ -1096,6 +1232,9 @@ fn initialize_app(args: &Args) -> AnyhowResult<SetupState> {
                 path: PathBuf::from(&rl.path),
                 line: rl.line,
                 column: rl.column,
+                end_line: None,
+                end_column: None,
+                message: None,
             },
         })
         .collect();
@@ -2100,7 +2239,11 @@ fn run_server_command(args: &Args) -> AnyhowResult<()> {
 }
 
 /// Open files in a running session without attaching
-fn run_open_files_command(session_name: Option<&str>, files: &[String]) -> AnyhowResult<()> {
+fn run_open_files_command(
+    session_name: Option<&str>,
+    files: &[String],
+    wait: bool,
+) -> AnyhowResult<()> {
     use fresh::server::daemon::is_process_running;
     use fresh::server::protocol::{
         ClientControl, ClientHello, FileRequest, ServerControl, TermSize, PROTOCOL_VERSION,
@@ -2139,6 +2282,9 @@ fn run_open_files_command(session_name: Option<&str>, files: &[String]) -> Anyho
             path: canonical_path.to_string_lossy().to_string(),
             line: loc.line,
             column: loc.column,
+            end_line: loc.end_line,
+            end_column: loc.end_column,
+            message: loc.message,
         });
     }
 
@@ -2218,16 +2364,33 @@ fn run_open_files_command(session_name: Option<&str>, files: &[String]) -> Anyho
     // Send OpenFiles command
     let msg = serde_json::to_string(&ClientControl::OpenFiles {
         files: file_requests.clone(),
+        wait,
     })?;
     conn.write_control(&msg)?;
 
     if server_was_started {
-        eprintln!(
-            "Started new session and opened {} file(s).",
-            file_requests.len()
-        );
-        // Exit code 2 signals caller to spawn a terminal with attached client
-        std::process::exit(EXIT_NEW_SESSION);
+        // We just started the server — drop this fire-and-forget connection
+        // and attach as a normal interactive client so the user can see the
+        // editor. --wait is ignored in this path; the user quits normally.
+        drop(conn);
+        return run_attach(session_name);
+    } else if wait {
+        // Existing session — block until the server sends WaitComplete
+        loop {
+            match conn.read_control() {
+                Ok(Some(line)) => {
+                    if let Ok(msg) = serde_json::from_str::<ServerControl>(&line) {
+                        match msg {
+                            ServerControl::WaitComplete => break,
+                            ServerControl::Quit { .. } => break,
+                            _ => {} // Ignore other messages
+                        }
+                    }
+                }
+                Ok(None) => break, // Server closed connection
+                Err(_) => break,   // Connection error
+            }
+        }
     } else {
         eprintln!("Opened {} file(s) in session.", file_requests.len());
     }
@@ -2236,6 +2399,10 @@ fn run_open_files_command(session_name: Option<&str>, files: &[String]) -> Anyho
 
 /// Attach to an existing session, starting a server if needed
 fn run_attach_command(args: &Args) -> AnyhowResult<()> {
+    run_attach(args.session_name.as_deref())
+}
+
+fn run_attach(session_name: Option<&str>) -> AnyhowResult<()> {
     use crossterm::terminal::enable_raw_mode;
     use fresh::server::protocol::{
         ClientControl, ClientHello, ServerControl, TermSize, PROTOCOL_VERSION,
@@ -2261,7 +2428,7 @@ fn run_attach_command(args: &Args) -> AnyhowResult<()> {
     let working_dir = std::env::current_dir()?;
 
     // Determine socket paths based on session name or working directory
-    let socket_paths = if let Some(ref name) = args.session_name {
+    let socket_paths = if let Some(name) = session_name {
         SocketPaths::for_session_name(name)?
     } else {
         SocketPaths::for_working_dir(&working_dir)?
@@ -2277,7 +2444,7 @@ fn run_attach_command(args: &Args) -> AnyhowResult<()> {
         eprintln!("Starting server...");
 
         // Spawn server in background
-        let _pid = spawn_server_detached(args.session_name.as_deref())?;
+        let _pid = spawn_server_detached(session_name)?;
         true
     } else {
         false
@@ -2501,8 +2668,8 @@ fn real_main() -> AnyhowResult<()> {
     }
 
     // Handle open-file in session: send files to running session without attaching
-    if let Some((session_name, files)) = &args.open_files_in_session {
-        return run_open_files_command(session_name.as_deref(), files);
+    if let Some((session_name, files, wait)) = &args.open_files_in_session {
+        return run_open_files_command(session_name.as_deref(), files, *wait);
     }
 
     // Handle --attach: connect to existing session
@@ -3179,6 +3346,117 @@ mod tests {
             }
             ParsedLocation::Remote(_) => panic!("Expected local, got remote"),
         }
+    }
+
+    // Tests for range selection and message parsing
+
+    #[test]
+    fn test_parse_file_location_line_range() {
+        let loc = parse_file_location("file.txt:13-16");
+        assert_eq!(loc.path, PathBuf::from("file.txt"));
+        assert_eq!(loc.line, Some(13));
+        assert_eq!(loc.column, None);
+        assert_eq!(loc.end_line, Some(16));
+        assert_eq!(loc.end_column, None);
+        assert_eq!(loc.message, None);
+    }
+
+    #[test]
+    fn test_parse_file_location_full_range() {
+        let loc = parse_file_location("file.txt:13:17-21:1");
+        assert_eq!(loc.path, PathBuf::from("file.txt"));
+        assert_eq!(loc.line, Some(13));
+        assert_eq!(loc.column, Some(17));
+        assert_eq!(loc.end_line, Some(21));
+        assert_eq!(loc.end_column, Some(1));
+        assert_eq!(loc.message, None);
+    }
+
+    #[test]
+    fn test_parse_file_location_line_range_with_message() {
+        let loc = parse_file_location("file.txt:13-16@\"hello world\"");
+        assert_eq!(loc.path, PathBuf::from("file.txt"));
+        assert_eq!(loc.line, Some(13));
+        assert_eq!(loc.end_line, Some(16));
+        assert_eq!(loc.message, Some("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_parse_file_location_point_with_message() {
+        let loc = parse_file_location("file.txt:13:5@\"msg\"");
+        assert_eq!(loc.path, PathBuf::from("file.txt"));
+        assert_eq!(loc.line, Some(13));
+        assert_eq!(loc.column, Some(5));
+        assert_eq!(loc.end_line, None);
+        assert_eq!(loc.end_column, None);
+        assert_eq!(loc.message, Some("msg".to_string()));
+    }
+
+    #[test]
+    fn test_parse_file_location_full_range_with_message() {
+        let loc = parse_file_location("file.txt:13:17-21:1@\"explanation\"");
+        assert_eq!(loc.path, PathBuf::from("file.txt"));
+        assert_eq!(loc.line, Some(13));
+        assert_eq!(loc.column, Some(17));
+        assert_eq!(loc.end_line, Some(21));
+        assert_eq!(loc.end_column, Some(1));
+        assert_eq!(loc.message, Some("explanation".to_string()));
+    }
+
+    #[test]
+    fn test_parse_file_location_message_with_escaped_quotes() {
+        let loc = parse_file_location(r#"file.txt:5@"say \"hello\"""#);
+        assert_eq!(loc.path, PathBuf::from("file.txt"));
+        assert_eq!(loc.line, Some(5));
+        assert_eq!(loc.message, Some("say \"hello\"".to_string()));
+    }
+
+    #[test]
+    fn test_parse_file_location_empty_message() {
+        let loc = parse_file_location("file.txt:5@\"\"");
+        assert_eq!(loc.path, PathBuf::from("file.txt"));
+        assert_eq!(loc.line, Some(5));
+        assert_eq!(loc.message, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_parse_file_location_line_only_with_message() {
+        let loc = parse_file_location("file.txt:10@\"check this\"");
+        assert_eq!(loc.path, PathBuf::from("file.txt"));
+        assert_eq!(loc.line, Some(10));
+        assert_eq!(loc.column, None);
+        assert_eq!(loc.end_line, None);
+        assert_eq!(loc.message, Some("check this".to_string()));
+    }
+
+    #[test]
+    fn test_parse_file_location_absolute_path_with_range() {
+        let loc = parse_file_location("/home/user/file.txt:5-10");
+        assert_eq!(loc.path, PathBuf::from("/home/user/file.txt"));
+        assert_eq!(loc.line, Some(5));
+        assert_eq!(loc.end_line, Some(10));
+    }
+
+    #[test]
+    fn test_parse_file_location_no_range_fields_for_simple() {
+        let loc = parse_file_location("foo.txt:42:10");
+        assert_eq!(loc.end_line, None);
+        assert_eq!(loc.end_column, None);
+        assert_eq!(loc.message, None);
+    }
+
+    #[test]
+    fn test_extract_message_suffix() {
+        let (rest, msg) = extract_message_suffix("file.txt:10@\"hello\"");
+        assert_eq!(rest, "file.txt:10");
+        assert_eq!(msg, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_extract_message_suffix_no_message() {
+        let (rest, msg) = extract_message_suffix("file.txt:10");
+        assert_eq!(rest, "file.txt:10");
+        assert_eq!(msg, None);
     }
 }
 

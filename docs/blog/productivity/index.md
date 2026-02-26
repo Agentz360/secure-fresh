@@ -49,7 +49,7 @@ Open a terminal split inside the editor. Supports scrollback history, keyboard c
 - **Text Encoding** — UTF-16, Latin-1, GBK, Shift-JIS, EUC-KR, and more
 - **Diagnostics Panel** — LSP errors/warnings in a dedicated split view
 - **Side-by-Side Diff** — word-level diff with synchronized scrolling
-- **Rainbow Brackets** — matching brackets highlighted by nesting depth
+- **Bracket Matching** — matching brackets highlighted automatically
 - **Vi Mode** — modal editing with operators, motions, text objects
 - **i18n** — 11 languages with plugin translation support
 
