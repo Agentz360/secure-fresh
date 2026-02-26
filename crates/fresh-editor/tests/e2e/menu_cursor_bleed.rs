@@ -1,12 +1,13 @@
-//! E2E test for #1114: cursor position bleeds through dropdown menus.
+//! E2E test for #1114: cursor styling bleeds through dropdown menus.
 //!
 //! When the user clicks on text in the document (positioning the cursor) and
-//! then opens a dropdown menu, the cursor (hardware or styled) should not be
-//! visible through the menu overlay. The dropdown menu should fully occlude
-//! the editor cursor.
+//! then opens a dropdown menu, the cursor's REVERSED cell styling should not
+//! be visible through the menu overlay. The dropdown menu should fully occlude
+//! the editor cursor styling.
 
 use crate::common::harness::{layout, EditorTestHarness};
 use crossterm::event::{KeyCode, KeyModifiers};
+use ratatui::style::Modifier;
 
 /// Test that the cursor cell styling does not bleed through an open dropdown menu.
 ///
@@ -14,30 +15,32 @@ use crossterm::event::{KeyCode, KeyModifiers};
 /// 1. Type enough text so the cursor is at a position that will be covered by a menu dropdown
 /// 2. Click on the text to ensure cursor is placed there
 /// 3. Open a dropdown menu (File menu) that covers the cursor position
-/// 4. Verify: the cells in the dropdown area should contain menu content, not
-///    cursor-styled editor content. The hardware cursor should not be positioned
-///    within the dropdown's bounds.
+/// 4. Verify: no cell within the dropdown area has REVERSED modifier (cursor styling)
 #[test]
 fn test_cursor_does_not_bleed_through_dropdown_menu() {
-    // Use a tall harness so the File menu dropdown fits without clipping
     let mut harness = EditorTestHarness::new(80, 30).unwrap();
 
     // Type several lines of text so there's content under where the File menu will drop down.
-    // The File menu dropdown starts at approximately row 1 (below menu bar) and covers rows 1..~12.
-    // We need cursor to be on one of those rows.
     harness.type_text("Line one").unwrap();
-    harness.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
     harness.type_text("Line two").unwrap();
-    harness.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
     harness.type_text("Line three").unwrap();
-    harness.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
     harness.type_text("Line four").unwrap();
-    harness.send_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    harness
+        .send_key(KeyCode::Enter, KeyModifiers::NONE)
+        .unwrap();
     harness.type_text("Line five").unwrap();
 
     // Click on "Line two" to position the cursor there.
-    // Row 0 = menu bar, row 1 = tab bar, row 2 = content line 1, row 3 = content line 2
-    // The line number gutter is about 7 chars wide ("   1 │ "), so col 10 is in the text.
+    // Row 0 = menu bar, row 1 = tab bar, row 2+ = content
     let cursor_row = layout::CONTENT_START_ROW as u16 + 1; // line 2 in content area
     let cursor_col = 10;
     harness.mouse_click(cursor_col, cursor_row).unwrap();
@@ -50,11 +53,13 @@ fn test_cursor_does_not_bleed_through_dropdown_menu() {
         status
     );
 
-    // Record the cursor's screen position before opening the menu
-    let (cursor_x, cursor_y) = harness.screen_cursor_position();
-    eprintln!(
-        "Cursor screen position before menu: ({}, {})",
-        cursor_x, cursor_y
+    // Verify the cursor cell has REVERSED modifier before opening the menu
+    let cursor_style_before = harness.get_cell_style(cursor_col, cursor_row);
+    assert!(
+        cursor_style_before
+            .map(|s| s.add_modifier.contains(Modifier::REVERSED))
+            .unwrap_or(false),
+        "Cursor cell should have REVERSED modifier before menu opens"
     );
 
     // Now open the File menu (Alt+F)
@@ -68,67 +73,63 @@ fn test_cursor_does_not_bleed_through_dropdown_menu() {
     harness.assert_screen_contains("Save");
 
     let screen = harness.screen_to_string();
-    eprintln!("Screen with menu open:\n{}", screen);
 
-    // Find the menu dropdown bounds by locating menu items on screen
-    let menu_rows: Vec<u16> = (0..harness.terminal_height() as u16)
-        .filter(|&row| {
-            let row_text = harness.get_row_text(row);
-            // Menu items have specific content
-            row_text.contains("New File")
-                || row_text.contains("Open")
-                || row_text.contains("Save")
-                || row_text.contains("Close")
-                || row_text.contains("Quit")
-        })
-        .collect();
+    // Find the menu dropdown bounds by locating box-drawing border chars
+    let mut menu_top = None;
+    let mut menu_bottom = None;
+    let mut menu_left = None;
+    let mut menu_right = None;
+    for row in 0..harness.terminal_height() as u16 {
+        let row_text = harness.get_row_text(row);
+        let chars: Vec<char> = row_text.chars().collect();
+        if let Some(left) = chars.iter().position(|&c| c == '┌') {
+            if let Some(right) = chars.iter().rposition(|&c| c == '┐') {
+                menu_top = Some(row);
+                menu_left = Some(left as u16);
+                menu_right = Some(right as u16);
+            }
+        }
+        if chars.iter().any(|&c| c == '└') {
+            menu_bottom = Some(row);
+        }
+    }
+
+    let menu_top = menu_top.expect("no menu top border found");
+    let menu_bottom = menu_bottom.expect("no menu bottom border found");
+    let menu_left = menu_left.unwrap();
+    let menu_right = menu_right.unwrap();
+    eprintln!(
+        "Menu dropdown: rows {}..{}, cols {}..{}",
+        menu_top, menu_bottom, menu_left, menu_right
+    );
+
+    // The cursor was at (cursor_col, cursor_row). Verify it's within the dropdown area.
+    assert!(
+        cursor_row >= menu_top && cursor_row <= menu_bottom,
+        "Cursor row {} should be within menu rows {}..{}",
+        cursor_row,
+        menu_top,
+        menu_bottom
+    );
+
+    // Scan all cells within the dropdown area for REVERSED modifier.
+    // No cell should have REVERSED — that would mean the cursor styling leaked through.
+    let mut reversed_cells = Vec::new();
+    for row in menu_top..=menu_bottom {
+        for col in menu_left..=menu_right {
+            if let Some(style) = harness.get_cell_style(col, row) {
+                if style.add_modifier.contains(Modifier::REVERSED) {
+                    reversed_cells.push((col, row));
+                }
+            }
+        }
+    }
 
     assert!(
-        !menu_rows.is_empty(),
-        "Should find menu item rows. Screen:\n{}",
+        reversed_cells.is_empty(),
+        "Bug #1114: Cursor REVERSED styling bleeds through the dropdown menu at {:?}. \
+         The dropdown should fully overwrite cursor styling. Screen:\n{}",
+        reversed_cells,
         screen
     );
-    let menu_top = *menu_rows.first().unwrap();
-    let menu_bottom = *menu_rows.last().unwrap();
-    eprintln!("Menu dropdown spans rows {} to {}", menu_top, menu_bottom);
-
-    // The cursor was at (cursor_x, cursor_y). Check if the cursor's row
-    // is within the dropdown area.
-    if cursor_y >= menu_top && cursor_y <= menu_bottom {
-        // The cursor's original position IS within the menu dropdown area.
-        // The hardware cursor should NOT be positioned there when the menu is open.
-        let (new_cursor_x, new_cursor_y) = harness.screen_cursor_position();
-        eprintln!(
-            "Cursor screen position with menu open: ({}, {})",
-            new_cursor_x, new_cursor_y
-        );
-
-        // The hardware cursor should NOT be within the menu dropdown area
-        let cursor_in_menu = new_cursor_y >= menu_top && new_cursor_y <= menu_bottom;
-        assert!(
-            !cursor_in_menu,
-            "Bug #1114: Hardware cursor at ({}, {}) bleeds through the dropdown menu \
-             (menu spans rows {}..{}). The cursor should be hidden when a menu is open. Screen:\n{}",
-            new_cursor_x, new_cursor_y, menu_top, menu_bottom, screen
-        );
-    }
-
-    // Additionally, verify that cells at the original cursor position now contain
-    // menu content (not cursor-styled editor text). The row at cursor_y should
-    // contain menu item text if the dropdown covers it.
-    if cursor_y >= menu_top && cursor_y <= menu_bottom {
-        let row_text = harness.get_row_text(cursor_y);
-        // The row should contain menu content, not just editor text
-        let has_menu_content = row_text.contains("New")
-            || row_text.contains("Open")
-            || row_text.contains("Save")
-            || row_text.contains("Close")
-            || row_text.contains("Quit")
-            || row_text.contains("Revert");
-        assert!(
-            has_menu_content,
-            "Row {} (where cursor was) should contain menu content, but got: '{}'",
-            cursor_y, row_text
-        );
-    }
 }

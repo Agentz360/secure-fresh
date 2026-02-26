@@ -45,16 +45,18 @@ fn test_active_tab_color_does_not_bleed_through_menu() {
 
     // Find the dropdown's column range on row 1 by locating box-drawing chars
     let row_chars: Vec<char> = harness.get_row_text(tab_row).chars().collect();
-    let menu_left = row_chars.iter().position(|&c| c == '┌').expect("no ┌ on tab row") as u16;
-    let menu_right = row_chars.iter().rposition(|&c| c == '┐').expect("no ┐ on tab row") as u16;
+    let menu_left = row_chars
+        .iter()
+        .position(|&c| c == '┌')
+        .expect("no ┌ on tab row") as u16;
+    let menu_right = row_chars
+        .iter()
+        .rposition(|&c| c == '┐')
+        .expect("no ┐ on tab row") as u16;
 
     // Collect styles of ALL border cells on the top border (row 1)
     let border_styles: Vec<_> = (menu_left..=menu_right)
-        .filter_map(|col| {
-            harness
-                .get_cell_style(col, tab_row)
-                .map(|s| (col, s))
-        })
+        .filter_map(|col| harness.get_cell_style(col, tab_row).map(|s| (col, s)))
         .collect();
 
     // All top border cells should have UNIFORM styling. If some cells have
@@ -90,13 +92,7 @@ fn test_active_tab_color_does_not_bleed_through_menu() {
              The active tab's BOLD modifier leaks through because the dropdown \
              rendering only patches fg/bg without clearing prior modifiers.\n\
              Screen:\n{}",
-            tab_row,
-            ref_col,
-            ref_style.fg,
-            ref_style.bg,
-            ref_style.add_modifier,
-            detail,
-            screen
+            tab_row, ref_col, ref_style.fg, ref_style.bg, ref_style.add_modifier, detail, screen
         );
     }
 }
