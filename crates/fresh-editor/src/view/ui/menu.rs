@@ -942,7 +942,7 @@ impl MenuRenderer {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.menu_border_fg))
-            .style(Style::default().bg(theme.menu_dropdown_bg));
+            .style(Style::reset().bg(theme.menu_dropdown_bg));
 
         let paragraph = Paragraph::new(lines).block(block);
         frame.render_widget(paragraph, dropdown_area);

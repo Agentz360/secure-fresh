@@ -441,6 +441,102 @@ fn default_theme_name() -> ThemeName {
     ThemeName("high-contrast".to_string())
 }
 
+/// Resolved whitespace indicator visibility for a buffer.
+///
+/// These are the final resolved flags after applying master toggle,
+/// global config, and per-language overrides. Used directly by the renderer.
+#[derive(Debug, Clone, Copy)]
+pub struct WhitespaceVisibility {
+    pub spaces_leading: bool,
+    pub spaces_inner: bool,
+    pub spaces_trailing: bool,
+    pub tabs_leading: bool,
+    pub tabs_inner: bool,
+    pub tabs_trailing: bool,
+}
+
+impl Default for WhitespaceVisibility {
+    fn default() -> Self {
+        // Match EditorConfig defaults: tabs all on, spaces all off
+        Self {
+            spaces_leading: false,
+            spaces_inner: false,
+            spaces_trailing: false,
+            tabs_leading: true,
+            tabs_inner: true,
+            tabs_trailing: true,
+        }
+    }
+}
+
+impl WhitespaceVisibility {
+    /// Resolve from EditorConfig flat fields (applying master toggle)
+    pub fn from_editor_config(editor: &EditorConfig) -> Self {
+        if !editor.whitespace_show {
+            return Self {
+                spaces_leading: false,
+                spaces_inner: false,
+                spaces_trailing: false,
+                tabs_leading: false,
+                tabs_inner: false,
+                tabs_trailing: false,
+            };
+        }
+        Self {
+            spaces_leading: editor.whitespace_spaces_leading,
+            spaces_inner: editor.whitespace_spaces_inner,
+            spaces_trailing: editor.whitespace_spaces_trailing,
+            tabs_leading: editor.whitespace_tabs_leading,
+            tabs_inner: editor.whitespace_tabs_inner,
+            tabs_trailing: editor.whitespace_tabs_trailing,
+        }
+    }
+
+    /// Apply a language-level override for tab visibility.
+    /// When the language sets `show_whitespace_tabs: false`, all tab positions are disabled.
+    pub fn with_language_tab_override(mut self, show_whitespace_tabs: bool) -> Self {
+        if !show_whitespace_tabs {
+            self.tabs_leading = false;
+            self.tabs_inner = false;
+            self.tabs_trailing = false;
+        }
+        self
+    }
+
+    /// Returns true if any space indicator is enabled
+    pub fn any_spaces(&self) -> bool {
+        self.spaces_leading || self.spaces_inner || self.spaces_trailing
+    }
+
+    /// Returns true if any tab indicator is enabled
+    pub fn any_tabs(&self) -> bool {
+        self.tabs_leading || self.tabs_inner || self.tabs_trailing
+    }
+
+    /// Returns true if any indicator (space or tab) is enabled
+    pub fn any_visible(&self) -> bool {
+        self.any_spaces() || self.any_tabs()
+    }
+
+    /// Toggle all whitespace indicators on/off (master switch).
+    /// When turning off, all positions are disabled.
+    /// When turning on, restores to default visibility (tabs all on, spaces all off).
+    pub fn toggle_all(&mut self) {
+        if self.any_visible() {
+            *self = Self {
+                spaces_leading: false,
+                spaces_inner: false,
+                spaces_trailing: false,
+                tabs_leading: false,
+                tabs_inner: false,
+                tabs_trailing: false,
+            };
+        } else {
+            *self = Self::default();
+        }
+    }
+}
+
 /// Editor behavior configuration
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct EditorConfig {
@@ -518,6 +614,57 @@ pub struct EditorConfig {
     #[serde(default)]
     #[schemars(extend("x-section" = "Display"))]
     pub rulers: Vec<usize>,
+
+    // ===== Whitespace =====
+    /// Master toggle for whitespace indicator visibility.
+    /// When disabled, no whitespace indicators (·, →) are shown regardless
+    /// of the per-position settings below.
+    /// Default: true
+    #[serde(default = "default_true")]
+    #[schemars(extend("x-section" = "Whitespace"))]
+    pub whitespace_show: bool,
+
+    /// Show space indicators (·) for leading whitespace (indentation).
+    /// Leading whitespace is everything before the first non-space character on a line.
+    /// Default: false
+    #[serde(default = "default_false")]
+    #[schemars(extend("x-section" = "Whitespace"))]
+    pub whitespace_spaces_leading: bool,
+
+    /// Show space indicators (·) for inner whitespace (between words/tokens).
+    /// Inner whitespace is spaces between the first and last non-space characters.
+    /// Default: false
+    #[serde(default = "default_false")]
+    #[schemars(extend("x-section" = "Whitespace"))]
+    pub whitespace_spaces_inner: bool,
+
+    /// Show space indicators (·) for trailing whitespace.
+    /// Trailing whitespace is everything after the last non-space character on a line.
+    /// Default: false
+    #[serde(default = "default_false")]
+    #[schemars(extend("x-section" = "Whitespace"))]
+    pub whitespace_spaces_trailing: bool,
+
+    /// Show tab indicators (→) for leading tabs (indentation).
+    /// Can be overridden per-language via `show_whitespace_tabs` in language config.
+    /// Default: true
+    #[serde(default = "default_true")]
+    #[schemars(extend("x-section" = "Whitespace"))]
+    pub whitespace_tabs_leading: bool,
+
+    /// Show tab indicators (→) for inner tabs (between words/tokens).
+    /// Can be overridden per-language via `show_whitespace_tabs` in language config.
+    /// Default: true
+    #[serde(default = "default_true")]
+    #[schemars(extend("x-section" = "Whitespace"))]
+    pub whitespace_tabs_inner: bool,
+
+    /// Show tab indicators (→) for trailing tabs.
+    /// Can be overridden per-language via `show_whitespace_tabs` in language config.
+    /// Default: true
+    #[serde(default = "default_true")]
+    #[schemars(extend("x-section" = "Whitespace"))]
+    pub whitespace_tabs_trailing: bool,
 
     // ===== Editing =====
     /// Number of spaces per tab character
@@ -889,6 +1036,13 @@ impl Default for EditorConfig {
             show_horizontal_scrollbar: false,
             use_terminal_bg: false,
             rulers: Vec::new(),
+            whitespace_show: true,
+            whitespace_spaces_leading: false,
+            whitespace_spaces_inner: false,
+            whitespace_spaces_trailing: false,
+            whitespace_tabs_leading: true,
+            whitespace_tabs_inner: true,
+            whitespace_tabs_trailing: true,
         }
     }
 }
@@ -1221,8 +1375,8 @@ pub struct BufferConfig {
     /// Whether to auto-indent new lines
     pub auto_indent: bool,
 
-    /// Whether to show whitespace tab indicators (→)
-    pub show_whitespace_tabs: bool,
+    /// Resolved whitespace indicator visibility
+    pub whitespace: WhitespaceVisibility,
 
     /// Formatter command for this buffer
     pub formatter: Option<FormatterConfig>,
@@ -1253,11 +1407,12 @@ impl BufferConfig {
         let editor = &global_config.editor;
 
         // Start with global editor settings
+        let mut whitespace = WhitespaceVisibility::from_editor_config(editor);
         let mut config = BufferConfig {
             tab_size: editor.tab_size,
             use_tabs: false, // Global default is spaces
             auto_indent: editor.auto_indent,
-            show_whitespace_tabs: true, // Global default
+            whitespace,
             formatter: None,
             format_on_save: false,
             on_save: Vec::new(),
@@ -1279,8 +1434,10 @@ impl BufferConfig {
                 // Auto indent: language override
                 config.auto_indent = lang_config.auto_indent;
 
-                // Show whitespace tabs: language override
-                config.show_whitespace_tabs = lang_config.show_whitespace_tabs;
+                // Whitespace tabs: language override can disable tab indicators
+                whitespace =
+                    whitespace.with_language_tab_override(lang_config.show_whitespace_tabs);
+                config.whitespace = whitespace;
 
                 // Formatter: from language config
                 config.formatter = lang_config.formatter.clone();
@@ -3546,7 +3703,7 @@ mod tests {
         assert_eq!(buffer_config.tab_size, config.editor.tab_size);
         assert_eq!(buffer_config.auto_indent, config.editor.auto_indent);
         assert!(!buffer_config.use_tabs); // Default is spaces
-        assert!(buffer_config.show_whitespace_tabs);
+        assert!(buffer_config.whitespace.any_tabs()); // Tabs visible by default
         assert!(buffer_config.formatter.is_none());
         assert!(!buffer_config.format_on_save);
     }
@@ -3584,7 +3741,7 @@ mod tests {
 
         assert_eq!(buffer_config.tab_size, 8);
         assert!(buffer_config.use_tabs);
-        assert!(!buffer_config.show_whitespace_tabs);
+        assert!(!buffer_config.whitespace.any_tabs()); // Go disables tab indicators
         assert!(buffer_config.format_on_save);
         assert!(buffer_config.formatter.is_some());
         assert_eq!(buffer_config.formatter.as_ref().unwrap().command, "gofmt");

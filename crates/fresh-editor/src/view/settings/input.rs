@@ -35,6 +35,11 @@ impl InputHandler for SettingsState {
             return self.handle_confirm_dialog_input(event, ctx);
         }
 
+        // Reset confirmation dialog takes priority
+        if self.showing_reset_dialog {
+            return self.handle_reset_dialog_input(event);
+        }
+
         // Help overlay takes priority
         if self.showing_help {
             return self.handle_help_input(event, ctx);
@@ -445,6 +450,49 @@ impl SettingsState {
         }
     }
 
+    /// Handle input when reset confirmation dialog is showing
+    fn handle_reset_dialog_input(&mut self, event: &KeyEvent) -> InputResult {
+        match event.code {
+            KeyCode::Left | KeyCode::BackTab => {
+                if self.reset_dialog_selection > 0 {
+                    self.reset_dialog_selection -= 1;
+                }
+                InputResult::Consumed
+            }
+            KeyCode::Right | KeyCode::Tab => {
+                if self.reset_dialog_selection < 1 {
+                    self.reset_dialog_selection += 1;
+                }
+                InputResult::Consumed
+            }
+            KeyCode::Enter => {
+                match self.reset_dialog_selection {
+                    0 => {
+                        // Reset all changes
+                        self.discard_changes();
+                        self.showing_reset_dialog = false;
+                    }
+                    1 => {
+                        // Cancel - back to settings
+                        self.showing_reset_dialog = false;
+                    }
+                    _ => {}
+                }
+                InputResult::Consumed
+            }
+            KeyCode::Esc => {
+                self.showing_reset_dialog = false;
+                InputResult::Consumed
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                self.discard_changes();
+                self.showing_reset_dialog = false;
+                InputResult::Consumed
+            }
+            _ => InputResult::Consumed, // Modal: consume all
+        }
+    }
+
     /// Handle input when help overlay is showing
     fn handle_help_input(&mut self, _event: &KeyEvent, _ctx: &mut InputContext) -> InputResult {
         // Any key dismisses help
@@ -498,6 +546,10 @@ impl SettingsState {
                 self.toggle_focus();
                 InputResult::Consumed
             }
+            KeyCode::BackTab => {
+                self.toggle_focus_backward();
+                InputResult::Consumed
+            }
             KeyCode::Char('/') => {
                 self.start_search();
                 InputResult::Consumed
@@ -549,8 +601,19 @@ impl SettingsState {
                 self.toggle_focus();
                 InputResult::Consumed
             }
+            KeyCode::BackTab => {
+                self.toggle_focus_backward();
+                InputResult::Consumed
+            }
             KeyCode::Left => {
-                self.handle_control_decrement();
+                // Left on number controls: decrement value
+                // Left on other controls: navigate back to categories
+                if self.is_number_control() {
+                    self.handle_control_decrement();
+                } else {
+                    self.update_control_focus(false);
+                    self.focus.set(FocusPanel::Categories);
+                }
                 InputResult::Consumed
             }
             KeyCode::Right => {
@@ -612,7 +675,7 @@ impl SettingsState {
             KeyCode::Enter => {
                 match self.footer_button_index {
                     0 => self.cycle_target_layer(), // Layer button
-                    1 => self.reset_current_to_default(),
+                    1 => self.request_reset(),
                     2 => ctx.defer(DeferredAction::CloseSettings { save: true }),
                     3 => self.request_close(ctx),
                     4 => ctx.defer(DeferredAction::OpenConfigFile {
@@ -860,6 +923,14 @@ impl SettingsState {
         }
     }
 
+    /// Request to reset all changes (shows confirm dialog if there are changes)
+    fn request_reset(&mut self) {
+        if self.has_changes() {
+            self.showing_reset_dialog = true;
+            self.reset_dialog_selection = 0;
+        }
+    }
+
     /// Request to close settings (shows confirm dialog if there are changes)
     fn request_close(&mut self, ctx: &mut InputContext) {
         if self.has_changes() {
@@ -943,28 +1014,12 @@ impl SettingsState {
                     }
                     self.on_value_changed();
                 }
-                SettingControl::Dropdown(ref mut state) => {
-                    state.select_next();
-                    self.on_value_changed();
-                }
-                SettingControl::Map(ref mut state) => {
-                    // Navigate within map entries
-                    let entry_count = state.entries.len();
-                    if let Some(idx) = state.focused_entry {
-                        if idx + 1 < entry_count {
-                            state.focused_entry = Some(idx + 1);
-                        }
-                    }
-                }
-                SettingControl::ObjectArray(ref mut state) => {
-                    state.focus_next();
-                }
                 _ => {}
             }
         }
     }
 
-    /// Handle control decrement (Left arrow on numbers/dropdowns)
+    /// Handle control decrement (Left arrow on numbers)
     fn handle_control_decrement(&mut self) {
         if let Some(item) = self.current_item_mut() {
             match &mut item.control {
@@ -976,20 +1031,6 @@ impl SettingsState {
                         state.value = state.value.max(min);
                     }
                     self.on_value_changed();
-                }
-                SettingControl::Dropdown(ref mut state) => {
-                    state.select_prev();
-                    self.on_value_changed();
-                }
-                SettingControl::Map(ref mut state) => {
-                    if let Some(idx) = state.focused_entry {
-                        if idx > 0 {
-                            state.focused_entry = Some(idx - 1);
-                        }
-                    }
-                }
-                SettingControl::ObjectArray(ref mut state) => {
-                    state.focus_prev();
                 }
                 _ => {}
             }
@@ -1057,12 +1098,16 @@ mod tests {
         state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
         assert_eq!(state.focus_panel(), FocusPanel::Settings);
 
-        // Tab -> Footer (defaults to Save button, index 2)
+        // Tab -> Footer (defaults to Layer button, index 0)
         state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
         assert_eq!(state.focus_panel(), FocusPanel::Footer);
-        assert_eq!(state.footer_button_index, 2);
+        assert_eq!(state.footer_button_index, 0);
 
-        // Tab through footer buttons: 2 -> 3 -> 4 -> wrap to Categories
+        // Tab through footer buttons: 0 -> 1 -> 2 -> 3 -> 4 -> wrap to Categories
+        state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
+        assert_eq!(state.footer_button_index, 1);
+        state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
+        assert_eq!(state.footer_button_index, 2);
         state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
         assert_eq!(state.footer_button_index, 3);
         state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
@@ -1070,17 +1115,17 @@ mod tests {
         state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
         assert_eq!(state.focus_panel(), FocusPanel::Categories);
 
-        // SECOND LOOP: Tab again should still land on Save button when entering Footer
+        // SECOND LOOP: Tab again should still land on Layer button when entering Footer
         // Tab -> Settings
         state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
         assert_eq!(state.focus_panel(), FocusPanel::Settings);
 
-        // Tab -> Footer (should reset to Save button, not stay on Edit)
+        // Tab -> Footer (should reset to Layer button, not stay on Edit)
         state.handle_key_event(&key(KeyCode::Tab), &mut ctx);
         assert_eq!(state.focus_panel(), FocusPanel::Footer);
         assert_eq!(
-            state.footer_button_index, 2,
-            "Footer should reset to Save button (index 2) on second loop"
+            state.footer_button_index, 0,
+            "Footer should reset to Layer button (index 0) on second loop"
         );
     }
 

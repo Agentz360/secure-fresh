@@ -182,6 +182,7 @@ pub fn render_settings(
 
     // Determine the topmost dialog layer and apply dimming to layers below
     let has_confirm = state.showing_confirm_dialog;
+    let has_reset = state.showing_reset_dialog;
     let has_entry = state.showing_entry_dialog();
     let has_help = state.showing_help;
 
@@ -191,6 +192,14 @@ pub fn render_settings(
             crate::view::dimming::apply_dimming(frame, modal_area);
         }
         render_confirm_dialog(frame, modal_area, state, theme);
+    }
+
+    // Render reset confirmation dialog if showing
+    if has_reset {
+        if !has_confirm && !has_entry && !has_help {
+            crate::view::dimming::apply_dimming(frame, modal_area);
+        }
+        render_reset_dialog(frame, modal_area, state, theme);
     }
 
     // Render entry detail dialog if showing
@@ -542,6 +551,11 @@ fn render_settings_panel(
     // Calculate available height for items
     let available_height = area.height.saturating_sub(header_height as u16);
 
+    // Update layout width so description heights are computed correctly
+    let focus_indicator_width: u16 = 3;
+    state.layout_width = area.width.saturating_sub(focus_indicator_width);
+    state.update_layout_widths();
+
     // Update scroll panel with current viewport and content
     let page = state.pages.get(state.selected_category).unwrap();
     state.scroll_panel.set_viewport(available_height);
@@ -756,12 +770,8 @@ fn render_setting_item_pure(
     // Examples: ">● ", ">  ", " ● ", "   "
     let focus_indicator_width: u16 = 3;
 
-    // Calculate content height - expanded when focused/hovered
-    let content_height = if is_focused_or_hovered {
-        item.content_height_expanded(area.width.saturating_sub(focus_indicator_width))
-    } else {
-        item.content_height()
-    };
+    // Calculate content height (descriptions always fully expanded)
+    let content_height = item.content_height();
     // Adjust for skipped rows
     let visible_content_height = content_height.saturating_sub(skip_top);
 
@@ -773,7 +783,18 @@ fn render_setting_item_pure(
         } else {
             Style::default().bg(theme.menu_hover_bg)
         };
-        for row in 0..visible_content_height.min(area.height) {
+        // For multi-row controls (Map, ObjectArray, TextList) only highlight
+        // the label row — per-entry highlighting is handled by the control itself
+        let is_multi_row_control = matches!(
+            item.control,
+            SettingControl::Map(_) | SettingControl::ObjectArray(_) | SettingControl::TextList(_)
+        );
+        let highlight_rows = if is_multi_row_control && skip_top == 0 {
+            1 // Only the label/name row
+        } else {
+            visible_content_height.min(area.height)
+        };
+        for row in 0..highlight_rows {
             let row_area = Rect::new(area.x, area.y + row, area.width, 1);
             frame.render_widget(Paragraph::new("").style(bg_style), row_area);
         }
@@ -842,40 +863,28 @@ fn render_setting_item_pure(
             let desc_style = Style::default().fg(theme.line_number_fg);
             let max_width = desc_width.saturating_sub(2) as usize;
 
-            if is_focused_or_hovered && description.len() > max_width {
-                // Wrap description to multiple lines when focused/hovered
-                let wrapped_lines = wrap_text(description, max_width);
-                let available_rows = area.height.saturating_sub(desc_start_row) as usize;
+            // Always wrap description to show full text
+            let wrapped_lines = wrap_text(description, max_width);
+            let available_rows = area.height.saturating_sub(desc_start_row) as usize;
 
-                for (i, line) in wrapped_lines.iter().take(available_rows).enumerate() {
-                    frame.render_widget(
-                        Paragraph::new(line.as_str()).style(desc_style),
-                        Rect::new(desc_x, desc_y + i as u16, desc_width, 1),
-                    );
+            // Append layer indicator to last wrapped line
+            let mut lines = wrapped_lines;
+            if let Some(layer) = layer_label {
+                if let Some(last) = lines.last_mut() {
+                    last.push_str(&format!(" ({})", layer));
                 }
-            } else {
-                // Single line with optional layer indicator
-                let mut display_desc = if description.len() > max_width.saturating_sub(12) {
-                    format!(
-                        "{}...",
-                        &description[..max_width.saturating_sub(15).max(10)]
-                    )
-                } else {
-                    description.clone()
-                };
-                // Add layer indicator if not default
-                if let Some(layer) = layer_label {
-                    display_desc.push_str(&format!(" ({})", layer));
-                }
+            }
+
+            for (i, line) in lines.iter().take(available_rows).enumerate() {
                 frame.render_widget(
-                    Paragraph::new(display_desc).style(desc_style),
-                    Rect::new(desc_x, desc_y, desc_width, 1),
+                    Paragraph::new(line.as_str()).style(desc_style),
+                    Rect::new(desc_x, desc_y + i as u16, desc_width, 1),
                 );
             }
         }
     } else if let Some(layer) = layer_label {
         // No description, but show layer indicator for non-default values
-        if desc_start_row < area.height && is_focused_or_hovered {
+        if desc_start_row < area.height {
             let desc_x = area.x + focus_indicator_width;
             let desc_y = area.y + desc_start_row;
             let desc_width = area.width.saturating_sub(focus_indicator_width);
@@ -2612,6 +2621,122 @@ fn render_confirm_dialog(
     );
 }
 
+/// Render the reset confirmation dialog
+fn render_reset_dialog(frame: &mut Frame, parent_area: Rect, state: &SettingsState, theme: &Theme) {
+    let changes = state.get_change_descriptions();
+    let dialog_width = 50.min(parent_area.width.saturating_sub(4));
+    // Base height: 2 borders + 2 prompt lines + 1 separator + 1 buttons + 1 help = 7
+    // Plus one line per change
+    let dialog_height = (7 + changes.len() as u16)
+        .min(20)
+        .min(parent_area.height.saturating_sub(4));
+
+    // Center the dialog
+    let dialog_x = parent_area.x + (parent_area.width.saturating_sub(dialog_width)) / 2;
+    let dialog_y = parent_area.y + (parent_area.height.saturating_sub(dialog_height)) / 2;
+    let dialog_area = Rect::new(dialog_x, dialog_y, dialog_width, dialog_height);
+
+    // Clear and draw border
+    frame.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .title(" Reset All Changes ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.diagnostic_warning_fg))
+        .style(Style::default().bg(theme.popup_bg));
+    frame.render_widget(block, dialog_area);
+
+    // Inner area
+    let inner = Rect::new(
+        dialog_area.x + 2,
+        dialog_area.y + 1,
+        dialog_area.width.saturating_sub(4),
+        dialog_area.height.saturating_sub(2),
+    );
+
+    let mut y = inner.y;
+
+    // Prompt text
+    let prompt_style = Style::default().fg(theme.popup_text_fg);
+    frame.render_widget(
+        Paragraph::new("Discard all pending changes?").style(prompt_style),
+        Rect::new(inner.x, y, inner.width, 1),
+    );
+    y += 2;
+
+    // List changes
+    let change_style = Style::default().fg(theme.popup_text_fg);
+    for change in changes
+        .iter()
+        .take((dialog_height as usize).saturating_sub(7))
+    {
+        let truncated = if change.len() > inner.width as usize - 2 {
+            format!("• {}...", &change[..inner.width as usize - 5])
+        } else {
+            format!("• {}", change)
+        };
+        frame.render_widget(
+            Paragraph::new(truncated).style(change_style),
+            Rect::new(inner.x, y, inner.width, 1),
+        );
+        y += 1;
+    }
+
+    // Skip to button row
+    let button_y = dialog_area.y + dialog_area.height - 3;
+
+    // Draw separator
+    let sep_line: String = "─".repeat(inner.width as usize);
+    frame.render_widget(
+        Paragraph::new(sep_line).style(Style::default().fg(theme.split_separator_fg)),
+        Rect::new(inner.x, button_y - 1, inner.width, 1),
+    );
+
+    // Render the two options: Reset, Cancel
+    let options = ["Reset", "Cancel"];
+    let total_width: u16 = options.iter().map(|o| o.len() as u16 + 4).sum::<u16>() + 4;
+    let mut x = inner.x + (inner.width.saturating_sub(total_width)) / 2;
+
+    for (idx, label) in options.iter().enumerate() {
+        let is_selected = idx == state.reset_dialog_selection;
+        let is_hovered = state.reset_dialog_hover == Some(idx);
+        let button_width = label.len() as u16 + 4;
+
+        let style = if is_selected {
+            Style::default()
+                .fg(theme.menu_highlight_fg)
+                .bg(theme.menu_highlight_bg)
+                .add_modifier(ratatui::style::Modifier::BOLD)
+        } else if is_hovered {
+            Style::default()
+                .fg(theme.menu_hover_fg)
+                .bg(theme.menu_hover_bg)
+        } else {
+            Style::default().fg(theme.popup_text_fg)
+        };
+
+        let text = if is_selected {
+            format!(">[ {} ]", label)
+        } else {
+            format!(" [ {} ]", label)
+        };
+        frame.render_widget(
+            Paragraph::new(text).style(style),
+            Rect::new(x, button_y, button_width + 1, 1),
+        );
+
+        x += button_width + 3;
+    }
+
+    // Help text
+    let help = "←/→/Tab: Select   Enter: Confirm   Esc: Cancel";
+    let help_style = Style::default().fg(theme.line_number_fg);
+    frame.render_widget(
+        Paragraph::new(help).style(help_style),
+        Rect::new(inner.x, button_y + 1, inner.width, 1),
+    );
+}
+
 /// Render the entry detail dialog for editing Language/LSP/Keybinding entries
 ///
 /// Now uses the same SettingItem/SettingControl infrastructure as the main settings UI,
@@ -2841,6 +2966,17 @@ fn render_entry_dialog(
         let is_selected = dialog.focus_on_buttons && dialog.focused_button == idx;
         let is_hovered = dialog.hover_button == Some(idx);
         let is_delete = !dialog.is_new && !dialog.no_delete && idx == 1;
+        // Render ">" focus indicator before selected button
+        if is_selected {
+            let indicator_style = Style::default()
+                .fg(theme.settings_selected_fg)
+                .add_modifier(Modifier::BOLD);
+            frame.render_widget(
+                Paragraph::new(">").style(indicator_style),
+                Rect::new(x, button_y, 1, 1),
+            );
+            x += 2;
+        }
         let style = if is_selected {
             Style::default()
                 .fg(theme.menu_highlight_fg)

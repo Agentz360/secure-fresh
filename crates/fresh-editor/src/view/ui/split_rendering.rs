@@ -3984,14 +3984,10 @@ impl SplitRenderer {
     ) -> BTreeMap<usize, FoldIndicator> {
         let mut indicators = BTreeMap::new();
 
-        if state.folding_ranges.is_empty() && folds.is_empty() {
-            return indicators;
-        }
-
         let viewport_start_line = state.buffer.get_line_number(viewport_start);
         let viewport_end_line = state.buffer.get_line_number(viewport_end);
 
-        // Collapsed headers from marker-based folds
+        // Collapsed headers from marker-based folds (always shown regardless of source)
         let collapsed_headers = folds.collapsed_headers(&state.buffer, &state.marker_list);
 
         for (line, _) in &collapsed_headers {
@@ -4000,18 +3996,35 @@ impl SplitRenderer {
             }
         }
 
-        for range in &state.folding_ranges {
-            let start_line = range.start_line as usize;
-            let end_line = range.end_line as usize;
-            if end_line <= start_line {
-                continue;
+        if !state.folding_ranges.is_empty() {
+            // Use LSP-provided folding ranges
+            for range in &state.folding_ranges {
+                let start_line = range.start_line as usize;
+                let end_line = range.end_line as usize;
+                if end_line <= start_line {
+                    continue;
+                }
+                if start_line < viewport_start_line || start_line > viewport_end_line {
+                    continue;
+                }
+                indicators
+                    .entry(start_line)
+                    .or_insert(FoldIndicator { collapsed: false });
             }
-            if start_line < viewport_start_line || start_line > viewport_end_line {
-                continue;
+        } else if state.buffer.len() < crate::config::LARGE_FILE_THRESHOLD_BYTES as usize {
+            // Fallback: indent-based folding when LSP ranges are unavailable.
+            // Skip for large files — line_start_offset traversals are too
+            // expensive on big piece trees.
+            use crate::view::folding::indent_folding;
+            let tab_size = state.buffer_settings.tab_size;
+            for line in viewport_start_line..=viewport_end_line {
+                if indicators.contains_key(&line) {
+                    continue; // already has a collapsed indicator
+                }
+                if indent_folding::indent_fold_end_line(&state.buffer, line, tab_size).is_some() {
+                    indicators.insert(line, FoldIndicator { collapsed: false });
+                }
             }
-            indicators
-                .entry(start_line)
-                .or_insert(FoldIndicator { collapsed: false });
         }
 
         indicators
@@ -4162,6 +4175,17 @@ impl SplitRenderer {
             let line_visual_to_char = &current_view_line.visual_to_char;
             let line_tab_starts = &current_view_line.tab_starts;
             let _line_start_type = current_view_line.line_start;
+
+            // Pre-compute whitespace position boundaries for this view line.
+            // first_non_ws: index of first non-whitespace char (None if all whitespace)
+            // last_non_ws: index of last non-whitespace char (None if all whitespace)
+            let line_chars_for_ws: Vec<char> = line_content.chars().collect();
+            let first_non_ws_idx = line_chars_for_ws
+                .iter()
+                .position(|&c| c != ' ' && c != '\n' && c != '\r');
+            let last_non_ws_idx = line_chars_for_ws
+                .iter()
+                .rposition(|&c| c != ' ' && c != '\n' && c != '\r');
 
             // Helper to get source byte at a visual column using the new O(1) lookup
             let _source_byte_at_col = |vis_col: usize| -> Option<usize> {
@@ -4403,7 +4427,7 @@ impl SplitRenderer {
                     };
 
                     let CharStyleOutput {
-                        style,
+                        mut style,
                         is_secondary_cursor,
                     } = compute_char_style(&CharStyleContext {
                         byte_pos,
@@ -4421,8 +4445,45 @@ impl SplitRenderer {
                     });
 
                     // Determine display character (tabs already expanded in ViewLineIterator)
-                    // Show tab indicator (→) at the start of tab expansions (if enabled for this language)
-                    let tab_indicator: String;
+                    // Show tab indicator (→) or space indicator (·) based on granular
+                    // whitespace visibility settings (leading/inner/trailing positions)
+                    let indicator_buf: String;
+                    let mut is_whitespace_indicator = false;
+
+                    // Classify whitespace position: leading, inner, or trailing
+                    // Leading = before first non-ws char, Trailing = after last non-ws char
+                    // All-whitespace lines match both leading and trailing
+                    let ws_show_tab = is_tab_start && {
+                        let ws = &state.buffer_settings.whitespace;
+                        match (first_non_ws_idx, last_non_ws_idx) {
+                            (None, _) | (_, None) => ws.tabs_leading || ws.tabs_trailing,
+                            (Some(first), Some(last)) => {
+                                if display_char_idx < first {
+                                    ws.tabs_leading
+                                } else if display_char_idx > last {
+                                    ws.tabs_trailing
+                                } else {
+                                    ws.tabs_inner
+                                }
+                            }
+                        }
+                    };
+                    let ws_show_space = ch == ' ' && !is_tab_start && {
+                        let ws = &state.buffer_settings.whitespace;
+                        match (first_non_ws_idx, last_non_ws_idx) {
+                            (None, _) | (_, None) => ws.spaces_leading || ws.spaces_trailing,
+                            (Some(first), Some(last)) => {
+                                if display_char_idx < first {
+                                    ws.spaces_leading
+                                } else if display_char_idx > last {
+                                    ws.spaces_trailing
+                                } else {
+                                    ws.spaces_inner
+                                }
+                            }
+                        }
+                    };
+
                     let display_char: &str = if is_cursor && lsp_waiting && is_active {
                         "⋯"
                     } else if debug_tracker.is_some() && ch == '\r' {
@@ -4433,14 +4494,25 @@ impl SplitRenderer {
                         "\\n"
                     } else if ch == '\n' {
                         ""
-                    } else if is_tab_start && state.buffer_settings.show_whitespace_tabs {
+                    } else if ws_show_tab {
                         // Visual indicator for tab: show → at the first position
-                        tab_indicator = "→".to_string();
-                        &tab_indicator
+                        is_whitespace_indicator = true;
+                        indicator_buf = "→".to_string();
+                        &indicator_buf
+                    } else if ws_show_space {
+                        // Visual indicator for space: show · when enabled
+                        is_whitespace_indicator = true;
+                        indicator_buf = "·".to_string();
+                        &indicator_buf
                     } else {
-                        tab_indicator = ch.to_string();
-                        &tab_indicator
+                        indicator_buf = ch.to_string();
+                        &indicator_buf
                     };
+
+                    // Apply subdued whitespace indicator color from theme
+                    if is_whitespace_indicator && !is_cursor && !is_selected {
+                        style = style.fg(theme.whitespace_indicator_fg);
+                    }
 
                     if let Some(bp) = byte_pos {
                         if let Some(vtexts) = virtual_text_lookup.get(&bp) {

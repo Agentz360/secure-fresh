@@ -180,6 +180,13 @@ pub struct PartialEditorConfig {
     pub show_horizontal_scrollbar: Option<bool>,
     pub use_terminal_bg: Option<bool>,
     pub rulers: Option<Vec<usize>>,
+    pub whitespace_show: Option<bool>,
+    pub whitespace_spaces_leading: Option<bool>,
+    pub whitespace_spaces_inner: Option<bool>,
+    pub whitespace_spaces_trailing: Option<bool>,
+    pub whitespace_tabs_leading: Option<bool>,
+    pub whitespace_tabs_inner: Option<bool>,
+    pub whitespace_tabs_trailing: Option<bool>,
 }
 
 impl Merge for PartialEditorConfig {
@@ -256,6 +263,19 @@ impl Merge for PartialEditorConfig {
             .merge_from(&other.show_horizontal_scrollbar);
         self.use_terminal_bg.merge_from(&other.use_terminal_bg);
         self.rulers.merge_from(&other.rulers);
+        self.whitespace_show.merge_from(&other.whitespace_show);
+        self.whitespace_spaces_leading
+            .merge_from(&other.whitespace_spaces_leading);
+        self.whitespace_spaces_inner
+            .merge_from(&other.whitespace_spaces_inner);
+        self.whitespace_spaces_trailing
+            .merge_from(&other.whitespace_spaces_trailing);
+        self.whitespace_tabs_leading
+            .merge_from(&other.whitespace_tabs_leading);
+        self.whitespace_tabs_inner
+            .merge_from(&other.whitespace_tabs_inner);
+        self.whitespace_tabs_trailing
+            .merge_from(&other.whitespace_tabs_trailing);
     }
 }
 
@@ -476,6 +496,13 @@ impl From<&crate::config::EditorConfig> for PartialEditorConfig {
             show_horizontal_scrollbar: Some(cfg.show_horizontal_scrollbar),
             use_terminal_bg: Some(cfg.use_terminal_bg),
             rulers: Some(cfg.rulers.clone()),
+            whitespace_show: Some(cfg.whitespace_show),
+            whitespace_spaces_leading: Some(cfg.whitespace_spaces_leading),
+            whitespace_spaces_inner: Some(cfg.whitespace_spaces_inner),
+            whitespace_spaces_trailing: Some(cfg.whitespace_spaces_trailing),
+            whitespace_tabs_leading: Some(cfg.whitespace_tabs_leading),
+            whitespace_tabs_inner: Some(cfg.whitespace_tabs_inner),
+            whitespace_tabs_trailing: Some(cfg.whitespace_tabs_trailing),
         }
     }
 }
@@ -584,6 +611,25 @@ impl PartialEditorConfig {
                 .unwrap_or(defaults.show_horizontal_scrollbar),
             use_terminal_bg: self.use_terminal_bg.unwrap_or(defaults.use_terminal_bg),
             rulers: self.rulers.unwrap_or_else(|| defaults.rulers.clone()),
+            whitespace_show: self.whitespace_show.unwrap_or(defaults.whitespace_show),
+            whitespace_spaces_leading: self
+                .whitespace_spaces_leading
+                .unwrap_or(defaults.whitespace_spaces_leading),
+            whitespace_spaces_inner: self
+                .whitespace_spaces_inner
+                .unwrap_or(defaults.whitespace_spaces_inner),
+            whitespace_spaces_trailing: self
+                .whitespace_spaces_trailing
+                .unwrap_or(defaults.whitespace_spaces_trailing),
+            whitespace_tabs_leading: self
+                .whitespace_tabs_leading
+                .unwrap_or(defaults.whitespace_tabs_leading),
+            whitespace_tabs_inner: self
+                .whitespace_tabs_inner
+                .unwrap_or(defaults.whitespace_tabs_inner),
+            whitespace_tabs_trailing: self
+                .whitespace_tabs_trailing
+                .unwrap_or(defaults.whitespace_tabs_trailing),
         }
     }
 }

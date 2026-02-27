@@ -238,8 +238,11 @@ impl Editor {
                 } else if self.handle_prompt_scroll(-3) {
                     // Check if prompt with suggestions is active and should handle scroll
                     needs_render = true;
-                } else if self.is_file_open_active() && self.handle_file_open_scroll(-3) {
-                    // Check if file browser is active and should handle scroll
+                } else if self.is_file_open_active()
+                    && self.is_mouse_over_file_browser(col, row)
+                    && self.handle_file_open_scroll(-3)
+                {
+                    // Check if file browser is active and mouse is over it
                     needs_render = true;
                 } else if self.is_mouse_over_any_popup(col, row) {
                     // Scroll the popup content (works for all popups including completion)
@@ -270,7 +273,10 @@ impl Editor {
                 } else if self.handle_prompt_scroll(3) {
                     // Check if prompt with suggestions is active and should handle scroll
                     needs_render = true;
-                } else if self.is_file_open_active() && self.handle_file_open_scroll(3) {
+                } else if self.is_file_open_active()
+                    && self.is_mouse_over_file_browser(col, row)
+                    && self.handle_file_open_scroll(3)
+                {
                     needs_render = true;
                 } else if self.is_mouse_over_any_popup(col, row) {
                     // Scroll the popup content (works for all popups including completion)
@@ -658,6 +664,13 @@ impl Editor {
         hit_tester.is_over_popup(col, row)
     }
 
+    /// Check if mouse position is over the file browser popup
+    fn is_mouse_over_file_browser(&self, col: u16, row: u16) -> bool {
+        self.file_browser_layout
+            .as_ref()
+            .is_some_and(|layout| layout.contains(col, row))
+    }
+
     /// Compute what hover target is at the given position
     fn compute_hover_target(&self, col: u16, row: u16) -> Option<HoverTarget> {
         // Check tab context menu first (it's rendered on top)
@@ -783,8 +796,9 @@ impl Editor {
                 }
             }
 
-            // The border is at the right edge of the file explorer area
-            let border_x = explorer_area.x + explorer_area.width;
+            // The border is at the rightmost column of the file explorer area
+            // (the drawn border character), not one past it.
+            let border_x = explorer_area.x + explorer_area.width.saturating_sub(1);
             if col == border_x
                 && row >= explorer_area.y
                 && row < explorer_area.y + explorer_area.height
@@ -1429,6 +1443,22 @@ impl Editor {
             return Ok(());
         }
 
+        // Check if click is on file explorer border (for drag resizing).
+        // Must come before the general file explorer click check, because
+        // the border column is inside the explorer area rect.
+        if let Some(explorer_area) = self.cached_layout.file_explorer_area {
+            let border_x = explorer_area.x + explorer_area.width.saturating_sub(1);
+            if col == border_x
+                && row >= explorer_area.y
+                && row < explorer_area.y + explorer_area.height
+            {
+                self.mouse_state.dragging_file_explorer = true;
+                self.mouse_state.drag_start_position = Some((col, row));
+                self.mouse_state.drag_start_explorer_width = Some(self.file_explorer_width_percent);
+                return Ok(());
+            }
+        }
+
         // Check if click is on file explorer
         if let Some(explorer_area) = self.cached_layout.file_explorer_area {
             if col >= explorer_area.x
@@ -1634,21 +1664,6 @@ impl Editor {
                     }
                     SearchOptionsHover::None => {}
                 }
-            }
-        }
-
-        // Check if click is on file explorer border (for drag resizing)
-        if let Some(explorer_area) = self.cached_layout.file_explorer_area {
-            let border_x = explorer_area.x + explorer_area.width;
-            if col == border_x
-                && row >= explorer_area.y
-                && row < explorer_area.y + explorer_area.height
-            {
-                // Start file explorer border drag
-                self.mouse_state.dragging_file_explorer = true;
-                self.mouse_state.drag_start_position = Some((col, row));
-                self.mouse_state.drag_start_explorer_width = Some(self.file_explorer_width_percent);
-                return Ok(());
             }
         }
 

@@ -149,17 +149,21 @@ impl Editor {
             }
         }
 
-        // Propagate tab_size/use_tabs/show_whitespace_tabs to all open buffers
+        // Propagate tab_size/use_tabs/whitespace visibility to all open buffers
         // Each buffer resolves its settings from its language + the new global config
         for state in self.buffers.values_mut() {
+            let mut whitespace =
+                crate::config::WhitespaceVisibility::from_editor_config(&self.config.editor);
             if let Some(lang_config) = self.config.languages.get(&state.language) {
                 state.buffer_settings.tab_size =
                     lang_config.tab_size.unwrap_or(self.config.editor.tab_size);
                 state.buffer_settings.use_tabs = lang_config.use_tabs;
-                state.buffer_settings.show_whitespace_tabs = lang_config.show_whitespace_tabs;
+                whitespace =
+                    whitespace.with_language_tab_override(lang_config.show_whitespace_tabs);
             } else {
                 state.buffer_settings.tab_size = self.config.editor.tab_size;
             }
+            state.buffer_settings.whitespace = whitespace;
         }
 
         // Save ONLY the changes to disk (preserves external edits to the config file)

@@ -249,11 +249,13 @@ impl Editor {
             tracing::info!("Detected binary file: {}", path.display());
         }
 
-        // Set show_whitespace_tabs, use_tabs, and tab_size based on language config
+        // Set whitespace visibility, use_tabs, and tab_size based on language config
         // with fallback to global editor config for tab_size
         // Use the buffer's stored language (already set by from_file_with_languages)
+        let mut whitespace =
+            crate::config::WhitespaceVisibility::from_editor_config(&self.config.editor);
         if let Some(lang_config) = self.config.languages.get(&state.language) {
-            state.buffer_settings.show_whitespace_tabs = lang_config.show_whitespace_tabs;
+            whitespace = whitespace.with_language_tab_override(lang_config.show_whitespace_tabs);
             state.buffer_settings.use_tabs = lang_config.use_tabs;
             // Use language-specific tab_size if set, otherwise fall back to global
             state.buffer_settings.tab_size =
@@ -261,6 +263,7 @@ impl Editor {
         } else {
             state.buffer_settings.tab_size = self.config.editor.tab_size;
         }
+        state.buffer_settings.whitespace = whitespace;
 
         // Apply line_numbers default from config
         state

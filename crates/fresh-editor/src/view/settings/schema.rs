@@ -52,6 +52,7 @@
 //! - **Plugin-friendly**: External sources can contribute enum values
 //! - **Type-safe**: Values are validated against their referenced type
 
+use rust_i18n::t;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -95,6 +96,8 @@ pub enum SettingType {
     Enum { options: Vec<EnumOption> },
     /// Array of strings
     StringArray,
+    /// Array of integers (rendered as TextList, values parsed as numbers)
+    IntegerArray,
     /// Array of objects with a schema (for keybindings, etc.)
     ObjectArray {
         item_schema: Box<SettingSchema>,
@@ -364,7 +367,7 @@ fn parse_setting(
 
     SettingSchema {
         path: path.to_string(),
-        name: humanize_name(name),
+        name: i18n_name(path, name),
         description,
         setting_type,
         default: schema.default.clone(),
@@ -436,11 +439,15 @@ fn determine_type(
         }
         Some("string") => SettingType::String,
         Some("array") => {
-            // Check if it's an array of strings or objects
+            // Check if it's an array of strings, integers, or objects
             if let Some(ref items) = resolved.items {
                 let item_resolved = resolve_ref(items, defs);
-                if item_resolved.schema_type.as_ref().and_then(|t| t.primary()) == Some("string") {
+                let item_type = item_resolved.schema_type.as_ref().and_then(|t| t.primary());
+                if item_type == Some("string") {
                     return SettingType::StringArray;
+                }
+                if item_type == Some("integer") || item_type == Some("number") {
+                    return SettingType::IntegerArray;
                 }
                 // Check if items reference an object type
                 if items.ref_path.is_some() {
@@ -514,6 +521,21 @@ fn resolve_ref<'a>(schema: &'a RawSchema, defs: &'a HashMap<String, RawSchema>) 
         }
     }
     schema
+}
+
+/// Look up an i18n translation for a settings field, falling back to humanized name.
+///
+/// Derives a translation key from the schema path, e.g. `/editor/whitespace_show`
+/// becomes `settings.field.editor.whitespace_show`. If no translation is found,
+/// falls back to `humanize_name()`.
+fn i18n_name(path: &str, fallback_name: &str) -> String {
+    let key = format!("settings.field{}", path.replace('/', "."));
+    let translated = t!(&key);
+    if *translated == key {
+        humanize_name(fallback_name)
+    } else {
+        translated.to_string()
+    }
 }
 
 /// Convert snake_case to Title Case

@@ -1732,8 +1732,19 @@ impl Editor {
     pub fn open_status_log(&mut self) {
         if let Some(path) = self.status_log_path.clone() {
             // Use open_local_file since log files are always local
-            if let Err(e) = self.open_local_file(&path) {
-                tracing::error!("Failed to open status log: {}", e);
+            match self.open_local_file(&path) {
+                Ok(buffer_id) => {
+                    // Make the buffer read-only since it's a log file
+                    if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                        state.editing_disabled = true;
+                    }
+                    if let Some(metadata) = self.buffer_metadata.get_mut(&buffer_id) {
+                        metadata.read_only = true;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to open status log: {}", e);
+                }
             }
         } else {
             self.set_status_message("Status log not available".to_string());
@@ -1778,8 +1789,19 @@ impl Editor {
     pub fn open_warning_log(&mut self) {
         if let Some(path) = self.warning_domains.general.log_path.clone() {
             // Use open_local_file since log files are always local
-            if let Err(e) = self.open_local_file(&path) {
-                tracing::error!("Failed to open warning log: {}", e);
+            match self.open_local_file(&path) {
+                Ok(buffer_id) => {
+                    // Make the buffer read-only since it's a log file
+                    if let Some(state) = self.buffers.get_mut(&buffer_id) {
+                        state.editing_disabled = true;
+                    }
+                    if let Some(metadata) = self.buffer_metadata.get_mut(&buffer_id) {
+                        metadata.read_only = true;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("Failed to open warning log: {}", e);
+                }
             }
         }
     }
@@ -2072,6 +2094,12 @@ impl Editor {
                 // Ensure key context is Normal when focusing a non-terminal buffer
                 // This handles the case of clicking on editor from FileExplorer context
                 self.key_context = crate::input::keybindings::KeyContext::Normal;
+            }
+
+            // Switch the view state to the target buffer so that Deref
+            // (cursors, viewport, …) resolves to the correct BufferViewState.
+            if let Some(view_state) = self.split_view_states.get_mut(&split_id) {
+                view_state.switch_buffer(buffer_id);
             }
 
             // Handle buffer change side effects

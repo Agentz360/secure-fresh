@@ -41,6 +41,13 @@
         "use_terminal_bg": false,
         "cursor_style": "default",
         "rulers": [],
+        "whitespace_show": true,
+        "whitespace_spaces_leading": false,
+        "whitespace_spaces_inner": false,
+        "whitespace_spaces_trailing": false,
+        "whitespace_tabs_leading": true,
+        "whitespace_tabs_inner": true,
+        "whitespace_tabs_trailing": true,
         "tab_size": 4,
         "auto_indent": true,
         "scroll_offset": 3,
@@ -278,6 +285,48 @@
           },
           "default": [],
           "x-section": "Display"
+        },
+        "whitespace_show": {
+          "description": "Master toggle for whitespace indicator visibility.\nWhen disabled, no whitespace indicators (·, →) are shown regardless\nof the per-position settings below.\nDefault: true",
+          "type": "boolean",
+          "default": true,
+          "x-section": "Whitespace"
+        },
+        "whitespace_spaces_leading": {
+          "description": "Show space indicators (·) for leading whitespace (indentation).\nLeading whitespace is everything before the first non-space character on a line.\nDefault: false",
+          "type": "boolean",
+          "default": false,
+          "x-section": "Whitespace"
+        },
+        "whitespace_spaces_inner": {
+          "description": "Show space indicators (·) for inner whitespace (between words/tokens).\nInner whitespace is spaces between the first and last non-space characters.\nDefault: false",
+          "type": "boolean",
+          "default": false,
+          "x-section": "Whitespace"
+        },
+        "whitespace_spaces_trailing": {
+          "description": "Show space indicators (·) for trailing whitespace.\nTrailing whitespace is everything after the last non-space character on a line.\nDefault: false",
+          "type": "boolean",
+          "default": false,
+          "x-section": "Whitespace"
+        },
+        "whitespace_tabs_leading": {
+          "description": "Show tab indicators (→) for leading tabs (indentation).\nCan be overridden per-language via `show_whitespace_tabs` in language config.\nDefault: true",
+          "type": "boolean",
+          "default": true,
+          "x-section": "Whitespace"
+        },
+        "whitespace_tabs_inner": {
+          "description": "Show tab indicators (→) for inner tabs (between words/tokens).\nCan be overridden per-language via `show_whitespace_tabs` in language config.\nDefault: true",
+          "type": "boolean",
+          "default": true,
+          "x-section": "Whitespace"
+        },
+        "whitespace_tabs_trailing": {
+          "description": "Show tab indicators (→) for trailing tabs.\nCan be overridden per-language via `show_whitespace_tabs` in language config.\nDefault: true",
+          "type": "boolean",
+          "default": true,
+          "x-section": "Whitespace"
         },
         "tab_size": {
           "description": "Number of spaces per tab character",
