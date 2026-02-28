@@ -4624,6 +4624,7 @@ impl Editor {
                     view_mode: view_mode.to_string(),
                     is_composing_in_any_split,
                     compose_width,
+                    language: state.language.clone(),
                 };
                 snapshot.buffers.insert(*buffer_id, buffer_info);
 
@@ -6589,6 +6590,7 @@ fn parse_key_string(key_str: &str) -> Option<(KeyCode, KeyModifiers)> {
     let code = match upper.as_str() {
         "RET" | "RETURN" | "ENTER" => KeyCode::Enter,
         "TAB" => KeyCode::Tab,
+        "BACKTAB" => KeyCode::BackTab,
         "ESC" | "ESCAPE" => KeyCode::Esc,
         "SPC" | "SPACE" => KeyCode::Char(' '),
         "DEL" | "DELETE" => KeyCode::Delete,
